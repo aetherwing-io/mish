@@ -304,8 +304,23 @@ impl PtyCapture {
 impl Drop for PtyCapture {
     fn drop(&mut self) {
         // OwnedFd will close the master fd on drop.
-        // Try to reap the child if it hasn't been waited on.
-        let _ = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG));
+        // Try to reap the child — send SIGTERM first, then SIGKILL if needed.
+        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => {
+                // Child still running — send SIGTERM and wait briefly.
+                let _ = kill(self.child_pid, Signal::SIGTERM);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => {
+                        // Still alive after SIGTERM — escalate to SIGKILL.
+                        let _ = kill(self.child_pid, Signal::SIGKILL);
+                        let _ = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG));
+                    }
+                    _ => {} // Reaped or error — done.
+                }
+            }
+            _ => {} // Already exited, already reaped, or error — done.
+        }
     }
 }
 

@@ -217,13 +217,43 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
         shutdown_mgr.wait_for_shutdown().await;
     });
 
+    // Spawn periodic cleanup task for expired processes and idle sessions.
+    let cleanup_pt = server.process_table.clone();
+    let cleanup_sm = server.session_manager.clone();
+    let cleanup_config = config.clone();
+    let mut cleanup_shutdown_rx = shutdown_rx.clone();
+    let cleanup_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let retention = std::time::Duration::from_secs(
+            cleanup_config.server.idle_session_timeout_sec,
+        );
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Clean up expired process entries.
+                    {
+                        let mut pt = cleanup_pt.lock().await;
+                        pt.cleanup_expired(retention);
+                    }
+                    // Clean up idle sessions.
+                    cleanup_sm.cleanup_idle_sessions().await;
+                }
+                _ = cleanup_shutdown_rx.changed() => {
+                    if *cleanup_shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     let mut transport = StdioTransport::new();
     let run_result = server
         .run_with_shutdown(&mut transport, shutdown_rx)
         .await;
 
-    // Await shutdown task to ensure sessions are cleaned up before proceeding.
-    // Use a timeout to avoid hanging forever if the shutdown task is stuck.
+    // Cancel cleanup task and await shutdown task.
+    cleanup_handle.abort();
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         shutdown_handle,
