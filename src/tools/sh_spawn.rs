@@ -352,6 +352,18 @@ mod tests {
         Arc::new(MishConfig::default())
     }
 
+    /// Shared session helper for integration tests.
+    /// Reduces boilerplate — each test still gets its own session (serial gate handles isolation).
+    async fn shared_session() -> (SessionManager, MishConfig) {
+        let config = test_config();
+        let session_config = test_session_config();
+        let mgr = SessionManager::new(session_config);
+        mgr.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("shared session creation");
+        (mgr, config)
+    }
+
     // ── Unit tests for helpers ────────────────────────────────────────
 
     #[test]
@@ -512,13 +524,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_basic_command() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         let params = ShSpawnParams {
@@ -547,13 +553,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_alias_conflict_error() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         // Spawn first process.
@@ -585,13 +585,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_wait_for_matching() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         // The command outputs "ready to serve" which should match "ready".
@@ -645,13 +639,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_empty_alias_rejected() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         let params = ShSpawnParams {
@@ -672,13 +660,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_invalid_wait_for_regex() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         let params = ShSpawnParams {
@@ -700,13 +682,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_wait_for_timeout() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         // Command outputs "hello" but we wait for "never_matches".
@@ -739,13 +715,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_deny_list_blocks_rm_rf_root() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         let params = ShSpawnParams {
@@ -770,13 +740,7 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn spawn_deny_list_blocks_mkfs() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        mgr.create_session("main", Some("/bin/bash"))
-            .await
-            .expect("create session");
-
+        let (mgr, config) = shared_session().await;
         let mut table = ProcessTable::new(&config);
 
         let params = ShSpawnParams {
