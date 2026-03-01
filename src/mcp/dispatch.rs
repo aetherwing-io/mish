@@ -323,6 +323,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
 
     fn test_config() -> Arc<MishConfig> {
         Arc::new(MishConfig::default())
@@ -522,6 +523,7 @@ mod tests {
     // ── Test 10: tools/call sh_run executes a real command ──
 
     #[tokio::test]
+    #[serial(pty)]
     async fn tools_call_sh_run_executes_command() {
         let config = test_config();
         let sm = Arc::new(SessionManager::new(config.clone()));
@@ -552,6 +554,7 @@ mod tests {
     // ── Test 11: tools/call sh_session list works ──
 
     #[tokio::test]
+    #[serial(pty)]
     async fn tools_call_sh_session_list() {
         let config = test_config();
         let sm = Arc::new(SessionManager::new(config.clone()));
