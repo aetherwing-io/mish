@@ -283,6 +283,7 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
 mod tests {
     use super::*;
     use crate::config::default_config;
+    use serial_test::serial;
 
     fn test_config() -> Arc<MishConfig> {
         Arc::new(default_config())
@@ -490,6 +491,7 @@ mod tests {
     // ── Test 11: Full-stack sh_run through server ──
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_server_full_stack_sh_run() {
         let config = test_config();
         let server = McpServer::new(config).unwrap();
@@ -529,6 +531,7 @@ mod tests {
     // ── Test 12: Full MCP lifecycle: init → notification → tools/list → tools/call ──
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_server_full_mcp_lifecycle() {
         let config = test_config();
         let server = McpServer::new(config).unwrap();
