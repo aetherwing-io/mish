@@ -14,58 +14,16 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::config::MishConfig;
 use crate::mcp::types::{
     LineCount, ProcessDigestEntry, ShRunParams, ShRunResponse,
-    ERR_COMMAND_BLOCKED, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND,
+    ERR_COMMAND_BLOCKED,
 };
 use crate::safety;
+use super::ToolError;
 use crate::process::table::{DigestMode, ProcessTable};
 use crate::session::manager::{SessionError, SessionManager};
 use crate::squasher::pattern::{PatternMatcher, Presets};
 use crate::squasher::pipeline::{Pipeline, PipelineConfig};
 use crate::squasher::truncate::TruncateConfig;
 use crate::core::line_buffer::Line;
-
-// ---------------------------------------------------------------------------
-// ToolError
-// ---------------------------------------------------------------------------
-
-/// Error type returned from tool handlers, carrying an MCP error code.
-#[derive(Debug)]
-pub struct ToolError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl ToolError {
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-
-    fn from_session_error(e: SessionError) -> Self {
-        Self {
-            code: e.error_code(),
-            message: e.to_string(),
-        }
-    }
-
-    fn invalid_params(msg: impl Into<String>) -> Self {
-        Self::new(ERR_INVALID_PARAMS, msg)
-    }
-
-    fn internal(msg: impl Into<String>) -> Self {
-        Self::new(ERR_INTERNAL, msg)
-    }
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for ToolError {}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -292,6 +250,8 @@ fn apply_watch_filter(
 mod tests {
     use super::*;
     use crate::config::default_config;
+    use crate::mcp::types::{ERR_COMMAND_BLOCKED, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND};
+    use crate::session::manager::SessionError;
 
     // -----------------------------------------------------------------------
     // Unit tests for internal helpers (no PTY required)

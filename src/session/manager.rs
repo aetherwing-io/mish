@@ -14,18 +14,13 @@ use nix::unistd::Pid;
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 use crate::config::MishConfig;
+use crate::mcp::types::{
+    ERR_SESSION_NOT_FOUND as ERR_NOT_FOUND,
+    ERR_SESSION_LIMIT as ERR_LIMIT_REACHED,
+    ERR_SESSION_NOT_READY as ERR_NOT_READY,
+    ERR_SHELL_ERROR,
+};
 use crate::session::shell::{CommandResult, ShellError, ShellProcess};
-
-// ---------------------------------------------------------------------------
-// MCP error codes
-// ---------------------------------------------------------------------------
-
-/// Session not found.
-pub const ERR_NOT_FOUND: i32 = -32002;
-/// Session or process limit reached.
-pub const ERR_LIMIT_REACHED: i32 = -32006;
-/// Session not ready for commands.
-pub const ERR_NOT_READY: i32 = -32008;
 
 // ---------------------------------------------------------------------------
 // SessionError
@@ -76,7 +71,7 @@ impl SessionError {
             SessionError::LimitReached { .. } => ERR_LIMIT_REACHED,
             SessionError::NotReady(_) => ERR_NOT_READY,
             SessionError::AlreadyExists(_) => ERR_LIMIT_REACHED,
-            SessionError::ShellError(_) => -32000,
+            SessionError::ShellError(_) => ERR_SHELL_ERROR,
         }
     }
 }

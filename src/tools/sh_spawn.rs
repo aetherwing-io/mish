@@ -10,10 +10,15 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 use crate::config::MishConfig;
-use crate::mcp::types::{ShSpawnParams, ShSpawnResponse};
+use crate::mcp::types::{
+    ShSpawnParams, ShSpawnResponse,
+    ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SESSION_NOT_FOUND,
+};
 use crate::safety;
 use crate::process::table::{ProcessTable, ProcessTableError};
 use crate::session::manager::SessionManager;
+
+use super::ToolError;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,42 +38,6 @@ const DEFAULT_SESSION: &str = "main";
 
 /// Global counter for auto-generated aliases.
 static ALIAS_COUNTER: AtomicU32 = AtomicU32::new(1);
-
-// ---------------------------------------------------------------------------
-// ToolError
-// ---------------------------------------------------------------------------
-
-/// Error type for tool operations.
-#[derive(Debug)]
-pub struct ToolError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl ToolError {
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-
-    /// Create from a ProcessTableError.
-    pub fn from_process_table_error(e: &ProcessTableError) -> Self {
-        Self {
-            code: e.error_code(),
-            message: e.to_string(),
-        }
-    }
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tool error {}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for ToolError {}
 
 // ---------------------------------------------------------------------------
 // Alias generation
@@ -113,13 +82,13 @@ pub async fn handle(
 
     // Validate alias is not empty.
     if alias.is_empty() {
-        return Err(ToolError::new(-32602, "alias must not be empty"));
+        return Err(ToolError::new(ERR_INVALID_PARAMS, "alias must not be empty"));
     }
 
     // Safety deny-list check.
     if let Some(reason) = safety::check_deny_list(&params.cmd) {
         return Err(ToolError::new(
-            -32005,
+            ERR_COMMAND_BLOCKED,
             format!("command blocked by safety deny-list: {reason}"),
         ));
     }
@@ -135,7 +104,7 @@ pub async fn handle(
     let _session = session_manager
         .get_session(session_name)
         .await
-        .ok_or_else(|| ToolError::new(-32002, format!("session not found: {session_name}")))?;
+        .ok_or_else(|| ToolError::new(ERR_SESSION_NOT_FOUND, format!("session not found: {session_name}")))?;
 
     // Send command as background job to the session shell.
     // We append ` &` and `echo` the background PID so we can capture it.
@@ -167,7 +136,7 @@ pub async fn handle(
     if let Some(ref wait_pattern) = params.wait_for {
         let regex = Regex::new(&format!("(?i){}", wait_pattern)).map_err(|e| {
             ToolError::new(
-                -32602,
+                ERR_INVALID_PARAMS,
                 format!("invalid wait_for regex '{}': {}", wait_pattern, e),
             )
         })?;

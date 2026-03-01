@@ -50,21 +50,7 @@ fn event_log_level(event: &AuditEvent) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tilde expansion (standalone so the audit module is self-contained)
-// ---------------------------------------------------------------------------
-
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix('~') {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{home}{rest}")
-        } else {
-            path.to_string()
-        }
-    } else {
-        path.to_string()
-    }
-}
+use crate::util::expand_tilde;
 
 // ---------------------------------------------------------------------------
 // ISO 8601 timestamp from SystemTime (no chrono dependency)

@@ -162,7 +162,7 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
             &grammars,
             &categories_config,
             &dangerous_patterns,
-            to_preflight_mode(mode),
+            mode,
         )?;
 
         last_exit_code = router_result.exit_code;
@@ -184,16 +184,6 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Convert format::OutputMode to preflight::OutputMode for the router.
-fn to_preflight_mode(mode: OutputMode) -> crate::core::preflight::OutputMode {
-    match mode {
-        OutputMode::Human => crate::core::preflight::OutputMode::Human,
-        OutputMode::Json => crate::core::preflight::OutputMode::Json,
-        OutputMode::Passthrough => crate::core::preflight::OutputMode::Passthrough,
-        OutputMode::Context => crate::core::preflight::OutputMode::Context,
-    }
-}
 
 /// Convert a RouterResult into a FormatInput for the formatter.
 fn router_result_to_format_input(result: &RouterResult, command: &[String]) -> FormatInput {

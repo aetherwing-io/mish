@@ -6,18 +6,12 @@
 
 use crate::core::grammar::{Action, Grammar};
 
+// Re-export OutputMode from format.rs — single canonical definition.
+pub use crate::core::format::OutputMode;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
-
-/// Output mode determines how mish formats the final result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    Human,       // default — symbols + indent
-    Json,        // --json flag
-    Passthrough, // --passthrough flag
-    Context,     // --context flag (ultra-compressed)
-}
 
 /// A recommendation from preflight analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]

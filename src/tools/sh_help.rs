@@ -7,6 +7,7 @@
 use crate::config::MishConfig;
 use crate::mcp::types::{
     ParamSummary, ResourceLimits, ResourceUsage, ShHelpResponse, SquasherDefaults, ToolSummary,
+    ERR_INVALID_PARAMS,
 };
 use crate::process::table::ProcessTable;
 use crate::session::manager::SessionManager;
@@ -42,7 +43,7 @@ impl ShHelpError {
     /// Return the MCP error code for this error.
     pub fn error_code(&self) -> i32 {
         match self {
-            ShHelpError::InvalidToolName(_) => -32602, // invalid params
+            ShHelpError::InvalidToolName(_) => ERR_INVALID_PARAMS,
         }
     }
 }

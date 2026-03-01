@@ -10,35 +10,8 @@ use crate::mcp::types::{
     self as mcp_types, ShSessionListResponse,
 };
 use crate::process::table::ProcessTable;
-use crate::session::manager::{SessionError, SessionManager};
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Tool-level error returned from `handle`.
-#[derive(Debug)]
-pub struct ToolError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for ToolError {}
-
-impl From<SessionError> for ToolError {
-    fn from(e: SessionError) -> Self {
-        ToolError {
-            code: e.error_code(),
-            message: e.to_string(),
-        }
-    }
-}
+use crate::session::manager::SessionManager;
+use super::ToolError;
 
 // ---------------------------------------------------------------------------
 // Extended params (superset of mcp::types::ShSessionParams)
@@ -54,13 +27,6 @@ pub struct ShSessionParams {
     pub name: Option<String>,
     pub shell: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const ERR_INVALID_PARAMS: i32 = -32602;
-const ERR_UNKNOWN_ACTION: i32 = -32602;
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -80,10 +46,9 @@ pub async fn handle(
         "list" => handle_list(session_manager, process_table).await?,
         "close" => handle_close(params, session_manager).await?,
         other => {
-            return Err(ToolError {
-                code: ERR_UNKNOWN_ACTION,
-                message: format!("unknown action: {other}; expected create, list, or close"),
-            });
+            return Err(ToolError::invalid_params(
+                format!("unknown action: {other}; expected create, list, or close"),
+            ));
         }
     };
 
@@ -99,9 +64,8 @@ async fn handle_create(
     params: ShSessionParams,
     session_manager: &SessionManager,
 ) -> Result<serde_json::Value, ToolError> {
-    let name = params.name.as_deref().ok_or_else(|| ToolError {
-        code: ERR_INVALID_PARAMS,
-        message: "name is required for create action".to_string(),
+    let name = params.name.as_deref().ok_or_else(|| {
+        ToolError::invalid_params("name is required for create action")
     })?;
 
     let shell_path = params.shell.as_deref();
@@ -176,9 +140,8 @@ async fn handle_close(
     params: ShSessionParams,
     session_manager: &SessionManager,
 ) -> Result<serde_json::Value, ToolError> {
-    let name = params.name.as_deref().ok_or_else(|| ToolError {
-        code: ERR_INVALID_PARAMS,
-        message: "name is required for close action".to_string(),
+    let name = params.name.as_deref().ok_or_else(|| {
+        ToolError::invalid_params("name is required for close action")
     })?;
 
     session_manager.close_session(name).await?;
@@ -197,8 +160,12 @@ async fn handle_close(
 mod tests {
     use super::*;
     use crate::config::{default_config, MishConfig};
+    use crate::mcp::types::ERR_INVALID_PARAMS;
+    use crate::session::manager::SessionError;
     use serial_test::serial;
     use std::sync::Arc;
+
+    const ERR_UNKNOWN_ACTION: i32 = ERR_INVALID_PARAMS;
 
     fn bash_path() -> &'static str {
         "/bin/bash"

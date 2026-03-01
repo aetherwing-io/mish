@@ -437,21 +437,7 @@ impl Default for RawSandboxConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tilde expansion
-// ---------------------------------------------------------------------------
-
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix('~') {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{home}{rest}")
-        } else {
-            path.to_string()
-        }
-    } else {
-        path.to_string()
-    }
-}
+use crate::util::expand_tilde;
 
 // ---------------------------------------------------------------------------
 // Conversion: Raw -> Public

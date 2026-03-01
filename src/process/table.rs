@@ -10,7 +10,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::MishConfig;
-use crate::mcp::types::ProcessDigestEntry;
+use crate::mcp::types::{
+    ProcessDigestEntry, ERR_ALIAS_NOT_FOUND, ERR_ALIAS_IN_USE, ERR_PROCESS_LIMIT,
+    ERR_INVALID_ACTION,
+};
 use crate::process::spool::{OutputSpool, SpoolManager};
 use crate::process::state::ProcessState;
 
@@ -31,10 +34,10 @@ impl ProcessTableError {
     /// Map to JSON-RPC error code per spec.
     pub fn error_code(&self) -> i32 {
         match self {
-            ProcessTableError::AliasNotFound => -32003,
-            ProcessTableError::AliasInUse => -32004,
-            ProcessTableError::ProcessLimitReached => -32007,
-            ProcessTableError::InvalidStateTransition => -32009,
+            ProcessTableError::AliasNotFound => ERR_ALIAS_NOT_FOUND,
+            ProcessTableError::AliasInUse => ERR_ALIAS_IN_USE,
+            ProcessTableError::ProcessLimitReached => ERR_PROCESS_LIMIT,
+            ProcessTableError::InvalidStateTransition => ERR_INVALID_ACTION,
         }
     }
 }

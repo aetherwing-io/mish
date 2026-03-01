@@ -236,15 +236,7 @@ fn load_dangerous_patterns_lenient(toml_str: &str) -> Result<Vec<DangerousPatter
     Ok(patterns)
 }
 
-/// Expand `~` prefix to the user's home directory.
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return format!("{}/{rest}", home.to_string_lossy());
-        }
-    }
-    path.to_string()
-}
+use crate::util::expand_tilde;
 
 // ---------------------------------------------------------------------------
 // Tests

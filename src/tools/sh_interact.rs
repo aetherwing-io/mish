@@ -7,69 +7,14 @@ use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 
 use crate::mcp::types::{
-    self, ShInteractParams, ShInteractKillResponse, ShInteractReadTailResponse,
+    ShInteractParams, ShInteractKillResponse, ShInteractReadTailResponse,
     ShInteractSendResponse, ShInteractSignalResponse, ShInteractStatusResponse,
+    ERR_SHELL_ERROR,
 };
 use crate::process::state::ProcessState;
-use crate::process::table::{ProcessTable, ProcessTableError};
+use crate::process::table::ProcessTable;
 use crate::session::manager::SessionManager;
-
-// ---------------------------------------------------------------------------
-// Error codes
-// ---------------------------------------------------------------------------
-
-/// Invalid parameters (JSON-RPC standard).
-const ERR_INVALID_PARAMS: i32 = types::ERR_INVALID_PARAMS;
-/// Invalid action for current process state.
-const ERR_INVALID_ACTION: i32 = types::ERR_INVALID_ACTION;
-/// Alias not found.
-const ERR_ALIAS_NOT_FOUND: i32 = types::ERR_ALIAS_NOT_FOUND;
-
-// ---------------------------------------------------------------------------
-// ToolError
-// ---------------------------------------------------------------------------
-
-/// Error from an sh_interact tool call.
-#[derive(Debug)]
-pub struct ToolError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl ToolError {
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-
-    fn alias_not_found(alias: &str) -> Self {
-        Self::new(ERR_ALIAS_NOT_FOUND, format!("process alias not found: {alias}"))
-    }
-
-    fn invalid_action(msg: impl Into<String>) -> Self {
-        Self::new(ERR_INVALID_ACTION, msg)
-    }
-
-    fn invalid_params(msg: impl Into<String>) -> Self {
-        Self::new(ERR_INVALID_PARAMS, msg)
-    }
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for ToolError {}
-
-impl From<ProcessTableError> for ToolError {
-    fn from(e: ProcessTableError) -> Self {
-        ToolError::new(e.error_code(), e.to_string())
-    }
-}
+use super::ToolError;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -214,7 +159,7 @@ async fn handle_send_input(
     let bytes_written = session_manager
         .write_to_session(&session_name, bytes)
         .await
-        .map_err(|e| ToolError::new(-32000, format!("session write error: {e}")))?;
+        .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("session write error: {e}")))?;
 
     let resp = ShInteractSendResponse {
         alias: params.alias,
@@ -371,8 +316,8 @@ fn handle_status(
 mod tests {
     use super::*;
     use crate::config::MishConfig;
-    use crate::mcp::types::ShInteractParams;
-    use crate::process::table::ProcessTable;
+    use crate::mcp::types::{ShInteractParams, ERR_ALIAS_NOT_FOUND, ERR_INVALID_ACTION, ERR_INVALID_PARAMS};
+    use crate::process::table::{ProcessTable, ProcessTableError};
 
     fn test_config() -> MishConfig {
         let mut config = MishConfig::default();

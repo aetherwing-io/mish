@@ -298,6 +298,7 @@ pub struct ToolResponse {
 
 // ----- Application Error Codes -----
 
+pub const ERR_SHELL_ERROR: i32 = -32000;
 pub const ERR_PROCESS_HANDED_OFF: i32 = -32001;
 pub const ERR_SESSION_NOT_FOUND: i32 = -32002;
 pub const ERR_ALIAS_NOT_FOUND: i32 = -32003;
