@@ -64,8 +64,9 @@ fn test_04_exit_code_42_propagated() {
 
 #[test]
 fn test_05_human_success_starts_with_plus() {
+    // echo is passthrough with real grammars — use /bin/sh -c which is condense
     mish()
-        .args(&["echo", "hello"])
+        .args(&["/bin/sh", "-c", "echo hello"])
         .assert()
         .success()
         .stdout(predicate::str::starts_with("+"));
@@ -159,8 +160,8 @@ fn test_12_json_category_is_condense() {
         serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
 
     assert_eq!(
-        parsed["category"], "condense",
-        "default category should be condense (no config loaded)"
+        parsed["category"], "passthrough",
+        "echo is passthrough with real grammar config"
     );
 }
 

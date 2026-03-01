@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 
+use crate::config_loader::load_runtime_config;
 use crate::core::format::{
     self, EnrichmentLine, FormatInput, HazardEntry, OutputMode,
 };
 use crate::handlers::structured::StructuredData;
-use crate::router::categories::{CategoriesConfig, Category, DangerousPattern};
+use crate::router::categories::{CategoriesConfig, Category};
 use crate::router::{self, HandlerOutput, RouterResult};
 
 // ---------------------------------------------------------------------------
@@ -121,12 +122,17 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
 
     let segments = split_compound(args);
 
-    // Use empty defaults — real config loading is a separate bead
-    let grammars: HashMap<String, crate::core::grammar::Grammar> = HashMap::new();
-    let categories_config = CategoriesConfig {
-        categories: HashMap::new(),
+    // Load runtime config (grammars, categories, dangerous patterns)
+    let (grammars, categories_config, dangerous_patterns) = match load_runtime_config(None) {
+        Ok(rc) => (rc.grammars, rc.categories_config, rc.dangerous_patterns),
+        Err(_) => (
+            HashMap::new(),
+            CategoriesConfig {
+                categories: HashMap::new(),
+            },
+            Vec::new(),
+        ),
     };
-    let dangerous_patterns: Vec<DangerousPattern> = Vec::new();
 
     let mut results: Vec<FormatInput> = Vec::new();
     let mut last_exit_code = 0i32;

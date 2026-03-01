@@ -174,10 +174,11 @@ impl McpServer {
 /// 5. Audit log: ServerStarted
 /// 6. Install signal handlers + run transport loop
 /// 7. On exit: audit ServerShutdown, flush, remove PID, close sessions
-pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load config
+    let path = config_path.unwrap_or("~/.config/mish/mish.toml");
     let config = Arc::new(
-        load_config("~/.config/mish/mish.toml")
+        load_config(path)
             .map_err(|e| ServerError::Config(e.to_string()))?,
     );
 
