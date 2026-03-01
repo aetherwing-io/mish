@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod config;
+pub mod config_loader;
 pub mod core;
 pub mod handlers;
 pub mod mcp;
