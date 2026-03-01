@@ -197,6 +197,7 @@ async fn handle_close(
 mod tests {
     use super::*;
     use crate::config::{default_config, MishConfig};
+    use serial_test::serial;
     use std::sync::Arc;
 
     fn bash_path() -> &'static str {
@@ -223,6 +224,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_create_session() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
@@ -251,6 +253,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_list_sessions() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
@@ -285,6 +288,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_close_session() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
@@ -342,6 +346,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_create_limit_reached() {
         let mgr = SessionManager::new(test_config_with_max(1));
         let pt = test_process_table();
@@ -376,6 +381,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_create_duplicate_name() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
@@ -491,6 +497,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_list_multiple_sessions() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
@@ -621,6 +628,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    #[serial(pty)]
     async fn test_full_lifecycle() {
         let mgr = SessionManager::new(test_config());
         let pt = test_process_table();
