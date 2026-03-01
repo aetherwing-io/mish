@@ -1,4 +1,1217 @@
 /// Grammar loading and matching.
 ///
 /// Loads TOML grammars, detects tools from command args, resolves actions.
-pub struct Grammar;
+/// Uses intermediate "raw" serde structs for TOML deserialization, then
+/// converts to final types with compiled Regex fields.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::path::Path;
+
+use regex::Regex;
+use serde::Deserialize;
+
+use crate::router::categories::Category;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum GrammarError {
+    Io(std::io::Error),
+    Parse(toml::de::Error),
+    InvalidRegex { pattern: String, source: regex::Error },
+    InvalidAction(String),
+    InvalidSeverity(String),
+    InvalidCategory(String),
+}
+
+impl fmt::Display for GrammarError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GrammarError::Io(e) => write!(f, "IO error: {e}"),
+            GrammarError::Parse(e) => write!(f, "TOML parse error: {e}"),
+            GrammarError::InvalidRegex { pattern, source } => {
+                write!(f, "invalid regex '{pattern}': {source}")
+            }
+            GrammarError::InvalidAction(a) => write!(f, "invalid rule action: {a}"),
+            GrammarError::InvalidSeverity(s) => write!(f, "invalid severity: {s}"),
+            GrammarError::InvalidCategory(c) => write!(f, "invalid category: {c}"),
+        }
+    }
+}
+
+impl std::error::Error for GrammarError {}
+
+impl From<std::io::Error> for GrammarError {
+    fn from(e: std::io::Error) -> Self {
+        GrammarError::Io(e)
+    }
+}
+
+impl From<toml::de::Error> for GrammarError {
+    fn from(e: toml::de::Error) -> Self {
+        GrammarError::Parse(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Grammar {
+    pub tool: ToolInfo,
+    pub detect: Vec<String>,
+    pub inherit: Vec<String>,
+    pub global_noise: Vec<Rule>,
+    pub actions: HashMap<String, Action>,
+    pub fallback: Option<Action>,
+    pub quiet: Option<QuietConfig>,
+    pub verbosity: Option<VerbosityConfig>,
+    pub enrich: Option<EnrichConfig>,
+    pub category: Option<Category>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Action {
+    pub detect: Vec<String>,
+    pub noise: Vec<Rule>,
+    pub hazard: Vec<Rule>,
+    pub outcome: Vec<Rule>,
+    pub summary: SummaryTemplate,
+}
+
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub pattern: Regex,
+    pub action: RuleAction,
+    pub severity: Option<Severity>,
+    pub captures: Vec<String>,
+    pub multiline: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleAction {
+    Strip,
+    Dedup,
+    Keep,
+    Promote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone)]
+pub struct SummaryTemplate {
+    pub success: String,
+    pub failure: String,
+    pub partial: String,
+}
+
+impl Default for SummaryTemplate {
+    fn default() -> Self {
+        SummaryTemplate {
+            success: String::new(),
+            failure: String::new(),
+            partial: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QuietConfig {
+    pub safe_inject: Vec<String>,
+    pub recommend: Vec<String>,
+    pub actions: HashMap<String, QuietActionConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuietActionConfig {
+    pub safe_inject: Vec<String>,
+    pub recommend: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerbosityConfig {
+    pub inject: Vec<String>,
+    pub provides: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnrichConfig {
+    pub on_failure: Vec<String>,
+    pub args: Option<EnrichArgMapping>,
+    pub actions: HashMap<String, EnrichActionConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnrichArgMapping {
+    pub path_args: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnrichActionConfig {
+    pub on_failure: Vec<String>,
+}
+
+/// A captured outcome from evaluating rules against output lines.
+#[derive(Debug, Clone)]
+pub struct CapturedOutcome {
+    pub captures: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// Raw (serde) types — intermediate deserialization
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct RawGrammar {
+    tool: RawToolInfo,
+    #[serde(default)]
+    detect: Option<Vec<String>>,
+    #[serde(default)]
+    inherit: Option<Vec<String>>,
+    #[serde(default)]
+    global_noise: Vec<RawRule>,
+    #[serde(default)]
+    actions: HashMap<String, RawAction>,
+    #[serde(default)]
+    fallback: Option<RawAction>,
+    #[serde(default)]
+    quiet: Option<RawQuietConfig>,
+    #[serde(default)]
+    verbosity: Option<RawVerbosityConfig>,
+    #[serde(default)]
+    enrich: Option<RawEnrichConfig>,
+    #[serde(default)]
+    category: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawToolInfo {
+    name: String,
+    #[serde(default)]
+    detect: Option<Vec<String>>,
+    #[serde(default)]
+    inherit: Option<Vec<String>>,
+    #[serde(default)]
+    category: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawRule {
+    pattern: String,
+    action: String,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    captures: Option<Vec<String>>,
+    #[serde(default)]
+    multiline: Option<u32>,
+    // Allow an optional description field in TOML without failing
+    #[serde(default)]
+    #[allow(dead_code)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawAction {
+    #[serde(default)]
+    detect: Option<Vec<String>>,
+    #[serde(default)]
+    noise: Vec<RawRule>,
+    #[serde(default)]
+    hazard: Vec<RawRule>,
+    #[serde(default)]
+    outcome: Vec<RawRule>,
+    #[serde(default)]
+    summary: Option<RawSummaryTemplate>,
+}
+
+#[derive(Deserialize)]
+struct RawSummaryTemplate {
+    #[serde(default)]
+    success: Option<String>,
+    #[serde(default)]
+    failure: Option<String>,
+    #[serde(default)]
+    partial: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawQuietConfig {
+    #[serde(default)]
+    safe_inject: Vec<String>,
+    #[serde(default)]
+    recommend: Vec<String>,
+    #[serde(default)]
+    actions: HashMap<String, RawQuietActionConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawQuietActionConfig {
+    #[serde(default)]
+    safe_inject: Vec<String>,
+    #[serde(default)]
+    recommend: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RawVerbosityConfig {
+    #[serde(default)]
+    inject: Vec<String>,
+    #[serde(default)]
+    provides: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RawEnrichConfig {
+    #[serde(default)]
+    on_failure: Vec<String>,
+    #[serde(default)]
+    args: Option<RawEnrichArgMapping>,
+    #[serde(default)]
+    actions: HashMap<String, RawEnrichActionConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawEnrichArgMapping {
+    #[serde(default)]
+    path_args: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+struct RawEnrichActionConfig {
+    #[serde(default)]
+    on_failure: Vec<String>,
+}
+
+// Shared grammar TOML uses `[[rules]]` at the top level
+#[derive(Deserialize)]
+struct RawSharedGrammar {
+    #[serde(default)]
+    rules: Vec<RawRule>,
+}
+
+// ---------------------------------------------------------------------------
+// Conversions: Raw -> compiled types
+// ---------------------------------------------------------------------------
+
+fn parse_rule_action(s: &str) -> Result<RuleAction, GrammarError> {
+    match s {
+        "strip" => Ok(RuleAction::Strip),
+        "dedup" => Ok(RuleAction::Dedup),
+        "keep" => Ok(RuleAction::Keep),
+        "promote" => Ok(RuleAction::Promote),
+        other => Err(GrammarError::InvalidAction(other.to_string())),
+    }
+}
+
+fn parse_severity(s: &str) -> Result<Severity, GrammarError> {
+    match s {
+        "error" => Ok(Severity::Error),
+        "warning" => Ok(Severity::Warning),
+        other => Err(GrammarError::InvalidSeverity(other.to_string())),
+    }
+}
+
+fn parse_category(s: &str) -> Result<Category, GrammarError> {
+    match s {
+        "condense" => Ok(Category::Condense),
+        "narrate" => Ok(Category::Narrate),
+        "passthrough" => Ok(Category::Passthrough),
+        "structured" => Ok(Category::Structured),
+        "interactive" => Ok(Category::Interactive),
+        "dangerous" => Ok(Category::Dangerous),
+        other => Err(GrammarError::InvalidCategory(other.to_string())),
+    }
+}
+
+impl TryFrom<RawRule> for Rule {
+    type Error = GrammarError;
+
+    fn try_from(raw: RawRule) -> Result<Self, GrammarError> {
+        let pattern = Regex::new(&raw.pattern).map_err(|e| GrammarError::InvalidRegex {
+            pattern: raw.pattern.clone(),
+            source: e,
+        })?;
+        let action = parse_rule_action(&raw.action)?;
+        let severity = raw.severity.as_deref().map(parse_severity).transpose()?;
+        let captures = raw.captures.unwrap_or_default();
+        Ok(Rule {
+            pattern,
+            action,
+            severity,
+            captures,
+            multiline: raw.multiline,
+        })
+    }
+}
+
+impl TryFrom<RawAction> for Action {
+    type Error = GrammarError;
+
+    fn try_from(raw: RawAction) -> Result<Self, GrammarError> {
+        let detect = raw.detect.unwrap_or_default();
+        let noise = raw
+            .noise
+            .into_iter()
+            .map(Rule::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let hazard = raw
+            .hazard
+            .into_iter()
+            .map(Rule::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let outcome = raw
+            .outcome
+            .into_iter()
+            .map(Rule::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let summary = match raw.summary {
+            Some(s) => SummaryTemplate {
+                success: s.success.unwrap_or_default(),
+                failure: s.failure.unwrap_or_default(),
+                partial: s.partial.unwrap_or_default(),
+            },
+            None => SummaryTemplate::default(),
+        };
+        Ok(Action {
+            detect,
+            noise,
+            hazard,
+            outcome,
+            summary,
+        })
+    }
+}
+
+fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
+    // category: prefer top-level, fall back to [tool] section
+    let category_str = raw.category.or(raw.tool.category);
+    let category = category_str.as_deref().map(parse_category).transpose()?;
+
+    // detect list: prefer top-level, fall back to [tool] section, default to [tool.name]
+    let detect = raw
+        .detect
+        .or(raw.tool.detect)
+        .unwrap_or_else(|| vec![raw.tool.name.clone()]);
+
+    // inherit: prefer top-level, fall back to [tool] section
+    let inherit_list = raw.inherit.or(raw.tool.inherit).unwrap_or_default();
+
+    let global_noise = raw
+        .global_noise
+        .into_iter()
+        .map(Rule::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let actions = raw
+        .actions
+        .into_iter()
+        .map(|(k, v)| Action::try_from(v).map(|a| (k, a)))
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+    let fallback = raw.fallback.map(Action::try_from).transpose()?;
+
+    let quiet = raw.quiet.map(|q| QuietConfig {
+        safe_inject: q.safe_inject,
+        recommend: q.recommend,
+        actions: q
+            .actions
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    QuietActionConfig {
+                        safe_inject: v.safe_inject,
+                        recommend: v.recommend,
+                    },
+                )
+            })
+            .collect(),
+    });
+
+    let verbosity = raw.verbosity.map(|v| VerbosityConfig {
+        inject: v.inject,
+        provides: v.provides,
+    });
+
+    let enrich = raw.enrich.map(|e| EnrichConfig {
+        on_failure: e.on_failure,
+        args: e.args.map(|a| EnrichArgMapping {
+            path_args: a.path_args,
+        }),
+        actions: e
+            .actions
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    EnrichActionConfig {
+                        on_failure: v.on_failure,
+                    },
+                )
+            })
+            .collect(),
+    });
+
+    Ok(Grammar {
+        tool: ToolInfo {
+            name: raw.tool.name,
+        },
+        detect,
+        inherit: inherit_list,
+        global_noise,
+        actions,
+        fallback,
+        quiet,
+        verbosity,
+        enrich,
+        category,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Public API — loading
+// ---------------------------------------------------------------------------
+
+/// Load a single grammar from a TOML file.
+pub fn load_grammar(path: &Path) -> Result<Grammar, GrammarError> {
+    let contents = std::fs::read_to_string(path)?;
+    load_grammar_from_str(&contents)
+}
+
+/// Parse a grammar from a TOML string.
+pub fn load_grammar_from_str(toml_str: &str) -> Result<Grammar, GrammarError> {
+    let raw: RawGrammar = toml::from_str(toml_str)?;
+    convert_raw_grammar(raw)
+}
+
+/// Load shared grammar rules from a `_shared/*.toml` file.
+/// These files have `[[rules]]` at the top level (no [tool] section).
+fn load_shared_rules(path: &Path) -> Result<Vec<Rule>, GrammarError> {
+    let contents = std::fs::read_to_string(path)?;
+    load_shared_rules_from_str(&contents)
+}
+
+fn load_shared_rules_from_str(toml_str: &str) -> Result<Vec<Rule>, GrammarError> {
+    let raw: RawSharedGrammar = toml::from_str(toml_str)?;
+    raw.rules
+        .into_iter()
+        .map(Rule::try_from)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Load all tool grammars from a grammars directory.
+///
+/// Skips `_meta/` (config files) and `_shared/` (inherited rule fragments).
+/// After loading, resolves `inherit` references by prepending shared rules
+/// into each grammar's `global_noise`.
+pub fn load_all_grammars(
+    grammars_dir: &Path,
+) -> Result<HashMap<String, Grammar>, GrammarError> {
+    let mut grammars = HashMap::new();
+
+    // First pass: load shared rules
+    let shared_dir = grammars_dir.join("_shared");
+    let mut shared_rules: HashMap<String, Vec<Rule>> = HashMap::new();
+
+    if shared_dir.is_dir() {
+        for entry in std::fs::read_dir(&shared_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let rules = load_shared_rules(&path)?;
+                shared_rules.insert(stem, rules);
+            }
+        }
+    }
+
+    // Second pass: load tool grammars (everything not in _meta/ or _shared/)
+    if grammars_dir.is_dir() {
+        for entry in std::fs::read_dir(grammars_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                let dir_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                // Skip meta and shared directories
+                if dir_name.starts_with('_') {
+                    continue;
+                }
+                // Recurse into subdirectories for tool grammars
+                for sub_entry in std::fs::read_dir(&path)? {
+                    let sub_entry = sub_entry?;
+                    let sub_path = sub_entry.path();
+                    if sub_path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                        let mut grammar = load_grammar(&sub_path)?;
+                        resolve_inherit(&mut grammar, &shared_rules);
+                        grammars.insert(grammar.tool.name.clone(), grammar);
+                    }
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let mut grammar = load_grammar(&path)?;
+                resolve_inherit(&mut grammar, &shared_rules);
+                grammars.insert(grammar.tool.name.clone(), grammar);
+            }
+        }
+    }
+
+    Ok(grammars)
+}
+
+/// Resolve `inherit` references by prepending shared rules into `global_noise`.
+fn resolve_inherit(grammar: &mut Grammar, shared_rules: &HashMap<String, Vec<Rule>>) {
+    let mut inherited: Vec<Rule> = Vec::new();
+    for name in &grammar.inherit {
+        if let Some(rules) = shared_rules.get(name) {
+            inherited.extend(rules.iter().cloned());
+        }
+    }
+    // Prepend inherited rules before grammar-specific global_noise
+    if !inherited.is_empty() {
+        inherited.append(&mut grammar.global_noise);
+        grammar.global_noise = inherited;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API — tool detection and action resolution
+// ---------------------------------------------------------------------------
+
+/// Detect which grammar matches the given command arguments.
+///
+/// Returns the matching grammar and optionally the resolved action.
+/// Matches against the `detect` list in each grammar.
+pub fn detect_tool<'a>(
+    args: &[String],
+    grammars: &'a HashMap<String, Grammar>,
+) -> Option<(&'a Grammar, Option<&'a Action>)> {
+    if args.is_empty() {
+        return None;
+    }
+
+    let cmd = &args[0];
+
+    // Check each grammar's detect list
+    for grammar in grammars.values() {
+        if grammar.detect.iter().any(|d| d == cmd) {
+            let action = resolve_action(grammar, args);
+            return Some((grammar, action));
+        }
+    }
+
+    None
+}
+
+/// Resolve which action within a grammar matches the command arguments.
+///
+/// Walks the args (skipping the command name at index 0) and checks each
+/// action's detect list for a match.
+pub fn resolve_action<'a>(grammar: &'a Grammar, args: &[String]) -> Option<&'a Action> {
+    if args.len() < 2 {
+        return grammar.fallback.as_ref();
+    }
+
+    // Check each action's detect list against args[1..]
+    for action in grammar.actions.values() {
+        for arg in &args[1..] {
+            if action.detect.iter().any(|d| d == arg) {
+                return Some(action);
+            }
+        }
+    }
+
+    // No action matched — use fallback if available
+    grammar.fallback.as_ref()
+}
+
+// ---------------------------------------------------------------------------
+// Public API — summary formatting
+// ---------------------------------------------------------------------------
+
+/// Format a summary line from a grammar's summary template and captured outcomes.
+///
+/// Substitutes `{variable}` placeholders with values from captured outcomes.
+/// Also substitutes `{exit_code}`, `{lines}`, etc.
+pub fn format_summary(
+    grammar: &Grammar,
+    action: Option<&Action>,
+    outcomes: &[CapturedOutcome],
+    exit_code: i32,
+) -> Vec<String> {
+    let template = match action {
+        Some(a) => &a.summary,
+        None => match &grammar.fallback {
+            Some(fb) => &fb.summary,
+            None => return Vec::new(),
+        },
+    };
+
+    let template_str = if exit_code == 0 {
+        &template.success
+    } else {
+        &template.failure
+    };
+
+    if template_str.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a combined capture map from all outcomes
+    let mut vars: HashMap<&str, &str> = HashMap::new();
+    for outcome in outcomes {
+        for (k, v) in &outcome.captures {
+            vars.insert(k.as_str(), v.as_str());
+        }
+    }
+
+    // Substitute template variables
+    let mut result = template_str.clone();
+
+    // Substitute {exit_code}
+    result = result.replace("{exit_code}", &exit_code.to_string());
+
+    // Substitute captured variables
+    for (key, value) in &vars {
+        let placeholder = format!("{{{key}}}");
+        result = result.replace(&placeholder, value);
+    }
+
+    vec![result]
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test 1: Parse a minimal grammar TOML (just [tool] section)
+    #[test]
+    fn test_parse_minimal_grammar() {
+        let toml_str = r#"
+[tool]
+name = "echo"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        assert_eq!(grammar.tool.name, "echo");
+        assert_eq!(grammar.detect, vec!["echo"]);
+        assert!(grammar.global_noise.is_empty());
+        assert!(grammar.actions.is_empty());
+        assert!(grammar.fallback.is_none());
+        assert!(grammar.category.is_none());
+    }
+
+    // Test 2: Parse grammar with global_noise rules
+    #[test]
+    fn test_parse_grammar_with_global_noise() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[[global_noise]]
+pattern = '^npm (timing|http|sill|verb)'
+action = "strip"
+
+[[global_noise]]
+pattern = '^npm warn'
+action = "dedup"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        assert_eq!(grammar.global_noise.len(), 2);
+        assert_eq!(grammar.global_noise[0].action, RuleAction::Strip);
+        assert_eq!(grammar.global_noise[1].action, RuleAction::Dedup);
+    }
+
+    // Test 3: Parse grammar with actions and all rule types
+    #[test]
+    fn test_parse_grammar_with_actions_all_rule_types() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+detect = ["npm", "npx"]
+
+[actions.install]
+detect = ["install", "i", "add", "ci"]
+
+[[actions.install.noise]]
+pattern = '^(idealTree|reify|resolv)'
+action = "strip"
+
+[[actions.install.hazard]]
+pattern = 'ERESOLVE'
+severity = "error"
+action = "keep"
+
+[[actions.install.outcome]]
+pattern = '^added (?P<count>\d+) packages? in (?P<time>.+)'
+action = "promote"
+captures = ["count", "time"]
+
+[actions.install.summary]
+success = "+ {count} packages installed ({time})"
+failure = "! npm install failed (exit {exit_code})"
+partial = "... installing ({lines} lines)"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        assert_eq!(grammar.detect, vec!["npm", "npx"]);
+
+        let install = grammar.actions.get("install").unwrap();
+        assert_eq!(install.detect, vec!["install", "i", "add", "ci"]);
+        assert_eq!(install.noise.len(), 1);
+        assert_eq!(install.hazard.len(), 1);
+        assert_eq!(install.hazard[0].severity, Some(Severity::Error));
+        assert_eq!(install.outcome.len(), 1);
+        assert_eq!(install.outcome[0].action, RuleAction::Promote);
+        assert_eq!(install.outcome[0].captures, vec!["count", "time"]);
+    }
+
+    // Test 4: Parse grammar with summary templates
+    #[test]
+    fn test_parse_grammar_with_summary_templates() {
+        let toml_str = r#"
+[tool]
+name = "cargo"
+
+[actions.build]
+detect = ["build"]
+
+[actions.build.summary]
+success = "+ build succeeded"
+failure = "! build failed (exit {exit_code})"
+partial = "... compiling"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let build = grammar.actions.get("build").unwrap();
+        assert_eq!(build.summary.success, "+ build succeeded");
+        assert_eq!(
+            build.summary.failure,
+            "! build failed (exit {exit_code})"
+        );
+        assert_eq!(build.summary.partial, "... compiling");
+    }
+
+    // Test 5: Parse grammar with inherit list
+    #[test]
+    fn test_parse_grammar_with_inherit() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+inherit = ["ansi-progress", "node-stacktrace"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        assert_eq!(
+            grammar.inherit,
+            vec!["ansi-progress", "node-stacktrace"]
+        );
+    }
+
+    // Test 6: Parse grammar with quiet config
+    #[test]
+    fn test_parse_grammar_with_quiet_config() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[quiet]
+safe_inject = ["--loglevel=error"]
+recommend = ["--silent"]
+
+[quiet.actions.install]
+safe_inject = ["--no-fund", "--no-audit"]
+recommend = ["--prefer-offline"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let quiet = grammar.quiet.unwrap();
+        assert_eq!(quiet.safe_inject, vec!["--loglevel=error"]);
+        assert_eq!(quiet.recommend, vec!["--silent"]);
+        let install = quiet.actions.get("install").unwrap();
+        assert_eq!(install.safe_inject, vec!["--no-fund", "--no-audit"]);
+        assert_eq!(install.recommend, vec!["--prefer-offline"]);
+    }
+
+    // Test 7: Parse grammar with verbosity config
+    #[test]
+    fn test_parse_grammar_with_verbosity_config() {
+        let toml_str = r#"
+[tool]
+name = "ls"
+
+[verbosity]
+inject = ["-la"]
+provides = ["permissions", "size", "owner"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let verbosity = grammar.verbosity.unwrap();
+        assert_eq!(verbosity.inject, vec!["-la"]);
+        assert_eq!(
+            verbosity.provides,
+            vec!["permissions", "size", "owner"]
+        );
+    }
+
+    // Test 8: Parse grammar with enrich config
+    #[test]
+    fn test_parse_grammar_with_enrich_config() {
+        let toml_str = r#"
+[tool]
+name = "cp"
+
+[enrich]
+on_failure = ["stat {src}", "stat {dst}"]
+
+[enrich.args]
+path_args = [0, 1]
+
+[enrich.actions.recursive]
+on_failure = ["ls -la {src}"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let enrich = grammar.enrich.unwrap();
+        assert_eq!(
+            enrich.on_failure,
+            vec!["stat {src}", "stat {dst}"]
+        );
+        let args = enrich.args.unwrap();
+        assert_eq!(args.path_args, vec![0, 1]);
+        let recursive = enrich.actions.get("recursive").unwrap();
+        assert_eq!(recursive.on_failure, vec!["ls -la {src}"]);
+    }
+
+    // Test 9: Parse grammar with fallback action
+    #[test]
+    fn test_parse_grammar_with_fallback() {
+        let toml_str = r#"
+[tool]
+name = "make"
+
+[fallback]
+detect = []
+
+[[fallback.noise]]
+pattern = '^make\[\d+\]:'
+action = "strip"
+
+[fallback.summary]
+success = "+ make succeeded"
+failure = "! make failed"
+partial = "... building"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let fallback = grammar.fallback.unwrap();
+        assert_eq!(fallback.noise.len(), 1);
+        assert_eq!(fallback.summary.success, "+ make succeeded");
+    }
+
+    // Test 10: detect_tool matches "npm install" -> npm grammar, install action
+    #[test]
+    fn test_detect_tool_npm_install() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+detect = ["npm", "npx"]
+
+[actions.install]
+detect = ["install", "i", "add", "ci"]
+
+[actions.install.summary]
+success = "+ installed"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut grammars = HashMap::new();
+        grammars.insert("npm".to_string(), grammar);
+
+        let args: Vec<String> = vec!["npm", "install"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let result = detect_tool(&args, &grammars);
+        assert!(result.is_some());
+        let (g, a) = result.unwrap();
+        assert_eq!(g.tool.name, "npm");
+        assert!(a.is_some());
+        let action = a.unwrap();
+        assert_eq!(action.detect, vec!["install", "i", "add", "ci"]);
+    }
+
+    // Test 11: detect_tool matches "cargo build" -> cargo grammar, build action
+    #[test]
+    fn test_detect_tool_cargo_build() {
+        let toml_str = r#"
+[tool]
+name = "cargo"
+
+[actions.build]
+detect = ["build", "b"]
+
+[actions.build.summary]
+success = "+ build ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut grammars = HashMap::new();
+        grammars.insert("cargo".to_string(), grammar);
+
+        let args: Vec<String> = vec!["cargo", "build"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let result = detect_tool(&args, &grammars);
+        assert!(result.is_some());
+        let (g, a) = result.unwrap();
+        assert_eq!(g.tool.name, "cargo");
+        assert!(a.is_some());
+    }
+
+    // Test 12: detect_tool returns None for unknown command
+    #[test]
+    fn test_detect_tool_unknown_command() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut grammars = HashMap::new();
+        grammars.insert("npm".to_string(), grammar);
+
+        let args: Vec<String> = vec!["curl", "https://example.com"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let result = detect_tool(&args, &grammars);
+        assert!(result.is_none());
+    }
+
+    // Test 13: resolve_action finds correct action from args
+    #[test]
+    fn test_resolve_action_finds_correct_action() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[actions.install]
+detect = ["install", "i"]
+
+[actions.install.summary]
+success = "installed"
+
+[actions.test]
+detect = ["test", "t"]
+
+[actions.test.summary]
+success = "tested"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let args: Vec<String> = vec!["npm", "test"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let action = resolve_action(&grammar, &args);
+        assert!(action.is_some());
+        assert_eq!(action.unwrap().summary.success, "tested");
+    }
+
+    // Test 14: resolve_action returns fallback when no action matches
+    #[test]
+    fn test_resolve_action_returns_fallback() {
+        let toml_str = r#"
+[tool]
+name = "make"
+
+[actions.build]
+detect = ["build"]
+
+[actions.build.summary]
+success = "built"
+
+[fallback]
+
+[fallback.summary]
+success = "make fallback"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let args: Vec<String> = vec!["make", "clean"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let action = resolve_action(&grammar, &args);
+        assert!(action.is_some());
+        assert_eq!(action.unwrap().summary.success, "make fallback");
+    }
+
+    // Test 21: format_summary substitutes template variables correctly
+    #[test]
+    fn test_format_summary_substitutes_variables() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[actions.install]
+detect = ["install"]
+
+[[actions.install.outcome]]
+pattern = '^added (?P<count>\d+) packages? in (?P<time>.+)'
+action = "promote"
+captures = ["count", "time"]
+
+[actions.install.summary]
+success = "+ {count} packages installed ({time})"
+failure = "! npm install failed (exit {exit_code})"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("install").unwrap();
+
+        let outcomes = vec![CapturedOutcome {
+            captures: HashMap::from([
+                ("count".to_string(), "42".to_string()),
+                ("time".to_string(), "3.2s".to_string()),
+            ]),
+        }];
+
+        let result = format_summary(&grammar, Some(action), &outcomes, 0);
+        assert_eq!(result, vec!["+ 42 packages installed (3.2s)"]);
+    }
+
+    #[test]
+    fn test_format_summary_failure_template() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[actions.install]
+detect = ["install"]
+
+[actions.install.summary]
+success = "+ installed"
+failure = "! npm install failed (exit {exit_code})"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("install").unwrap();
+
+        let result = format_summary(&grammar, Some(action), &[], 1);
+        assert_eq!(result, vec!["! npm install failed (exit 1)"]);
+    }
+
+    // Test: invalid regex pattern produces error
+    #[test]
+    fn test_invalid_regex_produces_error() {
+        let toml_str = r#"
+[tool]
+name = "bad"
+
+[[global_noise]]
+pattern = '[invalid'
+action = "strip"
+"#;
+        let result = load_grammar_from_str(toml_str);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            GrammarError::InvalidRegex { pattern, .. } => {
+                assert_eq!(pattern, "[invalid");
+            }
+            other => panic!("expected InvalidRegex, got: {other}"),
+        }
+    }
+
+    // Test: grammar with category field
+    #[test]
+    fn test_parse_grammar_with_category() {
+        let toml_str = r#"
+[tool]
+name = "vim"
+category = "interactive"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        assert_eq!(grammar.category, Some(Category::Interactive));
+    }
+
+    // Test: detect via tool.detect list
+    #[test]
+    fn test_detect_tool_via_detect_list() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+detect = ["npm", "npx"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut grammars = HashMap::new();
+        grammars.insert("npm".to_string(), grammar);
+
+        let args: Vec<String> = vec!["npx", "create-react-app"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let result = detect_tool(&args, &grammars);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0.tool.name, "npm");
+    }
+
+    // Test: empty args returns None
+    #[test]
+    fn test_detect_tool_empty_args() {
+        let grammars = HashMap::new();
+        let args: Vec<String> = vec![];
+        let result = detect_tool(&args, &grammars);
+        assert!(result.is_none());
+    }
+
+    // Test: resolve_action with only command (no subcommand) and no fallback
+    #[test]
+    fn test_resolve_action_no_subcommand_no_fallback() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[actions.install]
+detect = ["install"]
+
+[actions.install.summary]
+success = "installed"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let args: Vec<String> = vec!["npm"].into_iter().map(String::from).collect();
+        let action = resolve_action(&grammar, &args);
+        assert!(action.is_none());
+    }
+
+    // Test: shared grammar loading
+    #[test]
+    fn test_load_shared_rules() {
+        let toml_str = r#"
+[[rules]]
+pattern = '^\s*\d+/\d+\s'
+action = "strip"
+description = "Counter-style progress"
+
+[[rules]]
+pattern = '^\s*\[?[#=\->.]+\]?\s*\d+%'
+action = "strip"
+description = "Progress bar with percentage"
+"#;
+        let rules = load_shared_rules_from_str(toml_str).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].action, RuleAction::Strip);
+        assert_eq!(rules[1].action, RuleAction::Strip);
+    }
+}
