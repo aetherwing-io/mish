@@ -252,7 +252,59 @@ git commit -m "test: add #[serial(pty)] to sh_spawn.rs integration tests"
 
 ---
 
-### Task 6: Add `#[serial(pty)]` to `src/mcp/server.rs` (PTY tests only)
+### Task 6: Add `#[serial(pty)]` to `src/mcp/dispatch.rs` (PTY tests only)
+
+**Files:**
+- Modify: `src/mcp/dispatch.rs` (test module)
+
+**Step 1: Add import**
+
+In the `#[cfg(test)] mod tests` block, add:
+
+```rust
+use serial_test::serial;
+```
+
+**Step 2: Annotate the 2 tests that create sessions**
+
+| Line | Test | Needs `#[serial(pty)]` |
+|------|------|----------------------|
+| 349 | `initialize_returns_capabilities` | NO — protocol only |
+| 376 | `notifications_initialized_returns_none` | NO — protocol only |
+| 391 | `unknown_method_returns_method_not_found` | NO — protocol only |
+| 405 | `tools_list_returns_five_tools` | NO — protocol only |
+| 433 | `sh_run_schema_has_cmd_required` | NO — schema only |
+| 452 | `tools_call_unknown_tool_returns_method_not_found` | NO — error path |
+| 469 | `tools_call_sh_help_returns_result_with_processes` | NO — sh_help needs no session |
+| 490 | `tools_call_missing_name_returns_invalid_params` | NO — error path |
+| 506 | `error_responses_include_process_digest` | NO — error path |
+| 524 | `tools_call_sh_run_executes_command` | **YES** — calls `create_session` |
+| 554 | `tools_call_sh_session_list` | **YES** — calls `create_session` |
+| 583 | `string_request_id_preserved` | NO — protocol only |
+| 594 | `tools_call_invalid_params_returns_error` | NO — error path |
+
+2 tests get `#[serial(pty)]`.
+
+**Step 3: Run tests**
+
+```bash
+cargo test --lib mcp::dispatch::tests -- --test-threads=1
+```
+
+Expected: All 16 pass (13 parallel-safe + 2 serial + schema tests).
+
+**Step 4: Commit**
+
+```bash
+git add src/mcp/dispatch.rs
+git commit -m "test: add #[serial(pty)] to dispatch.rs PTY tests"
+```
+
+---
+
+### Task 7: Add `#[serial(pty)]` to `src/mcp/server.rs` (PTY tests only)
+
+**NOTE:** Task numbers shifted — this was previously Task 6 in the design doc.
 
 **Files:**
 - Modify: `src/mcp/server.rs` (test module)
@@ -299,7 +351,7 @@ git commit -m "test: add #[serial(pty)] to server.rs PTY tests"
 
 ---
 
-### Task 7: Add `#[serial(pty)]` to `tests/cli_integration.rs`
+### Task 8: Add `#[serial(pty)]` to `tests/cli_integration.rs`
 
 **Files:**
 - Modify: `tests/cli_integration.rs`
@@ -337,7 +389,7 @@ git commit -m "test: add #[serial(pty)] to cli_integration.rs tests"
 
 ---
 
-### Task 8: Session sharing in `src/tools/sh_spawn.rs`
+### Task 9: Session sharing in `src/tools/sh_spawn.rs`
 
 **Files:**
 - Modify: `src/tools/sh_spawn.rs` (test module, integration tests section)
@@ -400,7 +452,7 @@ git commit -m "refactor: extract shared_session() helper in sh_spawn tests"
 
 ---
 
-### Task 9: Session sharing in `src/tools/sh_session.rs`
+### Task 10: Session sharing in `src/tools/sh_session.rs`
 
 **Files:**
 - Modify: `src/tools/sh_session.rs` (test module)
@@ -440,7 +492,7 @@ git commit -m "refactor: extract shared session helper in sh_session tests"
 
 ---
 
-### Task 10: Full suite verification
+### Task 11: Full suite verification
 
 **Step 1: Run the full test suite**
 
@@ -470,11 +522,12 @@ The serial gate should have eliminated all resource-contention failures. Any rem
 | 3 | `src/handlers/condense.rs` | 8 | none (need isolation) |
 | 4 | `src/tools/sh_session.rs` | 7 | DRY helper |
 | 5 | `src/tools/sh_spawn.rs` | 8 | DRY helper |
-| 6 | `src/mcp/server.rs` | 2 | none |
-| 7 | `tests/cli_integration.rs` | 35 | none (binary spawn) |
-| 8 | `src/tools/sh_spawn.rs` | — | DRY refactor |
-| 9 | `src/tools/sh_session.rs` | — | DRY refactor |
-| 10 | Full suite | — | Verification |
+| 6 | `src/mcp/dispatch.rs` | 2 | none |
+| 7 | `src/mcp/server.rs` | 2 | none |
+| 8 | `tests/cli_integration.rs` | 35 | none (binary spawn) |
+| 9 | `src/tools/sh_spawn.rs` | — | DRY refactor |
+| 10 | `src/tools/sh_session.rs` | — | DRY refactor |
+| 11 | Full suite | — | Verification |
 
-**Total `#[serial(pty)]` annotations: ~81 tests**
+**Total `#[serial(pty)]` annotations: ~83 tests** (includes 2 dispatch.rs tests)
 **Expected wall clock: ~45s serial PTY + ~2s parallel unit = ~47s**
