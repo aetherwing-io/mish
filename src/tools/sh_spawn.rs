@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use crate::config::MishConfig;
 use crate::mcp::types::{ShSpawnParams, ShSpawnResponse};
+use crate::safety;
 use crate::process::table::{ProcessTable, ProcessTableError};
 use crate::session::manager::SessionManager;
 
@@ -113,6 +114,14 @@ pub async fn handle(
     // Validate alias is not empty.
     if alias.is_empty() {
         return Err(ToolError::new(-32602, "alias must not be empty"));
+    }
+
+    // Safety deny-list check.
+    if let Some(reason) = safety::check_deny_list(&params.cmd) {
+        return Err(ToolError::new(
+            -32005,
+            format!("command blocked by safety deny-list: {reason}"),
+        ));
     }
 
     // Pre-check alias uniqueness before doing any work.
@@ -714,6 +723,64 @@ mod tests {
             reason.contains("did not match"),
             "reason should explain timeout, got: {reason}"
         );
+
+        mgr.close_all().await;
+    }
+
+    // ── Deny-list integration ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_deny_list_blocks_rm_rf_root() {
+        let config = test_config();
+        let session_config = test_session_config();
+        let mgr = SessionManager::new(session_config);
+        mgr.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("create session");
+
+        let mut table = ProcessTable::new(&config);
+
+        let params = ShSpawnParams {
+            alias: "danger".to_string(),
+            cmd: "rm -rf /".to_string(),
+            wait_for: None,
+            timeout: Some(5),
+        };
+
+        let result = handle(params, &mgr, &mut table, &config).await;
+        assert!(result.is_err(), "rm -rf / should be blocked");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, -32005);
+        assert!(err.message.contains("deny-list"));
+
+        // Process should NOT be in the table.
+        assert!(!table.alias_exists("danger"));
+
+        mgr.close_all().await;
+    }
+
+    #[tokio::test]
+    async fn spawn_deny_list_blocks_mkfs() {
+        let config = test_config();
+        let session_config = test_session_config();
+        let mgr = SessionManager::new(session_config);
+        mgr.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("create session");
+
+        let mut table = ProcessTable::new(&config);
+
+        let params = ShSpawnParams {
+            alias: "format".to_string(),
+            cmd: "mkfs.ext4 /dev/sda".to_string(),
+            wait_for: None,
+            timeout: Some(5),
+        };
+
+        let result = handle(params, &mgr, &mut table, &config).await;
+        assert!(result.is_err(), "mkfs should be blocked");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, -32005);
 
         mgr.close_all().await;
     }

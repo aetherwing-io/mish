@@ -14,8 +14,9 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::config::MishConfig;
 use crate::mcp::types::{
     LineCount, ProcessDigestEntry, ShRunParams, ShRunResponse,
-    ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND,
+    ERR_COMMAND_BLOCKED, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND,
 };
+use crate::safety;
 use crate::process::table::{DigestMode, ProcessTable};
 use crate::session::manager::{SessionError, SessionManager};
 use crate::squasher::pattern::{PatternMatcher, Presets};
@@ -95,6 +96,14 @@ pub async fn handle(
     let cmd = params.cmd.trim();
     if cmd.is_empty() {
         return Err(ToolError::invalid_params("cmd must not be empty"));
+    }
+
+    // 1b. Safety deny-list check.
+    if let Some(reason) = safety::check_deny_list(cmd) {
+        return Err(ToolError::new(
+            ERR_COMMAND_BLOCKED,
+            format!("command blocked by safety deny-list: {reason}"),
+        ));
     }
 
     // 2. Resolve session name (default "main").
@@ -867,6 +876,67 @@ mod tests {
             result.get("matched_lines").is_none(),
             "matched_lines should be absent without watch"
         );
+
+        teardown(&mgr).await;
+    }
+
+    // -- deny-list integration -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_deny_list_blocks_rm_rf_root() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+
+        let params = ShRunParams {
+            cmd: "rm -rf /".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let result = handle(params, &mgr, &table, &config).await;
+        assert!(result.is_err(), "rm -rf / should be blocked");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ERR_COMMAND_BLOCKED);
+        assert!(err.message.contains("deny-list"));
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_deny_list_blocks_mkfs() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+
+        let params = ShRunParams {
+            cmd: "mkfs.ext4 /dev/sda".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let result = handle(params, &mgr, &table, &config).await;
+        assert!(result.is_err(), "mkfs.ext4 should be blocked");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ERR_COMMAND_BLOCKED);
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_deny_list_allows_safe_commands() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+
+        let params = ShRunParams {
+            cmd: "echo safe_command".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let result = handle(params, &mgr, &table, &config).await;
+        assert!(result.is_ok(), "echo should be allowed");
 
         teardown(&mgr).await;
     }
