@@ -1,0 +1,18 @@
+# Shared C/C++ compiler output patterns
+
+[[rules]]
+pattern = "^.+:\\d+:\\d+: error:"
+action = "keep"
+severity = "error"
+description = "GCC/Clang error"
+
+[[rules]]
+pattern = "^.+:\\d+:\\d+: warning:"
+action = "keep"
+severity = "warning"
+description = "GCC/Clang warning"
+
+[[rules]]
+pattern = "^.+:\\d+:\\d+: note:"
+action = "strip"
+description = "Compiler note (context for errors)"

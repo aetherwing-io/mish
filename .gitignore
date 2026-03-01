@@ -1,0 +1,8 @@
+# bv (beads viewer) local config and caches
+.bv/
+
+# Rust
+target/
+
+# macOS
+.DS_Store

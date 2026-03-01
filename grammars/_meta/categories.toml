@@ -1,0 +1,43 @@
+# Command -> category mapping fallback
+# Used when a grammar doesn't declare its own category in front matter.
+# Unknown commands not listed here default to "condense".
+
+[categories]
+# Narrate: silent file operations
+cp = "narrate"
+mv = "narrate"
+mkdir = "narrate"
+rm = "narrate"
+chmod = "narrate"
+chown = "narrate"
+ln = "narrate"
+touch = "narrate"
+
+# Passthrough: output-centric commands
+cat = "passthrough"
+grep = "passthrough"
+rg = "passthrough"
+ls = "passthrough"
+jq = "passthrough"
+diff = "passthrough"
+head = "passthrough"
+tail = "passthrough"
+less = "passthrough"
+find = "passthrough"
+wc = "passthrough"
+sort = "passthrough"
+uniq = "passthrough"
+echo = "passthrough"
+printf = "passthrough"
+
+# Interactive: terminal-dependent commands
+vim = "interactive"
+nvim = "interactive"
+nano = "interactive"
+htop = "interactive"
+top = "interactive"
+psql = "interactive"
+mysql = "interactive"
+node = "interactive"   # REPL mode (no args)
+python = "interactive" # REPL mode (no args)
+ssh = "interactive"

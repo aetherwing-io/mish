@@ -1,0 +1,14 @@
+# Shared Node.js stack trace patterns
+
+[[rules]]
+pattern = "^\\s+at\\s+.+\\(.+:\\d+:\\d+\\)"
+action = "keep"
+severity = "error"
+multiline = 20
+description = "Node.js stack frame"
+
+[[rules]]
+pattern = "^\\w+Error:"
+action = "keep"
+severity = "error"
+description = "Node.js error header"

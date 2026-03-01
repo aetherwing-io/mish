@@ -1,0 +1,9 @@
+# Package manager grammar index
+# Maps package managers to their grammar files for quick lookup.
+
+[package_managers]
+npm = "npm.toml"
+cargo = "cargo.toml"
+pip = "pip.toml"
+yarn = "yarn.toml"
+pnpm = "pnpm.toml"

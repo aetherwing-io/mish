@@ -1,0 +1,44 @@
+# Dangerous command patterns
+# Matched against the full command string before any other processing.
+# If any pattern matches, the command is categorized as "dangerous" regardless
+# of grammar or categories.toml.
+
+[[patterns]]
+pattern = "rm\\s+(-[^\\s]*)?\\s*-[^\\s]*r"
+reason = "Recursive delete — potential data loss"
+
+[[patterns]]
+pattern = "rm\\s+-rf"
+reason = "Force recursive delete — no confirmation, potential data loss"
+
+[[patterns]]
+pattern = "git\\s+push\\s+.*--force"
+reason = "Force push — overwrites remote history"
+
+[[patterns]]
+pattern = "git\\s+push\\s+.*-f"
+reason = "Force push — overwrites remote history"
+
+[[patterns]]
+pattern = "git\\s+reset\\s+--hard"
+reason = "Hard reset — discards uncommitted changes"
+
+[[patterns]]
+pattern = "git\\s+clean\\s+.*-f"
+reason = "Clean force — deletes untracked files"
+
+[[patterns]]
+pattern = "chmod\\s+.*777"
+reason = "World-writable permissions"
+
+[[patterns]]
+pattern = "dd\\s+"
+reason = "Direct disk write — can overwrite filesystems"
+
+[[patterns]]
+pattern = "mkfs\\."
+reason = "Filesystem format — destroys all data on target"
+
+[[patterns]]
+pattern = ":(){ :|:& };:"
+reason = "Fork bomb"

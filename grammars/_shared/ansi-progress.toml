@@ -1,0 +1,12 @@
+# Shared ANSI progress bar patterns
+# Inherited by grammars that produce progress indicators.
+
+[[rules]]
+pattern = "^\\s*\\[?[#=\\->.]+\\]?\\s*\\d+%"
+action = "strip"
+description = "Progress bar with percentage"
+
+[[rules]]
+pattern = "^\\s*\\d+/\\d+\\s"
+action = "strip"
+description = "Counter-style progress (e.g., 14/57)"

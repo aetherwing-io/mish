@@ -1,0 +1,20 @@
+# Shared Python traceback patterns
+
+[[rules]]
+pattern = "^Traceback \\(most recent call last\\):"
+action = "keep"
+severity = "error"
+multiline = 50
+description = "Python traceback header"
+
+[[rules]]
+pattern = "^\\s+File \".+\", line \\d+"
+action = "keep"
+severity = "error"
+description = "Python stack frame"
+
+[[rules]]
+pattern = "^\\w+Error:"
+action = "keep"
+severity = "error"
+description = "Python error class"
