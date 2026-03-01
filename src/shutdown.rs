@@ -335,6 +335,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::config::default_config;
+    use serial_test::serial;
 
     fn test_session_manager() -> Arc<SessionManager> {
         Arc::new(SessionManager::new(Arc::new(default_config())))
@@ -470,6 +471,7 @@ mod tests {
 
     // Test 9: PID directory uses XDG_RUNTIME_DIR when set.
     #[test]
+    #[serial]
     fn test_pid_dir_xdg() {
         // Save and restore XDG_RUNTIME_DIR.
         let original = std::env::var("XDG_RUNTIME_DIR").ok();

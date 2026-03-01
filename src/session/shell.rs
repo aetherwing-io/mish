@@ -121,25 +121,16 @@ impl ShellProcess {
         })
     }
 
-    /// Initialize the shell: inject hooks, wait for initial prompt, discard startup output.
+    /// Initialize the shell: inject hooks, wait for boundary, discard startup output.
     ///
     /// After this returns successfully, the shell is ready to accept commands via `execute()`.
     ///
     /// Initialization sequence:
-    /// 1. Wait for shell to start and source rc files
-    /// 2. Drain startup output (motd, .bashrc messages, PS1 rendering)
-    /// 3. Inject PROMPT_COMMAND/precmd hook
-    /// 4. cd to initial CWD
-    /// 5. Run `true` as a no-op to trigger the boundary hook
-    /// 6. Wait for boundary from `true` — confirms shell is at prompt and hooks work
-    /// 7. Drain any remaining prompt output
+    /// 1. Write all setup commands immediately (hooks, cd, true) — they queue
+    ///    in the PTY kernel buffer while bash starts and sources rc files
+    /// 2. Wait for boundary markers (up to INIT_TIMEOUT) — condition-based, no sleeps
+    /// 3. Drain any remaining prompt output
     pub async fn initialize(&mut self) -> Result<(), ShellError> {
-        // Give the shell time to start and source rc files
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        // Discard any startup output (motd, .bashrc messages, PS1 rendering)
-        self.drain_output().await;
-
         // Inject boundary hooks via a single compound command.
         // We combine the hook injection, cd, and a `true` trigger into one line
         // so there's only one boundary to wait for (the one after `true`).
@@ -161,15 +152,9 @@ impl ShellProcess {
             self.pty.write_stdin(b"\n").map_err(ShellError::PtyError)?;
         }
 
-        // Small delay to let the shell process the hook setup
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // cd to initial CWD
         self.pty.write_stdin(cd_cmd.as_bytes()).map_err(ShellError::PtyError)?;
         self.pty.write_stdin(b"\n").map_err(ShellError::PtyError)?;
-
-        // Small delay
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Send a no-op `true` command — we wait for THIS command's boundary.
         self.pty.write_stdin(b"true\n").map_err(ShellError::PtyError)?;
@@ -188,13 +173,13 @@ impl ShellProcess {
         //
         // We wait for at least the boundary from `true` by looking for the one
         // whose CWD matches our target. But to be robust, we just consume
-        // boundaries until we get 3 (or timeout), then take the last one.
+        // boundaries until we get 2 (or timeout), then take the last one.
 
         let deadline = Instant::now() + INIT_TIMEOUT;
         let mut buffer = String::new();
         let mut read_buf = [0u8; 4096];
         let mut boundaries_seen = 0;
-        let target_boundaries = 3; // hook_setup, cd, true
+        let target_boundaries = 2; // cd, true (hook setup may not emit boundary)
 
         loop {
             if Instant::now() > deadline {
@@ -270,7 +255,6 @@ impl ShellProcess {
         }
 
         // Drain any remaining output (prompt rendering, etc.)
-        tokio::time::sleep(Duration::from_millis(100)).await;
         self.drain_output().await;
 
         self.ready = true;
@@ -716,5 +700,34 @@ mod tests {
             "output should contain 'CLEAN_OUTPUT', got: {:?}",
             result.output
         );
+    }
+
+    // Test 11: Stress test — 20 concurrent shell initializations
+    #[tokio::test]
+    #[serial(pty)]
+    async fn stress_concurrent_initialization() {
+        let handles: Vec<_> = (0..20)
+            .map(|i| {
+                tokio::spawn(async move {
+                    let shell = ShellProcess::spawn(bash_path(), "/tmp").await;
+                    let mut shell = match shell {
+                        Ok(s) => s,
+                        Err(e) => return (i, Err(e)),
+                    };
+                    let result = shell.initialize().await;
+                    let _ = shell.kill();
+                    (i, result)
+                })
+            })
+            .collect();
+
+        let mut failures = Vec::new();
+        for handle in handles {
+            let (i, result) = handle.await.unwrap();
+            if let Err(e) = result {
+                failures.push((i, format!("{e}")));
+            }
+        }
+        assert!(failures.is_empty(), "Shells failed: {:?}", failures);
     }
 }
