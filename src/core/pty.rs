@@ -358,6 +358,7 @@ fn get_terminal_size() -> Winsize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::thread;
     use std::time::Duration;
 
@@ -393,6 +394,7 @@ mod tests {
 
     // Test 1: ANSI color passthrough — spawn printf with ANSI codes, verify bytes arrive intact
     #[test]
+    #[serial(pty)]
     fn test_ansi_color_passthrough() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -424,6 +426,7 @@ mod tests {
 
     // Test 2: Progress bar detection — CR without LF, verify overwrite collapse
     #[test]
+    #[serial(pty)]
     fn test_progress_bar_detection() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -469,6 +472,7 @@ mod tests {
 
     // Test 3: SIGWINCH forwarding — resize PTY, verify child gets new dimensions
     #[test]
+    #[serial(pty)]
     fn test_sigwinch_forwarding() {
         // Spawn a shell that reports terminal size after a delay
         let pty = PtyCapture::spawn(&[
@@ -495,6 +499,7 @@ mod tests {
 
     // Test 4: Raw mode detection — for interactive category detection
     #[test]
+    #[serial(pty)]
     fn test_raw_mode_detection() {
         // We can detect if a PTY is in raw mode by checking termios on the master side.
         // This is how mish would detect if a child has switched to raw mode (interactive).
@@ -532,6 +537,7 @@ mod tests {
 
     // Test 5: Multi-byte UTF-8 at buffer boundaries — split 3-byte char across reads
     #[test]
+    #[serial(pty)]
     fn test_multibyte_utf8_at_buffer_boundary() {
         // The euro sign "EUR" = U+20AC = 0xE2 0x82 0xAC in UTF-8
         let pty = PtyCapture::spawn(&[
@@ -583,6 +589,7 @@ mod tests {
 
     // Basic spawn and exit test
     #[test]
+    #[serial(pty)]
     fn test_spawn_and_exit() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -606,6 +613,7 @@ mod tests {
 
     // Test non-zero exit code
     #[test]
+    #[serial(pty)]
     fn test_nonzero_exit() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -626,6 +634,7 @@ mod tests {
 
     // Test write_stdin
     #[test]
+    #[serial(pty)]
     fn test_write_stdin() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -652,6 +661,7 @@ mod tests {
 
     // Test signal
     #[test]
+    #[serial(pty)]
     fn test_signal_child() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
@@ -681,6 +691,7 @@ mod tests {
 
     // Test wait_async doesn't block tokio worker
     #[tokio::test]
+    #[serial(pty)]
     async fn test_wait_async() {
         let pty = PtyCapture::spawn(&[
             "/bin/sh".to_string(),
