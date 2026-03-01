@@ -75,16 +75,23 @@ impl StdioTransport<tokio::io::BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
     }
 }
 
-impl<R, W> StdioTransport<R, W>
-where
-    R: AsyncBufRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+impl<R, W> StdioTransport<R, W> {
     /// Create a transport with custom reader/writer (for testing).
     pub fn with_io(reader: R, writer: W) -> Self {
         StdioTransport { reader, writer }
     }
 
+    /// Consume the transport and return the underlying reader and writer.
+    pub fn into_parts(self) -> (R, W) {
+        (self.reader, self.writer)
+    }
+}
+
+impl<R, W> StdioTransport<R, W>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     /// Read the next JSON-RPC request from the input.
     ///
     /// Returns `Ok(None)` on EOF (client disconnect).
