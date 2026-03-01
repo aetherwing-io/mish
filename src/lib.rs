@@ -1,7 +1,10 @@
 pub mod cli;
+pub mod config;
 pub mod core;
 pub mod handlers;
+pub mod mcp;
 pub mod process;
 pub mod router;
 pub mod safety;
+pub mod session;
 pub mod squasher;
