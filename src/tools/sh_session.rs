@@ -219,6 +219,16 @@ mod tests {
         ProcessTable::new(&config)
     }
 
+    /// Shared helper: creates a SessionManager with one named session.
+    /// Reduces boilerplate for tests that need a pre-existing session.
+    async fn shared_mgr_with_session(name: &str) -> SessionManager {
+        let mgr = SessionManager::new(test_config());
+        mgr.create_session(name, Some(bash_path()))
+            .await
+            .expect("shared session");
+        mgr
+    }
+
     // ------------------------------------------------------------------
     // Test 1: Create session
     // ------------------------------------------------------------------
@@ -255,13 +265,8 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn test_list_sessions() {
-        let mgr = SessionManager::new(test_config());
+        let mgr = shared_mgr_with_session("main").await;
         let pt = test_process_table();
-
-        // Create a session first.
-        mgr.create_session("main", Some(bash_path()))
-            .await
-            .expect("create main");
 
         let params = ShSessionParams {
             action: "list".to_string(),
@@ -290,12 +295,8 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn test_close_session() {
-        let mgr = SessionManager::new(test_config());
+        let mgr = shared_mgr_with_session("ephemeral").await;
         let pt = test_process_table();
-
-        mgr.create_session("ephemeral", Some(bash_path()))
-            .await
-            .expect("create");
 
         let params = ShSessionParams {
             action: "close".to_string(),
@@ -383,12 +384,8 @@ mod tests {
     #[tokio::test]
     #[serial(pty)]
     async fn test_create_duplicate_name() {
-        let mgr = SessionManager::new(test_config());
+        let mgr = shared_mgr_with_session("dupe").await;
         let pt = test_process_table();
-
-        mgr.create_session("dupe", Some(bash_path()))
-            .await
-            .expect("create dupe");
 
         let params = ShSessionParams {
             action: "create".to_string(),
