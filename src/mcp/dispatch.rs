@@ -288,8 +288,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "alias": { "type": "string", "description": "Target process alias" },
-                    "action": { "type": "string", "enum": ["send", "read_tail", "signal", "kill", "status"], "description": "Action to perform" },
-                    "input": { "type": "string", "description": "For send: string to write (include \\n for enter)" },
+                    "action": { "type": "string", "enum": ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"], "description": "Action to perform" },
+                    "input": { "type": "string", "description": "For send_input: string to write (include \\n for enter). For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
                     "lines": { "type": "integer", "description": "For read_tail: number of lines", "default": 50 }
                 },
                 "required": ["alias", "action"]
@@ -297,11 +297,13 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sh_session".to_string(),
-            description: "Manage shell sessions.".to_string(),
+            description: "Manage shell sessions: create, list, or close named sessions.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list"], "description": "Action to perform" }
+                    "action": { "type": "string", "enum": ["create", "list", "close"], "description": "Action to perform" },
+                    "name": { "type": "string", "description": "Session name (required for create and close)" },
+                    "shell": { "type": "string", "description": "Shell path for create (defaults to $SHELL or /bin/sh)" }
                 },
                 "required": ["action"]
             }),
@@ -603,5 +605,79 @@ mod tests {
         assert_eq!(err.code, ERR_INVALID_PARAMS);
         // Error should still have processes digest
         assert!(err.data.unwrap()["processes"].is_array());
+    }
+
+    // ── Test 14: sh_interact schema actions match handler ──
+
+    #[test]
+    fn sh_interact_schema_actions_match_handler() {
+        let tools = tool_definitions();
+        let sh_interact = tools.iter().find(|t| t.name == "sh_interact").unwrap();
+        let schema_actions: Vec<&str> = sh_interact.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // These are the exact actions the handler accepts (sh_interact::handle match arms).
+        let handler_actions = ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"];
+
+        for action in &handler_actions {
+            assert!(
+                schema_actions.contains(action),
+                "sh_interact handler action '{action}' missing from schema enum: {schema_actions:?}"
+            );
+        }
+        for action in &schema_actions {
+            assert!(
+                handler_actions.contains(action),
+                "sh_interact schema enum '{action}' not handled: {handler_actions:?}"
+            );
+        }
+    }
+
+    // ── Test 15: sh_session schema actions match handler ──
+
+    #[test]
+    fn sh_session_schema_actions_match_handler() {
+        let tools = tool_definitions();
+        let sh_session = tools.iter().find(|t| t.name == "sh_session").unwrap();
+        let schema_actions: Vec<&str> = sh_session.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // These are the exact actions the handler accepts (sh_session::handle match arms).
+        let handler_actions = ["create", "list", "close"];
+
+        for action in &handler_actions {
+            assert!(
+                schema_actions.contains(action),
+                "sh_session handler action '{action}' missing from schema enum: {schema_actions:?}"
+            );
+        }
+        for action in &schema_actions {
+            assert!(
+                handler_actions.contains(action),
+                "sh_session schema enum '{action}' not handled: {handler_actions:?}"
+            );
+        }
+    }
+
+    // ── Test 16: sh_session schema has name and shell properties ──
+
+    #[test]
+    fn sh_session_schema_has_name_and_shell() {
+        let tools = tool_definitions();
+        let sh_session = tools.iter().find(|t| t.name == "sh_session").unwrap();
+        let props = &sh_session.input_schema["properties"];
+
+        assert!(props["name"].is_object(), "sh_session schema should have 'name' property");
+        assert!(props["shell"].is_object(), "sh_session schema should have 'shell' property");
+        assert_eq!(props["name"]["type"], "string");
+        assert_eq!(props["shell"]["type"], "string");
     }
 }
