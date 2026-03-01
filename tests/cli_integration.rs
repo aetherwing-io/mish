@@ -13,6 +13,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
@@ -26,6 +27,7 @@ fn mish() -> Command {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_01_echo_hello_produces_output() {
     mish()
         .args(&["echo", "hello"])
@@ -35,6 +37,7 @@ fn test_01_echo_hello_produces_output() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_02_true_exits_zero() {
     mish()
         .args(&["true"])
@@ -43,6 +46,7 @@ fn test_02_true_exits_zero() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_03_exit_code_one_propagated() {
     mish()
         .args(&["/bin/sh", "-c", "exit 1"])
@@ -51,6 +55,7 @@ fn test_03_exit_code_one_propagated() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_04_exit_code_42_propagated() {
     mish()
         .args(&["/bin/sh", "-c", "exit 42"])
@@ -63,6 +68,7 @@ fn test_04_exit_code_42_propagated() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_05_human_success_starts_with_plus() {
     // echo is passthrough with real grammars — use /bin/sh -c which is condense
     mish()
@@ -73,6 +79,7 @@ fn test_05_human_success_starts_with_plus() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_06_human_failure_starts_with_bang() {
     mish()
         .args(&["/bin/sh", "-c", "exit 1"])
@@ -82,6 +89,7 @@ fn test_06_human_failure_starts_with_bang() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_07_human_shows_line_count() {
     mish()
         .args(&["/bin/sh", "-c", "echo a; echo b; echo c"])
@@ -91,6 +99,7 @@ fn test_07_human_shows_line_count() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_08_human_shows_exit_code_on_failure() {
     mish()
         .args(&["/bin/sh", "-c", "echo output && exit 42"])
@@ -100,6 +109,7 @@ fn test_08_human_shows_exit_code_on_failure() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_09_ring_buffer_last_lines() {
     mish()
         .args(&["/bin/sh", "-c", "echo alpha; echo bravo; echo charlie"])
@@ -113,6 +123,7 @@ fn test_09_ring_buffer_last_lines() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_10_json_mode_valid_structure() {
     let output = mish()
         .args(&["--json", "echo", "hello"])
@@ -133,6 +144,7 @@ fn test_10_json_mode_valid_structure() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_11_json_mode_failure_exit_code() {
     let output = mish()
         .args(&["--json", "/bin/sh", "-c", "exit 1"])
@@ -149,6 +161,7 @@ fn test_11_json_mode_failure_exit_code() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_12_json_category_is_condense() {
     let output = mish()
         .args(&["--json", "echo", "test"])
@@ -166,6 +179,7 @@ fn test_12_json_category_is_condense() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_13_json_optional_fields_absent() {
     let output = mish()
         .args(&["--json", "echo", "test"])
@@ -192,6 +206,7 @@ fn test_13_json_optional_fields_absent() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_14_context_mode_single_line() {
     let output = mish()
         .args(&["--context", "echo", "hello"])
@@ -221,6 +236,7 @@ fn test_14_context_mode_single_line() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_15_context_mode_failure_shows_err() {
     let output = mish()
         .args(&["--context", "/bin/sh", "-c", "exit 1"])
@@ -242,6 +258,7 @@ fn test_15_context_mode_failure_shows_err() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_16_passthrough_mode_has_summary() {
     mish()
         .args(&["--passthrough", "echo", "hello"])
@@ -255,6 +272,7 @@ fn test_16_passthrough_mode_has_summary() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_17_compound_and_both_run_on_success() {
     let output = mish()
         .args(&["echo", "first", "&&", "echo", "second"])
@@ -269,6 +287,7 @@ fn test_17_compound_and_both_run_on_success() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_18_compound_and_skips_on_failure() {
     let output = mish()
         .args(&[
@@ -290,6 +309,7 @@ fn test_18_compound_and_skips_on_failure() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_19_compound_or_fallback_runs() {
     let output = mish()
         .args(&["/bin/sh", "-c", "exit 1", "||", "echo", "fallback"])
@@ -304,6 +324,7 @@ fn test_19_compound_or_fallback_runs() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_20_compound_seq_both_always_run() {
     let output = mish()
         .args(&["echo", "first", ";", "echo", "second"])
@@ -318,6 +339,7 @@ fn test_20_compound_seq_both_always_run() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_21_compound_exit_code_from_last_segment() {
     // echo ok ; exit 1 — last segment fails, should propagate exit 1
     mish()
@@ -331,6 +353,7 @@ fn test_21_compound_exit_code_from_last_segment() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_22_long_output_condensed() {
     let output = mish()
         .args(&[
@@ -353,6 +376,7 @@ fn test_22_long_output_condensed() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_23_long_output_shows_line_count() {
     mish()
         .args(&[
@@ -370,11 +394,13 @@ fn test_23_long_output_shows_line_count() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_24_no_args_exits_with_error() {
     mish().assert().failure();
 }
 
 #[test]
+#[serial(pty)]
 fn test_25_command_not_found() {
     mish()
         .args(&["nonexistent_command_xyz_123"])
@@ -383,6 +409,7 @@ fn test_25_command_not_found() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_26_stderr_captured_through_pty() {
     mish()
         .args(&["/bin/sh", "-c", "echo err_output >&2"])
@@ -392,6 +419,7 @@ fn test_26_stderr_captured_through_pty() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_27_multiline_output_has_content() {
     let output = mish()
         .args(&["/bin/sh", "-c", "echo alpha; echo bravo"])
@@ -414,6 +442,7 @@ fn test_27_multiline_output_has_content() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_28_cp_with_tempfile() {
     let dir = TempDir::new().unwrap();
     let src = dir.path().join("src.txt");
@@ -433,6 +462,7 @@ fn test_28_cp_with_tempfile() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_29_mkdir_with_tempdir() {
     let dir = TempDir::new().unwrap();
     let nested = dir.path().join("a/b/c");
@@ -446,6 +476,7 @@ fn test_29_mkdir_with_tempdir() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_30_rm_with_tempfile() {
     let dir = TempDir::new().unwrap();
     let target = dir.path().join("to_delete.txt");
@@ -465,6 +496,7 @@ fn test_30_rm_with_tempfile() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_31_cp_nonexistent_source_fails() {
     mish()
         .args(&["cp", "/nonexistent_path_xyz/src.txt", "/tmp/dst.txt"])
@@ -477,6 +509,7 @@ fn test_31_cp_nonexistent_source_fails() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_32_json_compound_produces_valid_json() {
     let output = mish()
         .args(&["--json", "echo", "a", ";", "echo", "b"])
@@ -506,6 +539,7 @@ fn test_32_json_compound_produces_valid_json() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_33_empty_output_command() {
     // `true` produces no output — verify graceful handling
     mish()
@@ -516,6 +550,7 @@ fn test_33_empty_output_command() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_34_binary_safe_output() {
     // Write some bytes via printf, verify no crash
     mish()
@@ -525,6 +560,7 @@ fn test_34_binary_safe_output() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_35_rapid_exit() {
     // Command that exits immediately with no output
     mish()
