@@ -1,0 +1,17 @@
+[0m[1m[32m  Compiling[0m mish v0.1.0 (/home/user/projects/mish)
+[0m[1m[33mwarning[0m: unused variable: `x`
+  [0m[1m[34m--> [0msrc/main.rs:5:9
+   [0m[1m[34m|[0m
+[0m[1m[34m5[0m  [0m[1m[34m| [0m    let x = 42;
+   [0m[1m[34m|[0m         [0m[1m[33m^[0m [0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_x`[0m
+   [0m[1m[34m|[0m
+   [0m[1m[34m= [0m[1mnote[0m: `#[warn(unused_variables)]` on by default
+
+[0m[1m[32m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2.1s
+[0m[1m[32m     Running[0m `target/debug/mish`
+[0m[1m[36minfo[0m: Starting server on port 8080
+[0m[1m[31merror[0m: Connection refused
+[==>                    ]  14/57  24%
+[=========>             ]  32/57  56%
+[==================>    ]  48/57  84%
+[========================] 57/57 100%

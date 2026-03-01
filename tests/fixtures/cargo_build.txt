@@ -1,0 +1,36 @@
+   Downloading crates ...
+   Downloading serde v1.0.197
+   Downloading serde_json v1.0.114
+   Downloading tokio v1.36.0
+   Downloading regex v1.10.3
+   Compiling proc-macro2 v1.0.78
+   Compiling unicode-ident v1.0.12
+   Compiling serde v1.0.197
+   Compiling libc v0.2.153
+   Compiling quote v1.0.35
+   Compiling syn v2.0.48
+   Compiling serde_derive v1.0.197
+   Compiling tokio-macros v2.2.0
+   Compiling serde_json v1.0.114
+   Compiling regex-syntax v0.8.2
+   Compiling regex-automata v0.4.5
+   Compiling regex v1.10.3
+   Compiling tokio v1.36.0
+   Compiling mish v0.1.0 (/home/user/projects/mish)
+    Fresh proc-macro2 v1.0.78
+    Fresh unicode-ident v1.0.12
+warning: unused import: `std::collections::HashMap`
+  --> src/main.rs:3:5
+   |
+3  | use std::collections::HashMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0433]: failed to resolve: could not find `nonexistent` in `core`
+  --> src/lib.rs:10:12
+   |
+10 | use core::nonexistent;
+   |            ^^^^^^^^^^^ could not find `nonexistent` in `core`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.3s

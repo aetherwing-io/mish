@@ -1,0 +1,27 @@
+npm http fetch GET 200 https://registry.npmjs.org/express 45ms (cache revalidated)
+npm http fetch GET 200 https://registry.npmjs.org/lodash 32ms (cache revalidated)
+npm http fetch GET 200 https://registry.npmjs.org/debug 28ms (cache revalidated)
+npm timing idealTree:init Completed in 12ms
+npm timing idealTree:userRequests Completed in 4ms
+npm sill idealTree buildDeps
+npm timing idealTree:buildDeps Completed in 89ms
+npm sill idealTree completeTree
+npm timing idealTree Completed in 142ms
+npm verb reify Loading actual tree
+npm timing reify:loadTrees Completed in 203ms
+npm timing reify:diffTrees Completed in 45ms
+npm timing reify:retireShallow Completed in 2ms
+npm timing reify:createSparse Completed in 34ms
+npm timing reify:loadBundles Completed in 0ms
+npm timing reify:unpack Completed in 1204ms
+npm timing reify:unretire Completed in 0ms
+npm timing reify:build Completed in 892ms
+npm timing reify:trash Completed in 3ms
+npm timing reify Completed in 2390ms
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+resolving packages...
+idealTree: calculating ideal tree
+reify: timing completed
+added 147 packages in 3.2s

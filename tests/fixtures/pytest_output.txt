@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.0.2, pluggy-1.4.0
+rootdir: /home/user/project
+configfile: pyproject.toml
+plugins: cov-4.1.0, xdist-3.5.0
+collected 12 items
+
+tests/test_auth.py::test_login_success PASSED
+tests/test_auth.py::test_login_invalid_password PASSED
+tests/test_auth.py::test_login_missing_user PASSED
+tests/test_api.py::test_get_users PASSED
+tests/test_api.py::test_create_user PASSED
+tests/test_api.py::test_delete_user FAILED
+
+=================================== FAILURES ===================================
+___________________________ test_delete_user ___________________________________
+
+    def test_delete_user():
+        response = client.delete("/api/users/999")
+>       assert response.status_code == 204
+E       AssertionError: assert 404 == 204
+E        +  where 404 = <Response [404]>.status_code
+
+tests/test_api.py:45: AssertionError
+__________________________ test_update_user ____________________________________
+
+    def test_update_user():
+        response = client.put("/api/users/1", json={"name": "updated"})
+>       assert response.status_code == 200
+E       AssertionError: assert 500 == 200
+
+Traceback (most recent call last):
+  File "/home/user/project/tests/test_api.py", line 52, in test_update_user
+    assert response.status_code == 200
+AssertionError
+
+tests/test_api.py:52: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_api.py::test_delete_user - AssertionError: assert 404 == 204
+FAILED tests/test_api.py::test_update_user - AssertionError: assert 500 == 200
+========================= 2 failed, 5 passed in 1.23s =========================

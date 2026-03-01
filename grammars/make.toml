@@ -1,0 +1,21 @@
+[tool]
+name = "make"
+detect = ["make", "gmake"]
+inherit = ["ansi-progress", "c-compiler-output"]
+
+[fallback]
+
+[[fallback.noise]]
+pattern = '^make\[\d+\]:'
+action = "strip"
+description = "Make enter/leave directory messages"
+
+[[fallback.noise]]
+pattern = '^\s*(cc|gcc|g\+\+|clang)\s'
+action = "strip"
+description = "Compiler command echoes"
+
+[fallback.summary]
+success = "+ make succeeded"
+failure = "! make failed (exit {exit_code})"
+partial = "... building"

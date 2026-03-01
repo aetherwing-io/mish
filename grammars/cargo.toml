@@ -1,0 +1,59 @@
+[tool]
+name = "cargo"
+detect = ["cargo"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+pattern = '^\s+Compiling'
+action = "strip"
+
+[[global_noise]]
+pattern = '^\s+Downloading'
+action = "dedup"
+
+[actions.build]
+detect = ["build", "b"]
+
+[[actions.build.noise]]
+pattern = '^\s+Fresh'
+action = "strip"
+
+[[actions.build.hazard]]
+pattern = '^error\[E'
+severity = "error"
+action = "keep"
+
+[[actions.build.hazard]]
+pattern = '^warning:'
+severity = "warning"
+action = "keep"
+
+[[actions.build.outcome]]
+pattern = '^\s+Finished .* in (?P<time>.+)'
+action = "promote"
+captures = ["time"]
+
+[actions.build.summary]
+success = "+ build succeeded ({time})"
+failure = "! cargo build failed (exit {exit_code})"
+partial = "... building"
+
+[actions.test]
+detect = ["test", "t"]
+
+[[actions.test.hazard]]
+pattern = '^test .+ \.\.\. FAILED'
+severity = "error"
+action = "keep"
+
+[[actions.test.outcome]]
+pattern = '^test result: ok\. (?P<passed>\d+) passed'
+action = "promote"
+captures = ["passed"]
+
+[actions.test.summary]
+success = "+ {passed} tests passed"
+failure = "! cargo test failed (exit {exit_code})"
+
+[quiet]
+recommend = ["--message-format=json"]

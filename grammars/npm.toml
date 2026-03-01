@@ -1,0 +1,67 @@
+[tool]
+name = "npm"
+detect = ["npm", "npx"]
+inherit = ["ansi-progress", "node-stacktrace"]
+
+[[global_noise]]
+pattern = '^npm (timing|http|sill|verb)'
+action = "strip"
+
+[[global_noise]]
+pattern = '^npm warn'
+action = "dedup"
+
+[actions.install]
+detect = ["install", "i", "add", "ci"]
+
+[[actions.install.noise]]
+pattern = '^(idealTree|reify|resolv)'
+action = "strip"
+
+[[actions.install.hazard]]
+pattern = 'ERESOLVE'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+pattern = 'npm warn deprecated'
+severity = "warning"
+action = "keep"
+
+[[actions.install.outcome]]
+pattern = '^added (?P<count>\d+) packages? in (?P<time>.+)'
+action = "promote"
+captures = ["count", "time"]
+
+[actions.install.summary]
+success = "+ {count} packages installed ({time})"
+failure = "! npm install failed (exit {exit_code})"
+partial = "... installing ({lines} lines)"
+
+[actions.test]
+detect = ["test", "t"]
+
+[[actions.test.hazard]]
+pattern = '^\s*\u2715|FAIL'
+severity = "error"
+action = "keep"
+
+[[actions.test.outcome]]
+pattern = '^Tests?:\s*(?P<passed>\d+) passed'
+action = "promote"
+captures = ["passed"]
+
+[actions.test.summary]
+success = "+ {passed} tests passed"
+failure = "! tests failed (exit {exit_code})"
+
+[actions.run]
+detect = ["run", "start"]
+
+[quiet]
+safe_inject = ["--no-progress"]
+recommend = ["--loglevel=warn"]
+
+[quiet.actions.install]
+safe_inject = ["--no-fund", "--no-audit"]
+recommend = ["--prefer-offline"]

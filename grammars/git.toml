@@ -1,0 +1,53 @@
+[tool]
+name = "git"
+detect = ["git"]
+inherit = ["ansi-progress"]
+
+[actions.push]
+detect = ["push"]
+
+[[actions.push.hazard]]
+pattern = 'rejected'
+severity = "error"
+action = "keep"
+
+[[actions.push.outcome]]
+pattern = '(?P<from>[a-f0-9]+)\.\.(?P<to>[a-f0-9]+)\s+\S+ -> \S+'
+action = "promote"
+captures = ["from", "to"]
+
+[actions.push.summary]
+success = "+ pushed ({from}..{to})"
+failure = "! git push failed (exit {exit_code})"
+
+[actions.pull]
+detect = ["pull", "fetch"]
+
+[[actions.pull.outcome]]
+pattern = 'Already up to date'
+action = "promote"
+
+[[actions.pull.outcome]]
+pattern = '(?P<from>[a-f0-9]+)\.\.(?P<to>[a-f0-9]+)\s+\S+ -> \S+'
+action = "promote"
+captures = ["from", "to"]
+
+[actions.pull.summary]
+success = "+ pulled ({from}..{to})"
+failure = "! git pull failed (exit {exit_code})"
+
+[actions.clone]
+detect = ["clone"]
+
+[[actions.clone.noise]]
+pattern = '^(Cloning|Receiving|Resolving)'
+action = "strip"
+
+[[actions.clone.outcome]]
+pattern = "Cloning into '(?P<dir>[^']+)'"
+action = "promote"
+captures = ["dir"]
+
+[actions.clone.summary]
+success = "+ cloned into {dir}"
+failure = "! git clone failed (exit {exit_code})"

@@ -1,0 +1,41 @@
+[tool]
+name = "docker"
+detect = ["docker"]
+inherit = ["ansi-progress"]
+
+[actions.build]
+detect = ["build", "buildx"]
+
+[[actions.build.noise]]
+pattern = '^\s*(Step|--->) '
+action = "strip"
+
+[[actions.build.hazard]]
+pattern = '^ERROR'
+severity = "error"
+action = "keep"
+
+[[actions.build.outcome]]
+pattern = 'Successfully built (?P<image_id>[a-f0-9]+)'
+action = "promote"
+captures = ["image_id"]
+
+[actions.build.summary]
+success = "+ built {image_id}"
+failure = "! docker build failed (exit {exit_code})"
+
+[actions.up]
+detect = ["compose", "up"]
+
+[[actions.up.outcome]]
+pattern = 'Container (?P<name>\S+)\s+Started'
+action = "promote"
+captures = ["name"]
+
+[actions.up.summary]
+success = "+ {name} started"
+failure = "! docker compose up failed"
+
+[quiet]
+safe_inject = ["--progress=plain"]
+recommend = ["-q"]
