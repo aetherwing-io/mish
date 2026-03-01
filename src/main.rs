@@ -1,8 +1,21 @@
 use clap::{Parser, Subcommand};
+use mish::core::format::OutputMode;
 
 #[derive(Parser)]
 #[command(name = "mish", version, about = "LLM-native shell")]
 struct Cli {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+
+    /// Passthrough mode: full output + summary footer
+    #[arg(long)]
+    passthrough: bool,
+
+    /// Ultra-compressed context mode
+    #[arg(long)]
+    context: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -58,7 +71,22 @@ async fn main() {
                 eprintln!("usage: mish <command> [args...]");
                 std::process::exit(1);
             }
-            eprintln!("mish proxy {:?}: not yet implemented", args);
+            let mode = if cli.json {
+                OutputMode::Json
+            } else if cli.passthrough {
+                OutputMode::Passthrough
+            } else if cli.context {
+                OutputMode::Context
+            } else {
+                OutputMode::Human
+            };
+            match mish::cli::proxy::run_with_mode(&args, mode) {
+                Ok(exit_code) => std::process::exit(exit_code),
+                Err(e) => {
+                    eprintln!("mish: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
