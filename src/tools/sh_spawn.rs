@@ -329,6 +329,7 @@ mod tests {
     use super::*;
     use crate::config::MishConfig;
     use crate::process::table::ProcessTable;
+    use serial_test::serial;
     use std::sync::Arc;
 
     fn test_config() -> MishConfig {
@@ -509,6 +510,7 @@ mod tests {
     // ── Integration tests (require real shell) ────────────────────────
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_basic_command() {
         let config = test_config();
         let session_config = test_session_config();
@@ -543,6 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_alias_conflict_error() {
         let config = test_config();
         let session_config = test_session_config();
@@ -580,6 +583,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_wait_for_matching() {
         let config = test_config();
         let session_config = test_session_config();
@@ -639,6 +643,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_empty_alias_rejected() {
         let config = test_config();
         let session_config = test_session_config();
@@ -665,6 +670,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_invalid_wait_for_regex() {
         let config = test_config();
         let session_config = test_session_config();
@@ -692,6 +698,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_wait_for_timeout() {
         let config = test_config();
         let session_config = test_session_config();
@@ -730,6 +737,7 @@ mod tests {
     // ── Deny-list integration ────────────────────────────────────────
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_deny_list_blocks_rm_rf_root() {
         let config = test_config();
         let session_config = test_session_config();
@@ -760,6 +768,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(pty)]
     async fn spawn_deny_list_blocks_mkfs() {
         let config = test_config();
         let session_config = test_session_config();
