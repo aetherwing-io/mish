@@ -126,6 +126,7 @@ mod tests {
     use super::*;
     use crate::core::grammar::load_grammar_from_str;
     use nix::sys::signal::Signal;
+    use serial_test::serial;
 
     // Helper: build a /bin/sh -c command
     fn sh_cmd(script: &str) -> Vec<String> {
@@ -138,6 +139,7 @@ mod tests {
 
     // Test 1: Condense of known tool with grammar — verify Summary has correct summary_lines
     #[test]
+    #[serial(pty)]
     fn test_condense_with_grammar() {
         let toml_str = r#"
 [tool]
@@ -174,6 +176,7 @@ failure = "! build failed (exit {exit_code})"
 
     // Test 2: Condense of unknown tool (no grammar) — verify ring buffer fallback
     #[test]
+    #[serial(pty)]
     fn test_condense_no_grammar() {
         let args = sh_cmd("echo 'line1'; echo 'line2'; echo 'line3'");
         let result = handle(&args, None, None).unwrap();
@@ -199,6 +202,7 @@ failure = "! build failed (exit {exit_code})"
 
     // Test 3: Exit code handling — non-zero exit code
     #[test]
+    #[serial(pty)]
     fn test_exit_code_nonzero() {
         let args = sh_cmd("echo 'about to fail'; exit 42");
         let result = handle(&args, None, None).unwrap();
@@ -217,6 +221,7 @@ failure = "! build failed (exit {exit_code})"
 
     // Test 4: Hazard passthrough — output matching hazard pattern appears in hazard_lines
     #[test]
+    #[serial(pty)]
     fn test_hazard_passthrough() {
         let toml_str = r#"
 [tool]
@@ -257,6 +262,7 @@ failure = "! compile failed"
     // Test 5: Timeout behavior — partial line without newline
     // Timing-sensitive: may be flaky in CI due to partial_timeout (500ms default)
     #[test]
+    #[serial(pty)]
     #[ignore]
     fn test_partial_line_timeout() {
         // Write partial output (no newline), wait, then exit
@@ -275,6 +281,7 @@ failure = "! compile failed"
 
     // Test 6: Signal forwarding — verify PtyCapture.signal terminates a process
     #[test]
+    #[serial(pty)]
     fn test_signal_forwarding() {
         // Spawn a sleep command directly via PtyCapture (not through handle,
         // since handle blocks until exit)
@@ -299,6 +306,7 @@ failure = "! compile failed"
 
     // Test 7: Empty output — command produces no output
     #[test]
+    #[serial(pty)]
     fn test_empty_output() {
         let args = sh_cmd("true");
         let result = handle(&args, None, None).unwrap();
@@ -313,6 +321,7 @@ failure = "! compile failed"
 
     // Test 8: Very long output — command produces many lines, verify summary truncates
     #[test]
+    #[serial(pty)]
     fn test_long_output_summarized() {
         // Generate 200 lines of output
         let args = sh_cmd("for i in $(seq 1 200); do echo \"line $i of output\"; done");
