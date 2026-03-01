@@ -76,6 +76,7 @@ pub struct ServerInfo {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
+    #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
 }
 
@@ -1017,9 +1018,9 @@ mod tests {
 
         let json = serde_json::to_value(&tool).unwrap();
         assert_eq!(json["name"], "sh_run");
-        assert_eq!(json["input_schema"]["type"], "object");
+        assert_eq!(json["inputSchema"]["type"], "object");
         assert_eq!(
-            json["input_schema"]["required"].as_array().unwrap(),
+            json["inputSchema"]["required"].as_array().unwrap(),
             &[json!("cmd")]
         );
     }
