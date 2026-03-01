@@ -260,10 +260,8 @@ failure = "! compile failed"
     }
 
     // Test 5: Timeout behavior — partial line without newline
-    // Timing-sensitive: may be flaky in CI due to partial_timeout (500ms default)
     #[test]
     #[serial(pty)]
-    #[ignore]
     fn test_partial_line_timeout() {
         // Write partial output (no newline), wait, then exit
         // The partial line should eventually be emitted via emit_partial timeout
