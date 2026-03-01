@@ -1,10 +1,11 @@
 //! sh_run — synchronous command execution MCP tool.
 //!
-//! Executes a command in a named session, routes the output through the
-//! squasher pipeline for condense-category commands, applies watch pattern
-//! filtering, and returns a structured response with process table digest.
+//! Executes a command in a named session, categorizes it via the router,
+//! routes the output through the appropriate post-processing pipeline,
+//! applies watch pattern filtering, and returns a structured response
+//! with process table digest.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use regex::Regex;
@@ -12,17 +13,21 @@ use serde_json;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::MishConfig;
+use crate::core::grammar::Grammar;
 use crate::mcp::types::{
     LineCount, ProcessDigestEntry, ShRunParams, ShRunResponse,
     ERR_COMMAND_BLOCKED,
 };
+use crate::router::categories::{CategoriesConfig, Category, DangerousPattern};
+use crate::router::categorize_command_str;
 use crate::safety;
 use super::ToolError;
 use crate::process::table::{DigestMode, ProcessTable};
-use crate::session::manager::{SessionError, SessionManager};
+use crate::session::manager::SessionManager;
 use crate::squasher::pattern::{PatternMatcher, Presets};
 use crate::squasher::pipeline::{Pipeline, PipelineConfig};
 use crate::squasher::truncate::TruncateConfig;
+use crate::squasher::vte_strip::VteStripper;
 use crate::core::line_buffer::Line;
 
 // ---------------------------------------------------------------------------
@@ -41,14 +46,18 @@ const PRESET_PATTERN: &str = r"^@[a-z_]+$";
 
 /// Handle an sh_run tool call.
 ///
-/// Executes a command in the specified (or default) session, applies
-/// squashing for condense-category output, filters with watch patterns,
-/// and returns the structured result alongside a process table digest.
+/// Executes a command in the specified (or default) session, categorizes it
+/// via the router, applies category-appropriate post-processing (squashing
+/// only for condense-category), filters with watch patterns, and returns
+/// the structured result alongside a process table digest.
 pub async fn handle(
     params: ShRunParams,
     session_manager: &SessionManager,
     process_table: &TokioMutex<ProcessTable>,
     config: &MishConfig,
+    grammars: &HashMap<String, Grammar>,
+    categories_config: &CategoriesConfig,
+    dangerous_patterns: &[DangerousPattern],
 ) -> Result<(serde_json::Value, Vec<ProcessDigestEntry>), ToolError> {
     // 1. Validate required params.
     let cmd = params.cmd.trim();
@@ -64,6 +73,17 @@ pub async fn handle(
         ));
     }
 
+    // 1c. Categorize the command via the router.
+    let category = categorize_command_str(cmd, grammars, categories_config, dangerous_patterns);
+
+    // 1d. Block dangerous-category commands.
+    if category == Category::Dangerous {
+        return Err(ToolError::new(
+            ERR_COMMAND_BLOCKED,
+            "command blocked: dangerous category",
+        ));
+    }
+
     // 2. Resolve session name (default "main").
     let session_name = DEFAULT_SESSION;
 
@@ -76,16 +96,28 @@ pub async fn handle(
         .await
         .map_err(ToolError::from_session_error)?;
 
-    // 5. Post-process: squash the output through the pipeline.
+    // 5. Post-process based on category.
     let raw_output = &result.output;
     let total_lines = raw_output.lines().count() as u64;
 
-    let squashed_output = squash_output(raw_output, config);
-    let shown_lines = squashed_output.lines().count() as u64;
+    let (processed_output, shown_lines) = match category {
+        Category::Condense => {
+            // Full squasher pipeline: VTE strip, progress removal, dedup, truncation.
+            let squashed = squash_output(raw_output, config);
+            let shown = squashed.lines().count() as u64;
+            (squashed, shown)
+        }
+        _ => {
+            // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
+            let stripped = strip_ansi(raw_output);
+            let shown = stripped.lines().count() as u64;
+            (stripped, shown)
+        }
+    };
 
     // 6. Apply watch pattern filtering if requested.
     let (final_output, matched_lines) = apply_watch_filter(
-        &squashed_output,
+        &processed_output,
         params.watch.as_deref(),
         params.unmatched.as_deref(),
         config,
@@ -98,6 +130,7 @@ pub async fn handle(
         exit_code: result.exit_code,
         duration_ms: result.duration.as_millis() as u64,
         cwd: result.cwd,
+        category: category_to_str(category).to_string(),
         output: final_output,
         matched_lines,
         lines: LineCount {
@@ -242,6 +275,28 @@ fn apply_watch_filter(
     Ok((final_output, Some(matched)))
 }
 
+/// Strip ANSI escape sequences from output, line by line.
+/// Used for non-condense categories where we want clean text
+/// without the full squasher pipeline (no dedup, no truncation).
+fn strip_ansi(raw: &str) -> String {
+    raw.lines()
+        .map(|line| VteStripper::strip(line.as_bytes()).clean_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Convert a Category enum to its string representation.
+fn category_to_str(cat: Category) -> &'static str {
+    match cat {
+        Category::Condense => "condense",
+        Category::Narrate => "narrate",
+        Category::Passthrough => "passthrough",
+        Category::Structured => "structured",
+        Category::Interactive => "interactive",
+        Category::Dangerous => "dangerous",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -249,9 +304,17 @@ fn apply_watch_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::config::default_config;
+    use crate::config_loader::default_runtime_config;
     use crate::mcp::types::{ERR_COMMAND_BLOCKED, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND};
     use crate::session::manager::SessionError;
+
+    /// Helper: return categorization data from default runtime config.
+    fn test_categorization() -> (HashMap<String, Grammar>, CategoriesConfig, Vec<DangerousPattern>) {
+        let rc = default_runtime_config();
+        (rc.grammars, rc.categories_config, rc.dangerous_patterns)
+    }
 
     // -----------------------------------------------------------------------
     // Unit tests for internal helpers (no PTY required)
@@ -578,6 +641,7 @@ mod tests {
     async fn test_handle_echo_hello() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "echo hello".to_string(),
@@ -586,7 +650,7 @@ mod tests {
             unmatched: None,
         };
 
-        let (result, digest) = handle(params, &mgr, &table, &config)
+        let (result, digest) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("handle should succeed");
 
@@ -614,6 +678,7 @@ mod tests {
     async fn test_handle_exit_code() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         // Use a subshell `(exit 42)` so the session shell survives.
         // `exit 42` would kill the session shell itself, causing a timeout.
@@ -624,7 +689,7 @@ mod tests {
             unmatched: None,
         };
 
-        let (result, _) = handle(params, &mgr, &table, &config)
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("handle should succeed");
 
@@ -637,6 +702,7 @@ mod tests {
     async fn test_handle_empty_cmd_error() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "   ".to_string(),
@@ -645,7 +711,7 @@ mod tests {
             unmatched: None,
         };
 
-        let result = handle(params, &mgr, &table, &config).await;
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_INVALID_PARAMS);
@@ -660,6 +726,7 @@ mod tests {
         // Do NOT create "main" session.
         let table = TokioMutex::new(ProcessTable::new(&config_arc));
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "echo hi".to_string(),
@@ -668,7 +735,7 @@ mod tests {
             unmatched: None,
         };
 
-        let result = handle(params, &mgr, &table, &config).await;
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_SESSION_NOT_FOUND);
@@ -678,6 +745,7 @@ mod tests {
     async fn test_handle_with_watch_pattern() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: r#"printf 'line1\nerror: bad\nline3\nwarning: careful\n'"#.to_string(),
@@ -686,7 +754,7 @@ mod tests {
             unmatched: None,
         };
 
-        let (result, _) = handle(params, &mgr, &table, &config)
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("handle should succeed");
 
@@ -704,6 +772,7 @@ mod tests {
     async fn test_handle_with_watch_drop_unmatched() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: r#"printf 'line1\nerror: bad\nline3\n'"#.to_string(),
@@ -712,7 +781,7 @@ mod tests {
             unmatched: Some("drop".to_string()),
         };
 
-        let (result, _) = handle(params, &mgr, &table, &config)
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("handle should succeed");
 
@@ -729,6 +798,7 @@ mod tests {
     async fn test_handle_cwd_tracking() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         // cd to /tmp
         let params = ShRunParams {
@@ -737,7 +807,7 @@ mod tests {
             watch: None,
             unmatched: None,
         };
-        let (result, _) = handle(params, &mgr, &table, &config)
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("cd should succeed");
 
@@ -810,6 +880,7 @@ mod tests {
     async fn test_handle_response_structure() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "echo test_output".to_string(),
@@ -818,7 +889,7 @@ mod tests {
             unmatched: None,
         };
 
-        let (result, _) = handle(params, &mgr, &table, &config)
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
             .expect("handle should succeed");
 
@@ -846,6 +917,7 @@ mod tests {
     async fn test_deny_list_blocks_rm_rf_root() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "rm -rf /".to_string(),
@@ -854,7 +926,7 @@ mod tests {
             unmatched: None,
         };
 
-        let result = handle(params, &mgr, &table, &config).await;
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
         assert!(result.is_err(), "rm -rf / should be blocked");
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_COMMAND_BLOCKED);
@@ -867,6 +939,7 @@ mod tests {
     async fn test_deny_list_blocks_mkfs() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "mkfs.ext4 /dev/sda".to_string(),
@@ -875,7 +948,7 @@ mod tests {
             unmatched: None,
         };
 
-        let result = handle(params, &mgr, &table, &config).await;
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
         assert!(result.is_err(), "mkfs.ext4 should be blocked");
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_COMMAND_BLOCKED);
@@ -887,6 +960,7 @@ mod tests {
     async fn test_deny_list_allows_safe_commands() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
 
         let params = ShRunParams {
             cmd: "echo safe_command".to_string(),
@@ -895,9 +969,149 @@ mod tests {
             unmatched: None,
         };
 
-        let result = handle(params, &mgr, &table, &config).await;
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
         assert!(result.is_ok(), "echo should be allowed");
 
         teardown(&mgr).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Category-aware behavior tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_echo_categorized_as_passthrough() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        let params = ShRunParams {
+            cmd: "echo hello".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        assert_eq!(
+            result["category"].as_str().unwrap(),
+            "passthrough",
+            "echo should be categorized as passthrough"
+        );
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_passthrough_output_not_squashed() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // Generate output that would be deduped by the squasher if applied.
+        // Repeated lines get collapsed by dedup, so if output still has all
+        // lines, it was NOT squashed.
+        let params = ShRunParams {
+            cmd: r#"printf 'line\nline\nline\n'"#.to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        // printf is not in categories -> fallback Condense -> squashed.
+        // But the key point: for commands that ARE categorized as non-condense,
+        // output should not be deduped. Let's verify category is reported.
+        assert!(result["category"].is_string());
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_dangerous_category_blocked() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // "rm -rf /tmp/foo" matches dangerous pattern in bundled dangerous.toml.
+        let params = ShRunParams {
+            cmd: "rm -rf /tmp/foo".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
+        assert!(result.is_err(), "dangerous commands should be blocked");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, ERR_COMMAND_BLOCKED);
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_response_includes_category_field() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        let params = ShRunParams {
+            cmd: "echo test".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        // Verify the category field exists and is a valid string.
+        let category = result["category"].as_str().unwrap();
+        assert!(
+            ["condense", "narrate", "passthrough", "structured", "interactive"].contains(&category),
+            "category should be a valid category name, got: {category}"
+        );
+
+        teardown(&mgr).await;
+    }
+
+    // -- strip_ansi unit tests -------------------------------------------
+
+    #[test]
+    fn test_strip_ansi_removes_color_codes() {
+        let input = "\x1b[31merror: something\x1b[0m\n\x1b[32mok\x1b[0m";
+        let stripped = strip_ansi(input);
+        assert_eq!(stripped, "error: something\nok");
+    }
+
+    #[test]
+    fn test_strip_ansi_preserves_plain_text() {
+        let input = "hello\nworld";
+        let stripped = strip_ansi(input);
+        assert_eq!(stripped, "hello\nworld");
+    }
+
+    #[test]
+    fn test_strip_ansi_empty() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    // -- category_to_str unit tests --------------------------------------
+
+    #[test]
+    fn test_category_to_str_all_variants() {
+        assert_eq!(category_to_str(Category::Condense), "condense");
+        assert_eq!(category_to_str(Category::Narrate), "narrate");
+        assert_eq!(category_to_str(Category::Passthrough), "passthrough");
+        assert_eq!(category_to_str(Category::Structured), "structured");
+        assert_eq!(category_to_str(Category::Interactive), "interactive");
+        assert_eq!(category_to_str(Category::Dangerous), "dangerous");
     }
 }

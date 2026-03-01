@@ -120,6 +120,7 @@ pub struct ShRunResponse {
     pub exit_code: i32,
     pub duration_ms: u64,
     pub cwd: String,
+    pub category: String,
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_lines: Option<Vec<String>>,
@@ -378,6 +379,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 150,
             cwd: "/home/user".to_string(),
+            category: "passthrough".to_string(),
             output: "file1.txt\nfile2.txt".to_string(),
             matched_lines: None,
             lines: LineCount {
@@ -390,6 +392,7 @@ mod tests {
         assert_eq!(json["exit_code"], 0);
         assert_eq!(json["duration_ms"], 150);
         assert_eq!(json["cwd"], "/home/user");
+        assert_eq!(json["category"], "passthrough");
         assert_eq!(json["output"], "file1.txt\nfile2.txt");
         assert_eq!(json["lines"]["total"], 2);
         assert_eq!(json["lines"]["shown"], 2);
@@ -401,6 +404,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 250,
             cwd: "/tmp".to_string(),
+            category: "condense".to_string(),
             output: "ERROR: something\nERROR: else".to_string(),
             matched_lines: Some(vec![
                 "ERROR: something".to_string(),
@@ -652,6 +656,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 50,
             cwd: "/tmp".to_string(),
+            category: "condense".to_string(),
             output: "hello".to_string(),
             matched_lines: None,
             lines: LineCount {
@@ -802,6 +807,7 @@ mod tests {
             exit_code: 0,
             duration_ms: 100,
             cwd: "/home".to_string(),
+            category: "condense".to_string(),
             output: "ok".to_string(),
             matched_lines: None,
             lines: LineCount {

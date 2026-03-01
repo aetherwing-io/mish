@@ -3,18 +3,21 @@
 //! Implements the MCP protocol lifecycle: initialize, notifications/initialized,
 //! tools/list, tools/call. Attaches process table digest to every tool response.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::MishConfig;
+use crate::core::grammar::Grammar;
 use crate::mcp::types::{
     InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse, ProcessDigestEntry,
     ServerCapabilities, ServerInfo, ShInteractParams, ShRunParams, ShSpawnParams,
     ToolDefinition, ToolsCapability, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND,
 };
 use crate::process::table::{DigestMode, ProcessTable};
+use crate::router::categories::{CategoriesConfig, DangerousPattern};
 use crate::session::manager::SessionManager;
 use crate::tools::{sh_help, sh_interact, sh_run, sh_session, sh_spawn};
 
@@ -23,6 +26,9 @@ pub struct McpDispatcher {
     session_manager: Arc<SessionManager>,
     process_table: Arc<TokioMutex<ProcessTable>>,
     config: Arc<MishConfig>,
+    grammars: HashMap<String, Grammar>,
+    categories_config: CategoriesConfig,
+    dangerous_patterns: Vec<DangerousPattern>,
     initialized: std::sync::atomic::AtomicBool,
 }
 
@@ -31,11 +37,17 @@ impl McpDispatcher {
         session_manager: Arc<SessionManager>,
         process_table: Arc<TokioMutex<ProcessTable>>,
         config: Arc<MishConfig>,
+        grammars: HashMap<String, Grammar>,
+        categories_config: CategoriesConfig,
+        dangerous_patterns: Vec<DangerousPattern>,
     ) -> Self {
         Self {
             session_manager,
             process_table,
             config,
+            grammars,
+            categories_config,
+            dangerous_patterns,
             initialized: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -186,7 +198,15 @@ impl McpDispatcher {
         let params: ShRunParams = serde_json::from_value(arguments)
             .map_err(|e| (ERR_INVALID_PARAMS, format!("Invalid sh_run params: {e}")))?;
 
-        sh_run::handle(params, &self.session_manager, &self.process_table, &self.config)
+        sh_run::handle(
+            params,
+            &self.session_manager,
+            &self.process_table,
+            &self.config,
+            &self.grammars,
+            &self.categories_config,
+            &self.dangerous_patterns,
+        )
             .await
             .map_err(|e| (e.code, e.message))
     }
@@ -333,7 +353,8 @@ mod tests {
         let config = test_config();
         let sm = Arc::new(SessionManager::new(config.clone()));
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
-        McpDispatcher::new(sm, pt, config)
+        let rc = crate::config_loader::default_runtime_config();
+        McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns)
     }
 
     fn make_request(id: serde_json::Value, method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
@@ -531,7 +552,8 @@ mod tests {
             .await
             .expect("should create main session");
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
-        let dispatcher = McpDispatcher::new(sm.clone(), pt, config);
+        let rc = crate::config_loader::default_runtime_config();
+        let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
 
         let req = make_request(
             json!(50),
@@ -562,7 +584,8 @@ mod tests {
             .await
             .expect("should create main session");
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
-        let dispatcher = McpDispatcher::new(sm.clone(), pt, config);
+        let rc = crate::config_loader::default_runtime_config();
+        let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
 
         let req = make_request(
             json!(60),

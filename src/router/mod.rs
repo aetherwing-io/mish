@@ -107,6 +107,20 @@ pub fn route(
     })
 }
 
+/// Categorize a shell command string by splitting on whitespace.
+///
+/// Convenience wrapper for MCP mode where commands arrive as a single string
+/// rather than a pre-tokenized array.
+pub fn categorize_command_str(
+    cmd: &str,
+    grammars: &HashMap<String, Grammar>,
+    categories_config: &CategoriesConfig,
+    dangerous_patterns: &[DangerousPattern],
+) -> Category {
+    let tokens: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+    categories::categorize(&tokens, grammars, categories_config, dangerous_patterns)
+}
+
 /// Dispatch a categorized command to its handler, returning the handler output and exit code.
 fn dispatch(
     category: Category,
@@ -508,5 +522,69 @@ category = "interactive"
             OutputMode::Human,
         );
         assert!(result.is_err(), "empty command should return error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: categorize_command_str parses shell string and categorizes
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_categorize_command_str_echo_passthrough() {
+        let config = standard_config();
+        let category = categorize_command_str(
+            "echo hello world",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(category, Category::Passthrough);
+    }
+
+    #[test]
+    fn test_categorize_command_str_git_structured() {
+        let config = standard_config();
+        let category = categorize_command_str(
+            "git status",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(category, Category::Structured);
+    }
+
+    #[test]
+    fn test_categorize_command_str_dangerous() {
+        let config = standard_config();
+        let dangerous = standard_dangerous();
+        let category = categorize_command_str(
+            "rm -rf /tmp/foo",
+            &empty_grammars(),
+            &config,
+            &dangerous,
+        );
+        assert_eq!(category, Category::Dangerous);
+    }
+
+    #[test]
+    fn test_categorize_command_str_empty() {
+        let config = standard_config();
+        let category = categorize_command_str(
+            "",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(category, Category::Condense); // fallback
+    }
+
+    #[test]
+    fn test_categorize_command_str_unknown_falls_back_condense() {
+        let config = standard_config();
+        let category = categorize_command_str(
+            "some-unknown-tool --flag",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(category, Category::Condense);
     }
 }

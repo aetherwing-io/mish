@@ -13,6 +13,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
 use crate::config::{load_config, MishConfig};
+use crate::config_loader::default_runtime_config;
 use crate::mcp::dispatch::McpDispatcher;
 use crate::mcp::transport::{StdioTransport, TransportError};
 use crate::process::table::ProcessTable;
@@ -72,10 +73,14 @@ impl McpServer {
     pub fn new(config: Arc<MishConfig>) -> Result<Self, ServerError> {
         let session_manager = Arc::new(SessionManager::new(config.clone()));
         let process_table = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let rc = default_runtime_config();
         let dispatcher = McpDispatcher::new(
             session_manager.clone(),
             process_table.clone(),
             config.clone(),
+            rc.grammars,
+            rc.categories_config,
+            rc.dangerous_patterns,
         );
         Ok(Self {
             session_manager,
