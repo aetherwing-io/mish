@@ -213,14 +213,24 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     let shutdown_mgr = ShutdownManager::with_defaults(server.session_manager.clone());
     let shutdown_rx = shutdown_mgr.subscribe();
 
-    tokio::spawn(async move {
+    let shutdown_handle = tokio::spawn(async move {
         shutdown_mgr.wait_for_shutdown().await;
     });
 
     let mut transport = StdioTransport::new();
-    server
+    let run_result = server
         .run_with_shutdown(&mut transport, shutdown_rx)
-        .await?;
+        .await;
+
+    // Await shutdown task to ensure sessions are cleaned up before proceeding.
+    // Use a timeout to avoid hanging forever if the shutdown task is stuck.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        shutdown_handle,
+    ).await;
+
+    // Propagate any error from the run loop.
+    run_result?;
 
     // 7. Cleanup
     audit_logger.log(AuditEntry::new(
