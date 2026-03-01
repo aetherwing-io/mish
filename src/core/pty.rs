@@ -258,6 +258,47 @@ impl PtyCapture {
     pub fn elapsed(&self) -> std::time::Duration {
         self.start_time.elapsed()
     }
+
+    /// Async-safe wait — wraps the blocking `wait()` in `spawn_blocking`
+    /// to avoid blocking tokio worker threads.
+    ///
+    /// Use this instead of `wait()` from async contexts.
+    pub async fn wait_async(&self) -> Result<ExitStatus, PtyError> {
+        let pid = self.child_pid;
+        tokio::task::spawn_blocking(move || {
+            loop {
+                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::Exited(_, code)) => {
+                        return Ok(ExitStatus {
+                            code: Some(code),
+                            signal: None,
+                        });
+                    }
+                    Ok(WaitStatus::Signaled(_, sig, _)) => {
+                        return Ok(ExitStatus {
+                            code: None,
+                            signal: Some(sig as i32),
+                        });
+                    }
+                    Ok(WaitStatus::StillAlive) | Ok(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(nix::Error::ECHILD) => {
+                        return Ok(ExitStatus {
+                            code: Some(0),
+                            signal: None,
+                        });
+                    }
+                    Err(e) => return Err(PtyError::Nix(e)),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Err(PtyError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("spawn_blocking join error: {e}"),
+        ))))
+    }
 }
 
 impl Drop for PtyCapture {
@@ -621,5 +662,19 @@ mod tests {
     fn test_empty_command() {
         let result = PtyCapture::spawn(&[]);
         assert!(result.is_err());
+    }
+
+    // Test wait_async doesn't block tokio worker
+    #[tokio::test]
+    async fn test_wait_async() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exit 7".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let status = pty.wait_async().await.expect("wait_async failed");
+        assert_eq!(status.code, Some(7));
     }
 }
