@@ -459,6 +459,7 @@ impl ShellProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Find bash path for tests.
     fn bash_path() -> &'static str {
@@ -467,6 +468,7 @@ mod tests {
 
     // Test 1: Shell spawns successfully with bash -i
     #[tokio::test]
+    #[serial(pty)]
     async fn test_shell_spawns_successfully() {
         let shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -477,6 +479,7 @@ mod tests {
 
     // Test 2: is_ready() returns false before initialization, true after
     #[tokio::test]
+    #[serial(pty)]
     async fn test_is_ready_before_and_after_init() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -491,6 +494,7 @@ mod tests {
 
     // Test 3: Initialization completes (hooks injected, prompt detected)
     #[tokio::test]
+    #[serial(pty)]
     async fn test_initialization_completes() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -504,6 +508,7 @@ mod tests {
 
     // Test 4: execute("echo hello") returns output containing "hello" and exit_code 0
     #[tokio::test]
+    #[serial(pty)]
     async fn test_execute_echo_hello() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -527,6 +532,7 @@ mod tests {
 
     // Test 5: execute with a command that fails returns non-zero exit_code
     #[tokio::test]
+    #[serial(pty)]
     async fn test_execute_failing_command() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -551,6 +557,7 @@ mod tests {
 
     // Test 6: CWD tracking — execute("cd /tmp") updates cwd
     #[tokio::test]
+    #[serial(pty)]
     async fn test_cwd_tracking() {
         let mut shell = ShellProcess::spawn(bash_path(), "/")
             .await
@@ -579,6 +586,7 @@ mod tests {
 
     // Test 7: Environment persistence — export then echo
     #[tokio::test]
+    #[serial(pty)]
     async fn test_environment_persistence() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -608,6 +616,7 @@ mod tests {
 
     // Test 8: Timeout enforcement — long command killed after timeout
     #[tokio::test]
+    #[serial(pty)]
     async fn test_timeout_enforcement() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -639,6 +648,7 @@ mod tests {
 
     // Test 9: Kill terminates the shell process group
     #[tokio::test]
+    #[serial(pty)]
     async fn test_kill_terminates_shell() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
@@ -689,6 +699,7 @@ mod tests {
 
     // Test 10: Startup output is discarded (no motd/rc noise in first command)
     #[tokio::test]
+    #[serial(pty)]
     async fn test_startup_output_discarded() {
         let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
             .await
