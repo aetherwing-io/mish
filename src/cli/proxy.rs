@@ -10,7 +10,7 @@ use crate::core::format::{
     self, EnrichmentLine, FormatInput, HazardEntry, OutputMode,
 };
 use crate::handlers::structured::StructuredData;
-use crate::router::categories::CategoriesConfig;
+use crate::router::categories::{CategoriesConfig, ExecutionMode};
 use crate::router::{self, HandlerOutput, RouterResult};
 
 // ---------------------------------------------------------------------------
@@ -163,6 +163,7 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
             &categories_config,
             &dangerous_patterns,
             mode,
+            ExecutionMode::Cli,
         )?;
 
         last_exit_code = router_result.exit_code;

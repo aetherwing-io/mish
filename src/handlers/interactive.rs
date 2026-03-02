@@ -5,6 +5,8 @@
 
 use std::time::Duration;
 
+use crate::router::categories::ExecutionMode;
+
 /// Result of running an interactive command.
 pub struct InteractiveResult {
     pub summary: String,
@@ -67,32 +69,49 @@ pub fn format_session_summary(cmd: &str, duration: Duration) -> String {
     format!("\u{2192} {}: session ended ({})", cmd, format_duration(duration))
 }
 
-/// Run an interactive command with transparent PTY passthrough.
+/// Run an interactive command with mode-aware behavior.
 ///
-/// Phase 1: uses std::process::Command with inherited stdio for transparent I/O.
-pub fn handle(args: &[String]) -> Result<InteractiveResult, Box<dyn std::error::Error>> {
+/// CLI mode: transparent PTY passthrough with session summary on exit.
+/// MCP mode: return structured error (interactive commands can't run over MCP stdio).
+pub fn handle(args: &[String], mode: ExecutionMode) -> Result<InteractiveResult, Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("No command provided".into());
     }
 
-    let start = std::time::Instant::now();
+    match mode {
+        ExecutionMode::Mcp => {
+            // Interactive commands cannot run over MCP stdio
+            let cmd_name = &args[0];
+            Ok(InteractiveResult {
+                summary: format!(
+                    "Interactive command '{}' cannot run in MCP mode. Use sh_spawn for background processes.",
+                    cmd_name
+                ),
+                exit_code: 1,
+                duration: Duration::from_secs(0),
+            })
+        }
+        ExecutionMode::Cli => {
+            let start = std::time::Instant::now();
 
-    let status = std::process::Command::new(&args[0])
-        .args(&args[1..])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()?;
+            let status = std::process::Command::new(&args[0])
+                .args(&args[1..])
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()?;
 
-    let duration = start.elapsed();
-    let exit_code = status.code().unwrap_or(-1);
-    let summary = format_session_summary(&args[0], duration);
+            let duration = start.elapsed();
+            let exit_code = status.code().unwrap_or(-1);
+            let summary = format_session_summary(&args[0], duration);
 
-    Ok(InteractiveResult {
-        summary,
-        exit_code,
-        duration,
-    })
+            Ok(InteractiveResult {
+                summary,
+                exit_code,
+                duration,
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

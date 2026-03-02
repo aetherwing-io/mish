@@ -3,7 +3,7 @@
 /// CLI: warn on terminal -> prompt human -> maybe execute.
 /// MCP: return structured warning -> policy engine -> LLM decides or escalates.
 
-use crate::router::categories::DangerousPattern;
+use crate::router::categories::{DangerousPattern, ExecutionMode};
 
 /// Result of handling a dangerous command.
 pub struct DangerousResult {
@@ -63,9 +63,14 @@ fn prompt_confirmation(warning: &str) -> bool {
 /// If the command matches a dangerous pattern, display a warning and prompt
 /// the user for confirmation. If confirmed (or if the command is not dangerous),
 /// execute it. Otherwise, abort.
+/// Handle a dangerous command with mode-aware behavior.
+///
+/// CLI mode: warn on terminal, prompt human, maybe execute.
+/// MCP mode: return structured warning without prompting (LLM decides via policy engine).
 pub fn handle(
     args: &[String],
     dangerous_patterns: &[DangerousPattern],
+    mode: ExecutionMode,
 ) -> Result<DangerousResult, Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("No command provided".into());
@@ -73,30 +78,42 @@ pub fn handle(
 
     // Check if the command matches any dangerous pattern
     if let Some((warning, _reason)) = check_dangerous(args, dangerous_patterns) {
-        // Prompt user for confirmation
-        if !prompt_confirmation(&warning) {
-            return Ok(DangerousResult {
-                executed: false,
-                exit_code: None,
-                warning,
-            });
+        match mode {
+            ExecutionMode::Mcp => {
+                // MCP mode: return structured warning, never prompt on terminal
+                Ok(DangerousResult {
+                    executed: false,
+                    exit_code: None,
+                    warning,
+                })
+            }
+            ExecutionMode::Cli => {
+                // CLI mode: prompt user for confirmation
+                if !prompt_confirmation(&warning) {
+                    return Ok(DangerousResult {
+                        executed: false,
+                        exit_code: None,
+                        warning,
+                    });
+                }
+
+                // User confirmed — execute the command
+                let status = std::process::Command::new(&args[0])
+                    .args(&args[1..])
+                    .stdin(std::process::Stdio::inherit())
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status()?;
+
+                let exit_code = status.code().unwrap_or(-1);
+
+                Ok(DangerousResult {
+                    executed: true,
+                    exit_code: Some(exit_code),
+                    warning,
+                })
+            }
         }
-
-        // User confirmed — execute the command
-        let status = std::process::Command::new(&args[0])
-            .args(&args[1..])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()?;
-
-        let exit_code = status.code().unwrap_or(-1);
-
-        Ok(DangerousResult {
-            executed: true,
-            exit_code: Some(exit_code),
-            warning,
-        })
     } else {
         // Not dangerous — just execute
         let status = std::process::Command::new(&args[0])

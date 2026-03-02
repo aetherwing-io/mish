@@ -246,7 +246,7 @@ use crate::util::expand_tilde;
 mod tests {
     use super::*;
     use crate::core::preflight::OutputMode;
-    use crate::router::categories::{categorize, Category};
+    use crate::router::categories::{categorize, Category, ExecutionMode};
     use crate::router::route;
 
     // -----------------------------------------------------------------------
@@ -475,6 +475,7 @@ detect = ["good"]
             &rc.categories_config,
             &rc.dangerous_patterns,
             OutputMode::Human,
+            ExecutionMode::Cli,
         );
         match result {
             Ok(r) => {

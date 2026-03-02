@@ -19,7 +19,7 @@ use crate::handlers::dangerous::DangerousResult;
 use crate::handlers::interactive::InteractiveResult;
 use crate::handlers::passthrough::PassthroughResult;
 use crate::handlers::structured::StructuredResult;
-use crate::router::categories::{categorize, CategoriesConfig, Category, DangerousPattern};
+use crate::router::categories::{categorize, CategoriesConfig, Category, DangerousPattern, ExecutionMode};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -63,6 +63,7 @@ pub fn route(
     categories_config: &CategoriesConfig,
     dangerous_patterns: &[DangerousPattern],
     mode: OutputMode,
+    exec_mode: ExecutionMode,
 ) -> Result<RouterResult, Box<dyn std::error::Error>> {
     if command.is_empty() {
         return Err("router: empty command".into());
@@ -87,7 +88,7 @@ pub fn route(
     let category = categorize(&cmd, grammars, categories_config, dangerous_patterns);
 
     // 4. Dispatch to the appropriate handler
-    let (output, exit_code) = dispatch(category, &cmd, grammar, action, dangerous_patterns)?;
+    let (output, exit_code) = dispatch(category, &cmd, grammar, action, dangerous_patterns, exec_mode)?;
 
     // 5. Error enrichment on non-zero exit code
     //    (enrich module is a stub; will be connected when ready)
@@ -128,6 +129,7 @@ fn dispatch(
     grammar: Option<&Grammar>,
     action: Option<&Action>,
     dangerous_patterns: &[DangerousPattern],
+    exec_mode: ExecutionMode,
 ) -> Result<(HandlerOutput, i32), Box<dyn std::error::Error>> {
     match category {
         Category::Condense => {
@@ -151,12 +153,12 @@ fn dispatch(
             Ok((HandlerOutput::Structured(result), exit_code))
         }
         Category::Interactive => {
-            let result = crate::handlers::interactive::handle(cmd)?;
+            let result = crate::handlers::interactive::handle(cmd, exec_mode)?;
             let exit_code = result.exit_code;
             Ok((HandlerOutput::Interactive(result), exit_code))
         }
         Category::Dangerous => {
-            let result = crate::handlers::dangerous::handle(cmd, dangerous_patterns)?;
+            let result = crate::handlers::dangerous::handle(cmd, dangerous_patterns, exec_mode)?;
             let exit_code = result.exit_code.unwrap_or(0);
             Ok((HandlerOutput::Dangerous(result), exit_code))
         }
@@ -172,6 +174,7 @@ mod tests {
     use super::*;
     use crate::core::grammar::load_grammar_from_str;
     use crate::core::preflight::OutputMode;
+    use crate::router::categories::ExecutionMode;
     use regex::Regex;
 
     // -----------------------------------------------------------------------
@@ -381,6 +384,7 @@ success = "+ installed"
             &config,
             &empty_dangerous(),
             OutputMode::Human,
+            ExecutionMode::Cli,
         );
 
         // /bin/sh might not match "sh" in categories since the command
@@ -488,6 +492,7 @@ category = "interactive"
             &config,
             &empty_dangerous(),
             OutputMode::Human,
+            ExecutionMode::Cli,
         )
         .expect("route should succeed for echo");
 
@@ -520,6 +525,7 @@ category = "interactive"
             &empty_config(),
             &empty_dangerous(),
             OutputMode::Human,
+            ExecutionMode::Cli,
         );
         assert!(result.is_err(), "empty command should return error");
     }
@@ -586,5 +592,75 @@ category = "interactive"
             &empty_dangerous(),
         );
         assert_eq!(category, Category::Condense);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: MCP mode Interactive command returns error (not executed)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_mcp_mode_interactive_returns_error() {
+        let config = standard_config();
+        let command = cmd(&["vim", "file.txt"]);
+
+        // Verify categorization
+        let category = categorize(&command, &empty_grammars(), &config, &empty_dangerous());
+        assert_eq!(category, Category::Interactive);
+
+        // Route in MCP mode should return error for interactive commands
+        let result = route(
+            &command,
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+            OutputMode::Human,
+            ExecutionMode::Mcp,
+        )
+        .expect("route should succeed (returning error result, not Err)");
+
+        assert_eq!(result.category, Category::Interactive);
+        match &result.output {
+            HandlerOutput::Interactive(ir) => {
+                assert_eq!(ir.exit_code, 1, "MCP mode interactive should return exit code 1");
+                assert!(
+                    ir.summary.contains("cannot run in MCP mode"),
+                    "expected error about MCP mode, got: {}",
+                    ir.summary
+                );
+            }
+            _ => panic!("expected Interactive handler output variant"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: MCP mode Dangerous command returns warning without executing
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_mcp_mode_dangerous_returns_warning_without_executing() {
+        let config = standard_config();
+        let dangerous = standard_dangerous();
+        let command = cmd(&["rm", "-rf", "/tmp/test"]);
+
+        let result = route(
+            &command,
+            &empty_grammars(),
+            &config,
+            &dangerous,
+            OutputMode::Human,
+            ExecutionMode::Mcp,
+        )
+        .expect("route should succeed");
+
+        assert_eq!(result.category, Category::Dangerous);
+        match &result.output {
+            HandlerOutput::Dangerous(dr) => {
+                assert!(!dr.executed, "MCP mode should NOT execute dangerous commands");
+                assert!(dr.exit_code.is_none(), "no exit code when not executed");
+                assert!(
+                    dr.warning.contains("\u{26a0}"),
+                    "warning should contain ⚠ symbol"
+                );
+            }
+            _ => panic!("expected Dangerous handler output variant"),
+        }
     }
 }

@@ -21,6 +21,19 @@ impl Default for Category {
     }
 }
 
+/// Execution mode: CLI proxy or MCP server.
+///
+/// Handlers use this to vary behavior — e.g. Interactive returns an error in
+/// MCP mode (can't run vim over stdio), Dangerous returns a structured warning
+/// instead of prompting in MCP mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// CLI proxy mode (`mish <command>`)
+    Cli,
+    /// MCP server mode (`mish serve`)
+    Mcp,
+}
+
 impl Category {
     /// Parse a category name string into a Category variant.
     pub fn from_str(s: &str) -> Option<Category> {
