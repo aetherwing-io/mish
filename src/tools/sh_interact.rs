@@ -206,6 +206,14 @@ fn handle_send_signal(
         ))
     })?;
 
+    // Guard against PID 0: killpg(0) sends signal to caller's own process group.
+    if entry.pid == 0 {
+        return Err(ToolError::new(
+            ERR_SHELL_ERROR,
+            format!("process '{}' has invalid PID 0 — cannot signal", params.alias),
+        ));
+    }
+
     // SIGINT is special: write \x03 to PTY master fd for correct Ctrl-C behavior.
     // For other signals, use killpg to reach the entire process group.
     if signal == Signal::SIGINT {
@@ -252,6 +260,14 @@ fn handle_kill(
     }
 
     let pid = entry.pid;
+
+    // Guard against PID 0: killpg(0) sends signal to caller's own process group.
+    if pid == 0 {
+        return Err(ToolError::new(
+            ERR_SHELL_ERROR,
+            format!("process '{}' has invalid PID 0 — cannot kill", params.alias),
+        ));
+    }
 
     // Send SIGKILL to the process group.
     let pgid = Pid::from_raw(pid as i32);

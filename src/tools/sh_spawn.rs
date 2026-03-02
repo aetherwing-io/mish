@@ -116,7 +116,12 @@ pub async fn setup(
         .ok_or_else(|| ToolError::new(ERR_SESSION_NOT_FOUND, format!("session not found: {session_name}")))?;
 
     // Send command as background job to the session shell.
-    let bg_cmd = format!("{} &\necho \"MISH_BG_PID:$!\"", params.cmd);
+    // Single line: cmd backgrounds, then echo captures $! (PID of last bg job).
+    // Single quotes around the marker avoid bash history expansion on `!`.
+    // Must be one line so only one PROMPT_COMMAND boundary fires — if split
+    // across lines, execute() returns after the first boundary (from `cmd &`)
+    // before the echo runs, and PID extraction fails.
+    let bg_cmd = format!("{} & echo 'MISH_BG_PID:'$!", params.cmd);
     let result = session_manager
         .execute_in_session(session_name, &bg_cmd, timeout)
         .await
