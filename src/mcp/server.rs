@@ -190,7 +190,7 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     // 2. Clean stale PID files
     let stale = ShutdownManager::cleanup_stale_pid_files();
     for pid in &stale {
-        eprintln!("mish: cleaned up stale PID {pid}");
+        tracing::warn!("cleaned up stale PID {pid}");
     }
 
     // 3. Write PID file

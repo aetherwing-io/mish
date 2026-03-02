@@ -307,8 +307,8 @@ impl ShutdownManager {
                         // Read the PID for reporting.
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             if let Ok(pid) = content.trim().parse::<u32>() {
-                                eprintln!(
-                                    "mish: warning: cleaning up stale PID file for process {pid}"
+                                tracing::warn!(
+                                    "cleaning up stale PID file for process {pid}"
                                 );
                                 cleaned.push(pid);
                             }
