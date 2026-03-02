@@ -9,6 +9,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
 use crate::config::MishConfig;
 use crate::core::grammar::Grammar;
 use crate::mcp::types::{
@@ -30,6 +31,7 @@ pub struct McpDispatcher {
     categories_config: CategoriesConfig,
     dangerous_patterns: Vec<DangerousPattern>,
     initialized: std::sync::atomic::AtomicBool,
+    audit_logger: Arc<TokioMutex<AuditLogger>>,
 }
 
 impl McpDispatcher {
@@ -41,6 +43,8 @@ impl McpDispatcher {
         categories_config: CategoriesConfig,
         dangerous_patterns: Vec<DangerousPattern>,
     ) -> Self {
+        let audit_logger = AuditLogger::new(&config.audit)
+            .expect("AuditLogger::new should not fail (gracefully degrades to disabled)");
         Self {
             session_manager,
             process_table,
@@ -49,6 +53,7 @@ impl McpDispatcher {
             categories_config,
             dangerous_patterns,
             initialized: std::sync::atomic::AtomicBool::new(false),
+            audit_logger: Arc::new(TokioMutex::new(audit_logger)),
         }
     }
 
@@ -133,6 +138,9 @@ impl McpDispatcher {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
+        // Extract cmd for audit logging before arguments are consumed.
+        let audit_cmd = arguments.get("cmd").and_then(|v| v.as_str()).map(String::from);
+
         // Dispatch to tool handler.
         let tool_result = match tool_name.as_str() {
             "sh_run" => self.dispatch_sh_run(arguments).await,
@@ -148,6 +156,25 @@ impl McpDispatcher {
                 ).await;
             }
         };
+
+        // Audit log the tool call.
+        let audit_exit_code = match &tool_result {
+            Ok((ref result_value, _)) => result_value.get("exit_code").and_then(|v| v.as_i64()).map(|v| v as i32),
+            Err(_) => None,
+        };
+        {
+            let mut logger = self.audit_logger.lock().await;
+            logger.log(AuditEntry::new(
+                "server".into(),
+                tool_name.clone(),
+                audit_cmd.clone(),
+                AuditEvent::ToolCall {
+                    tool_name: tool_name.clone(),
+                    cmd: audit_cmd,
+                    exit_code: audit_exit_code,
+                },
+            ));
+        }
 
         match tool_result {
             Ok((result_value, digest)) => JsonRpcResponse {
