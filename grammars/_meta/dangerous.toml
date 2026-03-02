@@ -40,5 +40,5 @@ pattern = "mkfs\\."
 reason = "Filesystem format — destroys all data on target"
 
 [[patterns]]
-pattern = ":(){ :|:& };:"
+pattern = ":\\(\\)\\{\\s*:\\|:\\&\\s*\\}\\s*;\\s*:"
 reason = "Fork bomb"
