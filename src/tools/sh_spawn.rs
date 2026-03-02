@@ -13,7 +13,7 @@ use regex::Regex;
 use crate::config::MishConfig;
 use crate::mcp::types::{
     ShSpawnParams, ShSpawnResponse,
-    ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SESSION_NOT_FOUND,
+    ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SESSION_NOT_FOUND, ERR_SHELL_ERROR,
 };
 use crate::safety;
 use crate::process::spool::OutputSpool;
@@ -127,8 +127,18 @@ pub async fn setup(
         .await
         .map_err(|e| ToolError::new(e.error_code(), e.to_string()))?;
 
-    // Extract PID from output.
-    let pid = extract_bg_pid(&result.output).unwrap_or(0);
+    // Extract PID from output. If extraction fails, the command is running
+    // but untrackable — surface the error rather than registering with PID 0
+    // (which would make killpg target our own process group).
+    let pid = extract_bg_pid(&result.output).ok_or_else(|| {
+        ToolError::new(
+            ERR_SHELL_ERROR,
+            format!(
+                "background process started but PID extraction failed. Output: {}",
+                result.output.chars().take(200).collect::<String>()
+            ),
+        )
+    })?;
 
     // Register in process table.
     process_table

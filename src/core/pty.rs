@@ -2,7 +2,7 @@
 ///
 /// Spawns child processes in a pseudoterminal via `nix::pty::forkpty()`.
 use std::ffi::CString;
-use std::os::unix::io::{AsRawFd, OwnedFd};
+use std::os::unix::io::{AsFd, AsRawFd, OwnedFd};
 use std::time::Instant;
 
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
@@ -141,6 +141,16 @@ impl PtyCapture {
     /// Returns 0 if no data available (EAGAIN).
     /// Returns the number of bytes read on success.
     pub fn read_output(&self, buf: &mut [u8]) -> Result<usize, PtyError> {
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+
+        let mut pfd = [PollFd::new(self.master_fd.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut pfd, PollTimeout::ZERO) {
+            Ok(0) => return Ok(0),              // no data available
+            Err(nix::Error::EINTR) => return Ok(0),
+            Err(e) => return Err(PtyError::Nix(e)),
+            Ok(_) => {}                          // data ready, fall through to read
+        }
+
         match read(self.master_fd.as_raw_fd(), buf) {
             Ok(n) => Ok(n),
             Err(nix::Error::EAGAIN) => Ok(0),
@@ -225,9 +235,19 @@ impl PtyCapture {
 
     /// Drain remaining bytes from the PTY master after child exits.
     pub fn drain(&self) -> Result<Vec<u8>, PtyError> {
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+
         let mut all = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
+            let mut pfd = [PollFd::new(self.master_fd.as_fd(), PollFlags::POLLIN)];
+            match poll(&mut pfd, PollTimeout::ZERO) {
+                Ok(0) => break,                     // no more data
+                Err(nix::Error::EINTR) => continue,
+                Err(e) => return Err(PtyError::Nix(e)),
+                Ok(_) => {}                          // data ready
+            }
+
             match read(self.master_fd.as_raw_fd(), &mut buf) {
                 Ok(0) => break,
                 Ok(n) => all.extend_from_slice(&buf[..n]),

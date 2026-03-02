@@ -14,6 +14,7 @@
 
 use serial_test::serial;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::io::AsRawFd;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -63,6 +64,20 @@ impl MishServer {
     fn request(&mut self, json: &str) -> serde_json::Value {
         writeln!(self.stdin(), "{}", json).expect("write to stdin");
         self.stdin().flush().expect("flush stdin");
+
+        // Poll stdout with 30s timeout to prevent infinite hang
+        let fd = self.reader.get_ref().as_raw_fd();
+        let borrowed = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd) };
+        let mut pfd = [nix::poll::PollFd::new(borrowed, nix::poll::PollFlags::POLLIN)];
+        match nix::poll::poll(&mut pfd, 30_000u16) {
+            Ok(0) => panic!(
+                "timeout (30s) waiting for server response to: {}",
+                &json[..json.len().min(120)]
+            ),
+            Ok(_) => {}
+            Err(nix::Error::EINTR) => {}
+            Err(e) => panic!("poll error: {e}"),
+        }
 
         let mut line = String::new();
         self.reader
