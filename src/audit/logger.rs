@@ -108,7 +108,9 @@ pub struct AuditEntry {
 #[serde(tag = "type")]
 pub enum AuditEvent {
     ToolCall {
-        params: serde_json::Value,
+        tool_name: String,
+        cmd: Option<String>,
+        exit_code: Option<i32>,
     },
     CommandStarted {
         alias: Option<String>,
@@ -477,11 +479,15 @@ mod tests {
     fn audit_event_serialization() {
         // ToolCall
         let tc = AuditEvent::ToolCall {
-            params: serde_json::json!({"cmd": "ls -la"}),
+            tool_name: "sh_run".into(),
+            cmd: Some("ls -la".into()),
+            exit_code: Some(0),
         };
         let j = serde_json::to_value(&tc).unwrap();
         assert_eq!(j["type"], "ToolCall");
-        assert_eq!(j["params"]["cmd"], "ls -la");
+        assert_eq!(j["tool_name"], "sh_run");
+        assert_eq!(j["cmd"], "ls -la");
+        assert_eq!(j["exit_code"], 0);
 
         // CommandStarted
         let cs = AuditEvent::CommandStarted {
@@ -635,7 +641,9 @@ mod tests {
             "sh_run".into(),
             None,
             AuditEvent::ToolCall {
-                params: serde_json::json!({}),
+                tool_name: "sh_run".into(),
+                cmd: None,
+                exit_code: None,
             },
         ));
         // warn-level event (CommandKilled) should pass

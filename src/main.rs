@@ -89,6 +89,7 @@ async fn main() {
         }
         Commands::Attach { handoff_id } => {
             eprintln!("mish attach {handoff_id}: not yet implemented");
+            std::process::exit(1);
         }
         Commands::Ps => {
             std::process::exit(mish::cli::management::cmd_ps());
@@ -101,6 +102,7 @@ async fn main() {
         Commands::Handoffs { watch } => {
             let _ = watch;
             eprintln!("mish handoffs: not yet implemented");
+            std::process::exit(1);
         }
         Commands::Config { subcommand } => match subcommand {
             ConfigCommands::Check { config } => {
