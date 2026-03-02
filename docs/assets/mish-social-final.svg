@@ -1,0 +1,40 @@
+<svg viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="shift" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7db4ff"/>
+    </linearGradient>
+    <radialGradient id="orbV" cx="20%" cy="80%" r="40%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orbB" cx="80%" cy="20%" r="35%">
+      <stop offset="0%" stop-color="#4f8fff" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#4f8fff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="#0f0f13"/>
+  <rect width="1280" height="640" fill="url(#orbV)"/>
+  <rect width="1280" height="640" fill="url(#orbB)"/>
+
+  <!-- Wordmark: μish -->
+  <text x="640" y="290" text-anchor="middle" font-family="'Geist Mono', 'SF Mono', monospace" font-size="96" font-weight="700" letter-spacing="-4" fill="#ededf4">ish</text>
+  <!-- μ with gradient (shifted left to align) -->
+  <text x="487" y="290" font-family="'Geist Mono', 'SF Mono', monospace" font-size="96" font-weight="700" letter-spacing="-4" fill="url(#shift)">μ</text>
+
+  <!-- Tagline -->
+  <text x="640" y="350" text-anchor="middle" font-family="'Outfit', 'Helvetica Neue', sans-serif" font-size="20" fill="#c4c4d4" font-weight="300" letter-spacing="0.4">The intent-aware proxy between AI agents and your OS</text>
+
+  <!-- Feature dots -->
+  <circle cx="400" cy="555" r="3.5" fill="#8b5cf6" opacity="0.7"/>
+  <text x="414" y="559" font-family="'Geist Mono', monospace" font-size="12" fill="#55556a">MCP-native</text>
+
+  <circle cx="570" cy="555" r="3.5" fill="#6d5ce7" opacity="0.7"/>
+  <text x="584" y="559" font-family="'Geist Mono', monospace" font-size="12" fill="#55556a">Output squashing</text>
+
+  <circle cx="770" cy="555" r="3.5" fill="#4f8fff" opacity="0.7"/>
+  <text x="784" y="559" font-family="'Geist Mono', monospace" font-size="12" fill="#55556a">Decision escalation</text>
+
+  <text x="960" y="559" font-family="'Geist Mono', monospace" font-size="12" fill="#8888a0">ohitsmish.com</text>
+</svg>

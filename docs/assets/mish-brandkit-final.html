@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mish — Final Brand Kit</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700;800;900&family=Outfit:wght@200;300;400;500;600;700&display=swap');
+
+  :root {
+    --violet: #8b5cf6;
+    --indigo: #6d5ce7;
+    --blue: #4f8fff;
+    --shift: linear-gradient(135deg, #8b5cf6 0%, #6d5ce7 40%, #4f8fff 100%);
+    --shift-text: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    --void: #09090b;
+    --deep: #0f0f13;
+    --surface: #16161d;
+    --elevated: #1e1e28;
+    --border: #2a2a38;
+    --muted: #55556a;
+    --secondary: #8888a0;
+    --text: #c4c4d4;
+    --bright: #ededf4;
+    --white: #f8f8fc;
+    --success: #34d399;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --lavender: #e0a4ff;
+    --mono: 'Geist Mono', 'SF Mono', monospace;
+    --sans: 'Outfit', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--void);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 80px 48px;
+  }
+
+  /* Header */
+  .kit-header { margin-bottom: 100px; }
+  .kit-header .overline {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+  .kit-header h1 {
+    font-family: var(--sans);
+    font-size: 48px;
+    font-weight: 200;
+    color: var(--bright);
+    letter-spacing: -1px;
+    line-height: 1.15;
+  }
+  .kit-header h1 strong {
+    font-weight: 600;
+    background: var(--shift-text);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .kit-header .desc {
+    margin-top: 16px;
+    font-size: 16px;
+    color: var(--secondary);
+    font-weight: 300;
+    max-width: 520px;
+  }
+
+  /* Section */
+  .section { margin-bottom: 96px; }
+  .section-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-bottom: 28px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .section-num::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* Logo grid */
+  .logo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .logo-card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    transition: border-color 0.3s;
+  }
+  .logo-card:hover { border-color: rgba(139,92,246,0.3); }
+  .logo-card.span { grid-column: 1 / -1; }
+
+  .logo-canvas {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 220px;
+    padding: 48px;
+  }
+  .logo-canvas.on-dark { background: var(--deep); }
+  .logo-canvas.on-light { background: #f4f4f8; }
+  .logo-canvas.on-gradient { background: linear-gradient(135deg, #8b5cf6 0%, #4f8fff 100%); }
+
+  .logo-footer {
+    padding: 14px 18px;
+    background: var(--surface);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .logo-footer .pill {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(139,92,246,0.1);
+    color: var(--violet);
+  }
+
+  /* Gradient text util */
+  .g {
+    background: linear-gradient(135deg, #8b5cf6 0%, #4f8fff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .gt {
+    background: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Icon glyph */
+  .icon-glyph {
+    font-family: var(--mono);
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  /* Wordmark */
+  .wordmark {
+    font-family: var(--mono);
+    font-weight: 700;
+    line-height: 1;
+    color: var(--bright);
+  }
+  .wordmark .mu {
+    background: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .tagline {
+    font-family: var(--sans);
+    font-weight: 300;
+    color: var(--secondary);
+    margin-top: 4px;
+  }
+
+  /* Social preview */
+  .social-frame {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .social-canvas {
+    width: 100%;
+    aspect-ratio: 2 / 1;
+    background: var(--deep);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .social-canvas .orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    pointer-events: none;
+  }
+  .social-canvas .orb.v { width: 400px; height: 400px; left: 8%; bottom: -25%; background: rgba(139,92,246,0.07); }
+  .social-canvas .orb.b { width: 350px; height: 350px; right: 8%; top: -20%; background: rgba(79,143,255,0.05); }
+
+  .social-inner {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+  }
+  .social-wordmark {
+    font-family: var(--mono);
+    font-size: 72px;
+    font-weight: 700;
+    letter-spacing: -3px;
+    color: var(--bright);
+    margin-bottom: 20px;
+  }
+  .social-wordmark .mu {
+    background: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .social-tagline {
+    font-family: var(--sans);
+    font-size: 19px;
+    font-weight: 300;
+    color: var(--text);
+  }
+  .social-tagline em {
+    font-style: normal;
+    font-weight: 500;
+    background: var(--shift-text);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .social-features {
+    position: absolute;
+    bottom: 28px;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    z-index: 1;
+  }
+  .social-features span { display: flex; align-items: center; gap: 8px; }
+  .fdot { width: 5px; height: 5px; border-radius: 50%; }
+  .fdot.v { background: var(--violet); opacity: 0.7; }
+  .fdot.m { background: var(--indigo); opacity: 0.7; }
+  .fdot.b { background: var(--blue); opacity: 0.7; }
+
+  /* Palette */
+  .palette-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .palette-grid.wide {
+    grid-template-columns: repeat(3, 1fr);
+    margin-bottom: 14px;
+  }
+  .swatch {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .swatch-fill { height: 80px; }
+  .swatch-body { padding: 12px 14px; background: var(--surface); }
+  .swatch-name { font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--bright); }
+  .swatch-val { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .swatch-use { font-size: 10px; color: var(--muted); margin-top: 4px; opacity: 0.7; }
+
+  /* Typography */
+  .type-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .type-card {
+    padding: 36px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+  }
+  .type-over {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--violet);
+    margin-bottom: 18px;
+    font-weight: 500;
+  }
+  .type-sample {
+    font-size: 30px;
+    color: var(--bright);
+    margin-bottom: 12px;
+    letter-spacing: -0.3px;
+  }
+  .type-sample.mono { font-family: var(--mono); font-weight: 600; }
+  .type-sample.sans { font-family: var(--sans); font-weight: 300; }
+  .type-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; }
+
+  /* Terminal */
+  .term {
+    background: var(--deep);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--surface);
+    gap: 8px;
+  }
+  .td { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+  .term-bar:hover .td:nth-child(1) { background: #ff5f57; }
+  .term-bar:hover .td:nth-child(2) { background: #ffbd2e; }
+  .term-bar:hover .td:nth-child(3) { background: #28ca42; }
+  .term-title { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .term-body { padding: 28px; font-family: var(--mono); font-size: 13px; line-height: 2; }
+  .tp { color: var(--violet); }
+  .tc { color: var(--bright); }
+  .tf { color: var(--blue); }
+  .ta { color: var(--lavender); }
+  .tm { color: var(--muted); font-style: italic; }
+  .to { color: var(--secondary); }
+  .tok { color: var(--success); }
+  .cursor-blink {
+    display: inline-block;
+    width: 8px; height: 16px;
+    background: var(--violet);
+    opacity: 0.7;
+    animation: blink 1.1s step-end infinite;
+    vertical-align: text-bottom;
+    border-radius: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Badges */
+  .badge-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 24px;
+    background: var(--surface);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+  .badge { display: inline-flex; height: 22px; border-radius: 4px; overflow: hidden; font-family: var(--mono); font-size: 11px; font-weight: 500; }
+  .bl { background: #2a2a38; color: #aaa; padding: 0 8px; display: flex; align-items: center; }
+  .br { padding: 0 8px; display: flex; align-items: center; color: #fff; }
+  .br.vi { background: var(--violet); }
+  .br.bl { background: var(--blue); }
+  .br.in { background: var(--indigo); }
+
+  /* Guidelines */
+  .guide-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .guide-card {
+    padding: 28px;
+    background: var(--surface);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .guide-card.do { border-left: 3px solid var(--success); }
+  .guide-card.dont { border-left: 3px solid var(--error); }
+  .guide-card h4 {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .guide-card.do h4 { color: var(--success); }
+  .guide-card.dont h4 { color: var(--error); }
+  .guide-card ul { list-style: none; font-size: 13px; line-height: 2; color: var(--text); }
+  .guide-card ul li::before { margin-right: 10px; font-weight: 700; font-size: 12px; }
+  .guide-card.do ul li::before { content: '✓'; color: var(--success); }
+  .guide-card.dont ul li::before { content: '✕'; color: var(--error); }
+
+  /* Icon row */
+  .icon-row {
+    display: flex;
+    gap: 24px;
+    align-items: flex-end;
+    padding: 40px;
+    background: var(--surface);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .icon-item { text-align: center; }
+  .icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 8px;
+    border-radius: 14px;
+    background: var(--deep);
+    border: 1px solid var(--border);
+  }
+  .icon-size { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* Voice */
+  .voice-card {
+    padding: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+  }
+  .voice-card h3 {
+    font-family: var(--sans);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--bright);
+    margin-bottom: 20px;
+  }
+  .taglines { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .tagline-item {
+    padding: 20px;
+    background: var(--elevated);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+  .tl-text { font-family: var(--sans); font-size: 15px; font-weight: 400; color: var(--bright); margin-bottom: 8px; line-height: 1.4; }
+  .tl-use { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+
+  /* Spec table */
+  .spec-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-top: 16px;
+  }
+  .spec-table th {
+    text-align: left;
+    padding: 10px 14px;
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+  }
+  .spec-table td {
+    padding: 10px 14px;
+    color: var(--text);
+    border-bottom: 1px solid rgba(42,42,56,0.4);
+  }
+  .spec-table td.val { color: var(--violet); font-weight: 600; }
+
+  @media (max-width: 768px) {
+    .container { padding: 40px 24px; }
+    .logo-grid, .type-cards, .guide-grid { grid-template-columns: 1fr; }
+    .palette-grid { grid-template-columns: repeat(2, 1fr); }
+    .palette-grid.wide { grid-template-columns: 1fr; }
+    .kit-header h1 { font-size: 32px; }
+    .taglines { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="kit-header">
+    <div class="overline">Final Brand System</div>
+    <h1><strong>μish</strong> — Identity Kit</h1>
+    <p class="desc">Visual language for mish, the LLM-native shell. An intent-aware proxy that translates between AI cognition and OS execution.<br><br><span style="font-family:var(--mono); font-size:13px; color:var(--violet);">ohitsmish.com</span> <span style="font-family:var(--mono); font-size:13px; color:var(--muted);">· docs, info, landing</span><br><span style="font-family:var(--mono); font-size:13px; color:var(--violet);">github.com/mish-sh</span> <span style="font-family:var(--mono); font-size:13px; color:var(--muted);">· source, releases</span></p>
+  </div>
+
+  <!-- 01 LOGO -->
+  <div class="section">
+    <div class="section-num">01 Logo System</div>
+    <div class="logo-grid">
+
+      <!-- Primary Dark -->
+      <div class="logo-card">
+        <div class="logo-canvas on-dark">
+          <div style="text-align:center;">
+            <div style="display:flex; align-items:center; justify-content:center; gap:16px;">
+              <div class="icon-box" style="width:52px; height:52px; border-radius:12px; border:none;">
+                <span class="g icon-glyph" style="font-size:21px; letter-spacing:-0.5px;">μ|sh</span>
+              </div>
+              <div style="text-align:left;">
+                <div class="wordmark" style="font-size:34px; letter-spacing:-1.5px;"><span class="mu">μ</span>ish</div>
+                <div class="tagline" style="font-size:12px;">the llm-native shell</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="logo-footer"><span>Primary — Dark</span><span class="pill">DEFAULT</span></div>
+      </div>
+
+      <!-- Primary Light -->
+      <div class="logo-card">
+        <div class="logo-canvas on-light">
+          <div style="text-align:center;">
+            <div style="display:flex; align-items:center; justify-content:center; gap:16px;">
+              <div style="width:52px; height:52px; border-radius:12px; background:#0f0f13; display:flex; align-items:center; justify-content:center;">
+                <span class="icon-glyph" style="font-size:21px; letter-spacing:-0.5px; background:linear-gradient(135deg,#a78bfa,#7db4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">μ|sh</span>
+              </div>
+              <div style="text-align:left;">
+                <div style="font-family:var(--mono); font-weight:700; font-size:34px; letter-spacing:-1.5px; color:#0f0f13;"><span style="background:linear-gradient(135deg,#8b5cf6,#4f8fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">μ</span>ish</div>
+                <div style="font-family:var(--sans); font-weight:300; font-size:12px; color:#666; margin-top:4px;">the llm-native shell</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="logo-footer"><span>Primary — Light</span><span class="pill">ALT</span></div>
+      </div>
+
+      <!-- Icon Only -->
+      <div class="logo-card">
+        <div class="logo-canvas on-dark" style="gap:28px;">
+          <div style="display:flex; gap:24px; align-items:center;">
+            <div class="icon-box" style="width:80px; height:80px; border-radius:18px;">
+              <span class="g icon-glyph" style="font-size:32px; letter-spacing:-1.5px;">μ|sh</span>
+            </div>
+            <div class="icon-box" style="width:52px; height:52px; border-radius:12px;">
+              <span class="g icon-glyph" style="font-size:21px; letter-spacing:-0.5px;">μ|sh</span>
+            </div>
+            <div class="icon-box" style="width:36px; height:36px; border-radius:8px;">
+              <span class="g icon-glyph" style="font-size:14px; letter-spacing:-0.3px;">μ|sh</span>
+            </div>
+            <div class="icon-box" style="width:24px; height:24px; border-radius:6px;">
+              <span class="g icon-glyph" style="font-size:9px; letter-spacing:0;">μ|sh</span>
+            </div>
+            <div class="icon-box" style="width:16px; height:16px; border-radius:4px;">
+              <span class="g icon-glyph" style="font-size:6.5px; letter-spacing:0;">μ|sh</span>
+            </div>
+          </div>
+        </div>
+        <div class="logo-footer"><span>Mark — Responsive Sizes</span><span class="pill">ICON</span></div>
+      </div>
+
+      <!-- Knockout on gradient -->
+      <div class="logo-card">
+        <div class="logo-canvas on-gradient">
+          <div style="text-align:center;">
+            <div style="display:flex; align-items:center; justify-content:center; gap:16px;">
+              <div style="width:52px; height:52px; border-radius:12px; background:rgba(0,0,0,0.2); display:flex; align-items:center; justify-content:center;">
+                <span class="icon-glyph" style="font-size:21px; letter-spacing:-0.5px; color:white;">μ|sh</span>
+              </div>
+              <div style="text-align:left;">
+                <div style="font-family:var(--mono); font-weight:700; font-size:34px; letter-spacing:-1.5px; color:white;">μish</div>
+                <div style="font-family:var(--sans); font-weight:300; font-size:12px; color:rgba(255,255,255,0.55); margin-top:4px;">the llm-native shell</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="logo-footer"><span>Knockout — Gradient</span><span class="pill">ALT</span></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 02 SOCIAL PREVIEW -->
+  <div class="section">
+    <div class="section-num">02 Social Preview · 1280×640</div>
+    <div class="social-frame">
+      <div class="social-canvas">
+        <div class="orb v"></div>
+        <div class="orb b"></div>
+        <div class="social-inner">
+          <div class="social-wordmark"><span class="mu">μ</span>ish</div>
+          <div class="social-tagline">The <em>intent-aware proxy</em> between AI agents and your OS</div>
+        </div>
+        <div class="social-features">
+          <span><span class="fdot v"></span>MCP-native</span>
+          <span><span class="fdot m"></span>Output squashing</span>
+          <span><span class="fdot b"></span>Decision escalation</span>
+          <span style="margin-left:16px; color:var(--secondary);">ohitsmish.com</span>
+        </div>
+      </div>
+    </div>
+    <div class="logo-footer" style="border-radius:8px; border:1px solid var(--border); margin-top:8px;">
+      <span>GitHub → Settings → Social Preview</span>
+      <span class="pill">1280×640</span>
+    </div>
+  </div>
+
+  <!-- 03 DOMAIN SYSTEM -->
+  <div class="section">
+    <div class="section-num">03 Domain System</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+      <div style="padding:32px; background:var(--surface); border:1px solid var(--border); border-radius:14px;">
+        <div style="font-family:var(--mono); font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--violet); margin-bottom:16px; font-weight:500;">Primary — Human</div>
+        <div style="font-family:var(--mono); font-size:24px; font-weight:600; color:var(--bright); letter-spacing:-0.5px; margin-bottom:8px;">ohitsmish.com</div>
+        <div style="font-size:13px; color:var(--secondary); line-height:1.6;">Docs, landing page, GitHub Pages. The human-readable front door. Reads as "oh it's mish" (polite intro) or "oh shit, mish" (visceral double-take).</div>
+      </div>
+      <div style="padding:32px; background:var(--surface); border:1px solid var(--border); border-radius:14px;">
+        <div style="font-family:var(--mono); font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--blue); margin-bottom:16px; font-weight:500;">Source — GitHub</div>
+        <div style="font-family:var(--mono); font-size:24px; font-weight:600; color:var(--bright); letter-spacing:-0.5px; margin-bottom:8px;">github.com/mish-sh</div>
+        <div style="font-size:13px; color:var(--secondary); line-height:1.6;">Source code, releases, issues. Primary distribution through agent coding plugin marketplaces. Install domain TBD.</div>
+      </div>
+    </div>
+    <div style="margin-top:16px; padding:20px 24px; background:var(--deep); border:1px solid var(--border); border-radius:10px; font-family:var(--mono); font-size:12px; color:var(--muted); display:flex; gap:24px; flex-wrap:wrap;">
+      <span><span style="color:var(--bright);">Package names:</span> mish</span>
+      <span><span style="color:var(--bright);">npm:</span> available</span>
+      <span><span style="color:var(--bright);">PyPI:</span> available</span>
+      <span><span style="color:var(--bright);">crates.io:</span> available</span>
+      <span><span style="color:var(--bright);">brew:</span> available</span>
+      <span><span style="color:var(--bright);">Docker Hub:</span> available</span>
+    </div>
+  </div>
+
+  <!-- 04 COLOR -->
+  <div class="section">
+    <div class="section-num">04 Color Palette</div>
+    <div class="palette-grid wide">
+      <div class="swatch">
+        <div class="swatch-fill" style="background:linear-gradient(135deg,#8b5cf6,#4f8fff);"></div>
+        <div class="swatch-body">
+          <div class="swatch-name">Spectral Shift</div>
+          <div class="swatch-val">#8b5cf6 → #4f8fff</div>
+          <div class="swatch-use">Primary gradient — logo, emphasis</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="swatch-fill" style="background:#8b5cf6;"></div>
+        <div class="swatch-body">
+          <div class="swatch-name">Violet</div>
+          <div class="swatch-val">#8b5cf6</div>
+          <div class="swatch-use">Prompt char, primary accent</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="swatch-fill" style="background:#4f8fff;"></div>
+        <div class="swatch-body">
+          <div class="swatch-name">Blue</div>
+          <div class="swatch-val">#4f8fff</div>
+          <div class="swatch-use">Flags, links, secondary accent</div>
+        </div>
+      </div>
+    </div>
+    <div class="palette-grid">
+      <div class="swatch"><div class="swatch-fill" style="background:#09090b;"></div><div class="swatch-body"><div class="swatch-name">Void</div><div class="swatch-val">#09090b</div><div class="swatch-use">Page background</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#16161d;"></div><div class="swatch-body"><div class="swatch-name">Surface</div><div class="swatch-val">#16161d</div><div class="swatch-use">Cards, code blocks</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#ededf4;"></div><div class="swatch-body"><div class="swatch-name">Bright</div><div class="swatch-val">#ededf4</div><div class="swatch-use">Headings, primary text</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#55556a;"></div><div class="swatch-body"><div class="swatch-name">Muted</div><div class="swatch-val">#55556a</div><div class="swatch-use">Comments, meta text</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#34d399;"></div><div class="swatch-body"><div class="swatch-name">Success</div><div class="swatch-val">#34d399</div><div class="swatch-use">Pass states</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#f59e0b;"></div><div class="swatch-body"><div class="swatch-name">Warn</div><div class="swatch-val">#f59e0b</div><div class="swatch-use">Escalation, warnings</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#ef4444;"></div><div class="swatch-body"><div class="swatch-name">Error</div><div class="swatch-val">#ef4444</div><div class="swatch-use">Errors, destructive</div></div></div>
+      <div class="swatch"><div class="swatch-fill" style="background:#e0a4ff;"></div><div class="swatch-body"><div class="swatch-name">Lavender</div><div class="swatch-val">#e0a4ff</div><div class="swatch-use">Arguments, strings</div></div></div>
+    </div>
+  </div>
+
+  <!-- 05 TYPOGRAPHY -->
+  <div class="section">
+    <div class="section-num">05 Typography</div>
+    <div class="type-cards">
+      <div class="type-card">
+        <div class="type-over">Primary — Monospace</div>
+        <div class="type-sample mono">Geist Mono</div>
+        <div class="type-meta">Wordmark · Icon · CLI · Code · Labels<br>Weights: 400–900 · Vercel</div>
+      </div>
+      <div class="type-card">
+        <div class="type-over">Secondary — Sans</div>
+        <div class="type-sample sans">Outfit</div>
+        <div class="type-meta">Taglines · Body · Docs · Marketing<br>Weights: 200–700</div>
+      </div>
+    </div>
+
+    <table class="spec-table" style="margin-top:24px; background:var(--surface); border-radius:12px; overflow:hidden;">
+      <thead>
+        <tr><th>Context</th><th>Font Size</th><th>Weight</th><th>Letter Spacing</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Icon 128px</td><td class="val">52px</td><td>700</td><td class="val">-2px</td></tr>
+        <tr><td>Icon 64px</td><td class="val">24px</td><td>700</td><td class="val">-0.5px</td></tr>
+        <tr><td>Icon 48px</td><td class="val">18px</td><td>700</td><td class="val">-0.3px</td></tr>
+        <tr><td>Icon ≤32px</td><td class="val">12px</td><td>700</td><td class="val">0</td></tr>
+        <tr><td>Wordmark (μish)</td><td class="val">34px</td><td>700</td><td class="val">-1.5px</td></tr>
+        <tr><td>Social wordmark</td><td class="val">72px</td><td>700</td><td class="val">-3px</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 06 README ELEMENTS -->
+  <div class="section">
+    <div class="section-num">06 README Elements</div>
+
+    <div style="margin-bottom:8px; font-family:var(--mono); font-size:11px; color:var(--muted);">Badge row:</div>
+    <div class="badge-row">
+      <div class="badge"><span class="bl">go</span><span class="br vi">1.22+</span></div>
+      <div class="badge"><span class="bl">mcp</span><span class="br in">native</span></div>
+      <div class="badge"><span class="bl">license</span><span class="br bl" style="background:var(--blue);">MIT</span></div>
+      <div class="badge"><span class="bl">release</span><span class="br vi">v0.1.0</span></div>
+    </div>
+
+    <div style="margin-top:24px; margin-bottom:8px; font-family:var(--mono); font-size:11px; color:var(--muted);">Terminal hero:</div>
+    <div class="term">
+      <div class="term-bar">
+        <div class="td"></div><div class="td"></div><div class="td"></div>
+        <div class="term-title">μish — ~/projects/api</div>
+      </div>
+      <div class="term-body">
+        <div><span class="tp">μ|</span> <span class="tc">deploy</span> <span class="tf">--env</span> <span class="ta">staging</span></div>
+        <div><span class="tm"># squashing 847 lines → 12 relevant</span></div>
+        <div><span class="tok">✓</span> <span class="to">Build passed</span> <span class="tm" style="font-style:normal;">(3.2s)</span></div>
+        <div><span class="tok">✓</span> <span class="to">Tests: 142 passed, 0 failed</span></div>
+        <div><span class="tok">✓</span> <span class="to">Deployed → staging-api.example.com</span></div>
+        <div style="height:8px;"></div>
+        <div><span class="tp">μ|</span> <span class="tc">check health</span></div>
+        <div><span class="tm"># escalation: tier-1 (auto-resolve)</span></div>
+        <div><span class="tok">✓</span> <span class="to">6/6 endpoints healthy</span> <span class="tm" style="font-style:normal;">p99: 23ms</span></div>
+        <div style="height:8px;"></div>
+        <div><span class="tp">μ|</span> <span class="cursor-blink"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 06 VOICE -->
+  <div class="section">
+    <div class="section-num">07 Voice & Messaging</div>
+    <div class="voice-card">
+      <h3>Approved taglines</h3>
+      <div class="taglines">
+        <div class="tagline-item"><div class="tl-text">The LLM-native shell</div><div class="tl-use">Primary — GitHub, README</div></div>
+        <div class="tagline-item"><div class="tl-text">Intent-aware terminal proxy</div><div class="tl-use">Technical — Docs, talks</div></div>
+        <div class="tagline-item"><div class="tl-text">The intelligent membrane between AI agents and your OS</div><div class="tl-use">Descriptive — Social, landing</div></div>
+        <div class="tagline-item"><div class="tl-text">Your agent's operating system interface</div><div class="tl-use">Concise — Badges, tweets</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 07 GUIDELINES -->
+  <div class="section">
+    <div class="section-num">08 Usage Guidelines</div>
+    <div class="guide-grid">
+      <div class="guide-card do">
+        <h4>Do</h4>
+        <ul>
+          <li>Lowercase always: <strong style="color:var(--bright);">mish</strong></li>
+          <li>Geist Mono for all brand text</li>
+          <li>Gradient flows violet → blue (never reversed)</li>
+          <li>μ in the wordmark gets the gradient; <em>ish</em> stays bright/dark</li>
+          <li><strong style="color:var(--bright);">μ|</strong> as the terminal prompt character</li>
+          <li>Tighten letter-spacing at display sizes (see spec table)</li>
+          <li>Dark backgrounds are the default context</li>
+        </ul>
+      </div>
+      <div class="guide-card dont">
+        <h4>Don't</h4>
+        <ul>
+          <li>Never capitalize: Mish, MISH, MiSh</li>
+          <li>Don't flatten the gradient to a single color for primary use</li>
+          <li>Don't use green for brand — it's for success states only</li>
+          <li>Don't rotate, skew, or add effects to the mark</li>
+          <li>Don't pair with decorative or serif fonts</li>
+          <li>Don't describe it as "a terminal emulator"</li>
+          <li>Don't use default letter-spacing at sizes above 32px</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 08 ICON SIZES -->
+  <div class="section">
+    <div class="section-num">09 Favicon & Icon Sizes</div>
+    <div class="icon-row">
+      <div class="icon-item">
+        <div class="icon-box" style="width:64px; height:64px; border-radius:14px;">
+          <span class="g icon-glyph" style="font-size:24px; letter-spacing:-0.5px;">μ|sh</span>
+        </div>
+        <div class="icon-size">64×64</div>
+      </div>
+      <div class="icon-item">
+        <div class="icon-box" style="width:48px; height:48px; border-radius:11px;">
+          <span class="g icon-glyph" style="font-size:18px; letter-spacing:-0.3px;">μ|sh</span>
+        </div>
+        <div class="icon-size">48×48</div>
+      </div>
+      <div class="icon-item">
+        <div class="icon-box" style="width:32px; height:32px; border-radius:8px;">
+          <span class="g icon-glyph" style="font-size:12px; letter-spacing:0;">μ|sh</span>
+        </div>
+        <div class="icon-size">32×32</div>
+      </div>
+      <div class="icon-item">
+        <div class="icon-box" style="width:20px; height:20px; border-radius:5px;">
+          <span class="g icon-glyph" style="font-size:8px; letter-spacing:0;">μ|sh</span>
+        </div>
+        <div class="icon-size">20×20</div>
+      </div>
+      <div class="icon-item">
+        <div class="icon-box" style="width:16px; height:16px; border-radius:4px;">
+          <span class="g icon-glyph" style="font-size:6.5px; letter-spacing:0;">μ|sh</span>
+        </div>
+        <div class="icon-size">16×16</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

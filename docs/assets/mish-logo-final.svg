@@ -1,0 +1,18 @@
+<svg viewBox="0 0 260 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="shift" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#4f8fff"/>
+    </linearGradient>
+    <linearGradient id="mu" x1="82" y1="20" x2="110" y2="50">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7db4ff"/>
+    </linearGradient>
+  </defs>
+  <!-- Icon -->
+  <rect width="64" height="64" rx="14" fill="#16161d"/>
+  <text x="32" y="43" text-anchor="middle" font-family="'Geist Mono', 'SF Mono', monospace" font-size="24" font-weight="700" letter-spacing="-0.5" fill="url(#shift)">μ|sh</text>
+  <!-- Wordmark -->
+  <text x="82" y="44" font-family="'Geist Mono', 'SF Mono', monospace" font-size="36" font-weight="700" letter-spacing="-1.5" fill="url(#mu)">μ</text>
+  <text x="108" y="44" font-family="'Geist Mono', 'SF Mono', monospace" font-size="36" font-weight="700" letter-spacing="-1.5" fill="#ededf4">ish</text>
+</svg>
