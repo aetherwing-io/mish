@@ -1,20 +1,13 @@
 # Shared Python traceback patterns
 
 [[rules]]
-pattern = "^Traceback \\(most recent call last\\):"
-action = "keep"
-severity = "error"
-multiline = 50
-description = "Python traceback header"
-
-[[rules]]
-pattern = "^\\s+File \".+\", line \\d+"
-action = "keep"
-severity = "error"
+# Python traceback frames
+pattern = '^\s+File ".+", line \d+'
+action = "dedup"
 description = "Python stack frame"
 
 [[rules]]
-pattern = "^\\w+Error:"
-action = "keep"
-severity = "error"
-description = "Python error class"
+# The code line after "File" line in tracebacks
+pattern = '^\s{4}\S'
+action = "dedup"
+description = "Python traceback code line"

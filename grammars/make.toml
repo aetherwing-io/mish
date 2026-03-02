@@ -6,16 +6,44 @@ inherit = ["ansi-progress", "c-compiler-output"]
 [fallback]
 
 [[fallback.noise]]
-pattern = '^make\[\d+\]:'
-action = "strip"
-description = "Make enter/leave directory messages"
+# Recipe echo lines (commands being run)
+pattern = '^\s*(gcc|g\+\+|cc|clang|ar|ld|ranlib|strip|install)\s+'
+action = "dedup"
 
 [[fallback.noise]]
-pattern = '^\s*(cc|gcc|g\+\+|clang)\s'
+# Make entering/leaving directory
+pattern = '^make(\[\d+\])?: (Entering|Leaving) directory'
 action = "strip"
-description = "Compiler command echoes"
+
+[[fallback.outcome]]
+pattern = '^make(\[\d+\])?: Nothing to be done'
+action = "promote"
+
+[[fallback.hazard]]
+pattern = '^make(\[\d+\])?: \*\*\*'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Compiler errors (file:line:col: error:)
+pattern = '^\S+:\d+:\d+:\s+error:'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[fallback.hazard]]
+# Compiler warnings
+pattern = '^\S+:\d+:\d+:\s+warning:'
+severity = "warning"
+action = "dedup"
+
+[[fallback.hazard]]
+# Linker errors
+pattern = 'undefined reference to'
+severity = "error"
+action = "keep"
 
 [fallback.summary]
-success = "+ make succeeded"
+success = "+ make complete"
 failure = "! make failed (exit {exit_code})"
-partial = "... building"
+partial = "... building ({lines} lines)"

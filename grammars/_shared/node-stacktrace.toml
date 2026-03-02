@@ -1,14 +1,7 @@
 # Shared Node.js stack trace patterns
 
 [[rules]]
-pattern = "^\\s+at\\s+.+\\(.+:\\d+:\\d+\\)"
-action = "keep"
-severity = "error"
-multiline = 20
+# Node.js stack trace frames -- dedup (keep first + last, count middle)
+pattern = '^\s+at\s+\S+'
+action = "dedup"
 description = "Node.js stack frame"
-
-[[rules]]
-pattern = "^\\w+Error:"
-action = "keep"
-severity = "error"
-description = "Node.js error header"

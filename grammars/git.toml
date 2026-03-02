@@ -3,51 +3,91 @@ name = "git"
 detect = ["git"]
 inherit = ["ansi-progress"]
 
+# ---- push action ----
+
 [actions.push]
 detect = ["push"]
 
+[[actions.push.noise]]
+pattern = '^(Enumerating|Counting|Compressing|Writing) objects'
+action = "strip"
+
+[[actions.push.noise]]
+pattern = '^Delta compression'
+action = "strip"
+
+[[actions.push.noise]]
+pattern = '^remote: (Enumerating|Counting|Compressing)'
+action = "strip"
+
+[[actions.push.outcome]]
+pattern = '(?P<src>\S+)\s+->\s+(?P<dst>\S+)'
+action = "promote"
+captures = ["src", "dst"]
+
 [[actions.push.hazard]]
-pattern = 'rejected'
+pattern = '^\s*!\s+\[rejected\]'
 severity = "error"
 action = "keep"
 
-[[actions.push.outcome]]
-pattern = '(?P<from>[a-f0-9]+)\.\.(?P<to>[a-f0-9]+)\s+\S+ -> \S+'
-action = "promote"
-captures = ["from", "to"]
+[[actions.push.hazard]]
+pattern = 'error: failed to push'
+severity = "error"
+action = "keep"
 
 [actions.push.summary]
-success = "+ pushed ({from}..{to})"
-failure = "! git push failed (exit {exit_code})"
+success = "+ pushed {src} -> {dst}"
+failure = "! push rejected"
+partial = "... pushing"
+
+# ---- pull action ----
 
 [actions.pull]
 detect = ["pull", "fetch"]
+
+[[actions.pull.noise]]
+pattern = '^(Unpacking|remote:) '
+action = "strip"
+
+[[actions.pull.outcome]]
+pattern = '(?P<count>\d+) files? changed'
+action = "promote"
+captures = ["count"]
 
 [[actions.pull.outcome]]
 pattern = 'Already up to date'
 action = "promote"
 
-[[actions.pull.outcome]]
-pattern = '(?P<from>[a-f0-9]+)\.\.(?P<to>[a-f0-9]+)\s+\S+ -> \S+'
-action = "promote"
-captures = ["from", "to"]
+[[actions.pull.hazard]]
+pattern = 'CONFLICT'
+severity = "error"
+action = "keep"
+
+[[actions.pull.hazard]]
+pattern = 'error: Your local changes'
+severity = "error"
+action = "keep"
 
 [actions.pull.summary]
-success = "+ pulled ({from}..{to})"
-failure = "! git pull failed (exit {exit_code})"
+success = "+ pulled ({count} files changed)"
+failure = "! pull failed"
+partial = "... pulling"
+
+# ---- clone action ----
 
 [actions.clone]
 detect = ["clone"]
 
 [[actions.clone.noise]]
-pattern = '^(Cloning|Receiving|Resolving)'
+pattern = '^(Cloning into|Receiving|Resolving)'
 action = "strip"
 
 [[actions.clone.outcome]]
-pattern = "Cloning into '(?P<dir>[^']+)'"
+pattern = "^Cloning into .(?P<dir>[^.]+)."
 action = "promote"
 captures = ["dir"]
 
 [actions.clone.summary]
 success = "+ cloned into {dir}"
-failure = "! git clone failed (exit {exit_code})"
+failure = "! clone failed"
+partial = "... cloning"

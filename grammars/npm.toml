@@ -11,6 +11,8 @@ action = "strip"
 pattern = '^npm warn'
 action = "dedup"
 
+# ---- install action ----
+
 [actions.install]
 detect = ["install", "i", "add", "ci"]
 
@@ -18,49 +20,84 @@ detect = ["install", "i", "add", "ci"]
 pattern = '^(idealTree|reify|resolv)'
 action = "strip"
 
+[[actions.install.noise]]
+pattern = '^npm warn'
+action = "dedup"
+
 [[actions.install.hazard]]
 pattern = 'ERESOLVE'
 severity = "error"
 action = "keep"
 
 [[actions.install.hazard]]
-pattern = 'npm warn deprecated'
+pattern = 'EACCES|EPERM'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+pattern = '(?P<count>\d+) vulnerabilit'
 severity = "warning"
 action = "keep"
+captures = ["count"]
 
 [[actions.install.outcome]]
 pattern = '^added (?P<count>\d+) packages? in (?P<time>.+)'
 action = "promote"
 captures = ["count", "time"]
 
+[[actions.install.outcome]]
+pattern = '^up to date'
+action = "promote"
+
 [actions.install.summary]
 success = "+ {count} packages installed ({time})"
 failure = "! npm install failed (exit {exit_code})"
 partial = "... installing ({lines} lines)"
 
+# ---- test action ----
+
 [actions.test]
 detect = ["test", "t"]
 
-[[actions.test.hazard]]
-pattern = '^\s*\u2715|FAIL'
-severity = "error"
-action = "keep"
-
 [[actions.test.outcome]]
-pattern = '^Tests?:\s*(?P<passed>\d+) passed'
+pattern = 'Tests?:\s+(?P<passed>\d+) passed'
 action = "promote"
 captures = ["passed"]
 
+[[actions.test.outcome]]
+pattern = '(?P<failed>\d+) failed'
+action = "promote"
+captures = ["failed"]
+
+[[actions.test.hazard]]
+pattern = '^\s*(FAIL|\u2715|\u2717|\u00d7)\s+'
+severity = "error"
+action = "keep"
+multiline = 5
+
 [actions.test.summary]
 success = "+ {passed} tests passed"
-failure = "! tests failed (exit {exit_code})"
+failure = "! {failed} tests failed"
+partial = "... running tests ({lines} lines)"
+
+# ---- run action (generic scripts) ----
 
 [actions.run]
-detect = ["run", "start"]
+detect = ["run", "run-script", "start"]
+
+# npm run is too generic to have specific rules
+# falls through to universal patterns + structural heuristics
+
+[actions.run.summary]
+success = "+ script completed"
+failure = "! script failed (exit {exit_code})"
+partial = "... running ({lines} lines)"
+
+# ---- quiet config ----
 
 [quiet]
-safe_inject = ["--no-progress"]
-recommend = ["--loglevel=warn"]
+safe_inject = ["--loglevel=error"]
+recommend = ["--silent"]
 
 [quiet.actions.install]
 safe_inject = ["--no-fund", "--no-audit"]

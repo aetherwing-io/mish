@@ -4,56 +4,78 @@ detect = ["cargo"]
 inherit = ["ansi-progress"]
 
 [[global_noise]]
-pattern = '^\s+Compiling'
-action = "strip"
+# Individual crate compile lines
+pattern = '^\s*(Compiling|Downloading|Downloaded)\s+'
+action = "dedup"
 
 [[global_noise]]
-pattern = '^\s+Downloading'
-action = "dedup"
+# Fetch/update lines
+pattern = '^\s*(Updating|Fetching)\s+'
+action = "strip"
+
+# ---- build action ----
 
 [actions.build]
 detect = ["build", "b"]
 
-[[actions.build.noise]]
-pattern = '^\s+Fresh'
-action = "strip"
-
-[[actions.build.hazard]]
-pattern = '^error\[E'
-severity = "error"
-action = "keep"
-
-[[actions.build.hazard]]
-pattern = '^warning:'
-severity = "warning"
-action = "keep"
-
 [[actions.build.outcome]]
-pattern = '^\s+Finished .* in (?P<time>.+)'
+pattern = '^\s*Finished\s+.*in\s+(?P<time>.+)'
 action = "promote"
 captures = ["time"]
 
+[[actions.build.hazard]]
+pattern = '^error\[(?P<code>E\d+)\]:\s+(?P<msg>.+)'
+severity = "error"
+action = "keep"
+captures = ["code", "msg"]
+multiline = 3
+
+[[actions.build.hazard]]
+pattern = '^warning(\[.+\])?:\s+(?P<msg>.+)'
+severity = "warning"
+action = "dedup"
+captures = ["msg"]
+
 [actions.build.summary]
-success = "+ build succeeded ({time})"
-failure = "! cargo build failed (exit {exit_code})"
-partial = "... building"
+success = "+ built in {time}"
+failure = "! build failed (exit {exit_code})"
+partial = "... compiling ({lines} lines)"
+
+# ---- test action ----
 
 [actions.test]
 detect = ["test", "t"]
 
-[[actions.test.hazard]]
-pattern = '^test .+ \.\.\. FAILED'
-severity = "error"
-action = "keep"
+[[actions.test.noise]]
+pattern = '^\s*running \d+ tests?$'
+action = "strip"
+
+[[actions.test.noise]]
+pattern = '^test .+ \.\.\. ok$'
+action = "dedup"
 
 [[actions.test.outcome]]
 pattern = '^test result: ok\. (?P<passed>\d+) passed'
 action = "promote"
 captures = ["passed"]
 
+[[actions.test.outcome]]
+pattern = '^test result: FAILED\. .+ (?P<failed>\d+) failed'
+action = "promote"
+captures = ["failed"]
+
+[[actions.test.hazard]]
+pattern = '^test .+ \.\.\. FAILED$'
+severity = "error"
+action = "keep"
+multiline = 10
+
 [actions.test.summary]
 success = "+ {passed} tests passed"
-failure = "! cargo test failed (exit {exit_code})"
+failure = "! {failed} tests failed"
+partial = "... testing ({lines} lines)"
+
+# ---- quiet config ----
 
 [quiet]
 recommend = ["--message-format=json"]

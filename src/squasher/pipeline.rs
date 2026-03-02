@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(result.len(), 5);
         assert_eq!(result[0], "unique line 1");
         assert_eq!(result[1], "unique line 2");
-        assert!(result[2].contains("suppressed"));
+        assert!(result[2].contains("truncated"));
         assert_eq!(result[3], "unique line 19");
         assert_eq!(result[4], "unique line 20");
     }

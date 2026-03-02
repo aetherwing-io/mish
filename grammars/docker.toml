@@ -3,38 +3,69 @@ name = "docker"
 detect = ["docker"]
 inherit = ["ansi-progress"]
 
+# ---- build action ----
+
 [actions.build]
 detect = ["build", "buildx"]
 
 [[actions.build.noise]]
-pattern = '^\s*(Step|--->) '
+pattern = '^\s*#\d+\s+(CACHED|DONE)'
+action = "dedup"
+
+[[actions.build.noise]]
+pattern = '^\s*#\d+\s+\d+\.\d+\s'
 action = "strip"
 
-[[actions.build.hazard]]
-pattern = '^ERROR'
-severity = "error"
-action = "keep"
+[[actions.build.outcome]]
+pattern = 'exporting to image'
+action = "promote"
 
 [[actions.build.outcome]]
-pattern = 'Successfully built (?P<image_id>[a-f0-9]+)'
+pattern = 'writing image sha256:(?P<hash>[0-9a-f]{12})'
 action = "promote"
-captures = ["image_id"]
+captures = ["hash"]
+
+[[actions.build.hazard]]
+pattern = '^(ERROR|error)\s'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[actions.build.hazard]]
+pattern = 'DEPRECATED'
+severity = "warning"
+action = "keep"
 
 [actions.build.summary]
-success = "+ built {image_id}"
-failure = "! docker build failed (exit {exit_code})"
+success = "+ built image {hash}"
+failure = "! docker build failed"
+partial = "... building ({lines} lines)"
+
+# ---- compose up ----
 
 [actions.up]
-detect = ["compose", "up"]
+detect = ["compose up", "up"]
+
+[[actions.up.noise]]
+pattern = '^\s*(Creating|Pulling|Starting)\s+'
+action = "dedup"
 
 [[actions.up.outcome]]
-pattern = 'Container (?P<name>\S+)\s+Started'
+pattern = '(?P<name>\S+)\s+(Started|Running)'
 action = "promote"
 captures = ["name"]
 
+[[actions.up.hazard]]
+pattern = '(error|Error|exited with code [^0])'
+severity = "error"
+action = "keep"
+
 [actions.up.summary]
 success = "+ {name} started"
-failure = "! docker compose up failed"
+failure = "! compose up failed"
+partial = "... starting containers"
+
+# ---- quiet config ----
 
 [quiet]
 safe_inject = ["--progress=plain"]

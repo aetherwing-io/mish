@@ -1,18 +1,7 @@
 # Shared C/C++ compiler output patterns
 
 [[rules]]
-pattern = "^.+:\\d+:\\d+: error:"
-action = "keep"
-severity = "error"
-description = "GCC/Clang error"
-
-[[rules]]
-pattern = "^.+:\\d+:\\d+: warning:"
-action = "keep"
-severity = "warning"
-description = "GCC/Clang warning"
-
-[[rules]]
-pattern = "^.+:\\d+:\\d+: note:"
+# Individual compile commands echoed by make
+pattern = '^(gcc|g\+\+|cc|c\+\+|clang|clang\+\+)\s+'
 action = "strip"
-description = "Compiler note (context for errors)"
+description = "Compiler command echo"

@@ -2,11 +2,27 @@
 # Inherited by grammars that produce progress indicators.
 
 [[rules]]
-pattern = "^\\s*\\[?[#=\\->.]+\\]?\\s*\\d+%"
+# CR without LF -- line overwriting (spinners, progress bars)
+# Also handled at the LineBuffer level, but kept here for
+# grammars that process log files.
+pattern = '\r[^\n]'
 action = "strip"
-description = "Progress bar with percentage"
+description = "CR-overwrite progress (spinners)"
 
 [[rules]]
-pattern = "^\\s*\\d+/\\d+\\s"
+# Common progress bar shapes
+pattern = '[\[({][\s#=\u2588\u2591\u2593\u25ba>.\-]{4,}[\])}]'
+action = "strip"
+description = "Progress bar with visual indicator"
+
+[[rules]]
+# Standalone percentage (mid-stream, not final)
+pattern = '^\s*\d{1,3}%\s*$'
+action = "strip"
+description = "Standalone percentage"
+
+[[rules]]
+# Counter-style progress (e.g., 14/57)
+pattern = '^\s*\d+/\d+\s'
 action = "strip"
 description = "Counter-style progress (e.g., 14/57)"

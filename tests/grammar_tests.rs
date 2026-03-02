@@ -6,8 +6,10 @@ use std::path::Path;
 
 use mish::core::grammar::{
     load_all_grammars, load_grammar, detect_tool, resolve_action,
-    format_summary, CapturedOutcome, Severity,
+    format_summary, evaluate_line, evaluate_line_with_fallback,
+    resolve_category, CapturedOutcome, RuleMatch, Severity,
 };
+use mish::router::categories::Category;
 
 // ---------------------------------------------------------------------------
 // Helper: load grammar from the grammars/ directory by filename
@@ -188,10 +190,20 @@ fn test_11_npm_rules_match_fixture() {
     let noise_matched = install.noise.iter().any(|r| r.pattern.is_match(noise_line));
     assert!(noise_matched, "npm install noise should match: {noise_line}");
 
-    // Hazard rule should match deprecated warnings
-    let hazard_line = "npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported";
+    // Hazard rule should match ERESOLVE
+    let hazard_line = "npm ERR! ERESOLVE unable to resolve dependency tree";
     let hazard_matched = install.hazard.iter().any(|r| r.pattern.is_match(hazard_line));
-    assert!(hazard_matched, "npm install hazard should match deprecated warning");
+    assert!(hazard_matched, "npm install hazard should match ERESOLVE error");
+
+    // Hazard rule should match permission errors
+    let perm_line = "npm ERR! Error: EACCES: permission denied";
+    let perm_matched = install.hazard.iter().any(|r| r.pattern.is_match(perm_line));
+    assert!(perm_matched, "npm install hazard should match EACCES error");
+
+    // Hazard rule should match vulnerability warnings
+    let vuln_line = "6 vulnerabilities (2 moderate, 4 high)";
+    let vuln_matched = install.hazard.iter().any(|r| r.pattern.is_match(vuln_line));
+    assert!(vuln_matched, "npm install hazard should match vulnerability count");
 
     // Global noise should match npm timing lines
     let timing_line = "npm timing idealTree:init Completed in 12ms";
@@ -230,24 +242,29 @@ fn test_12_cargo_rules_match_fixture() {
     let global_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(compiling_line));
     assert!(global_matched, "cargo global_noise should match Compiling line");
 
-    // Noise: Fresh lines
-    let fresh_line = "    Fresh proc-macro2 v1.0.78";
-    let fresh_matched = build.noise.iter().any(|r| r.pattern.is_match(fresh_line));
-    assert!(fresh_matched, "cargo build noise should match Fresh line");
+    // Global noise should match Downloaded lines
+    let downloaded_line = "   Downloaded serde v1.0.197";
+    let dl_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(downloaded_line));
+    assert!(dl_matched, "cargo global_noise should match Downloaded line");
+
+    // Global noise should match Updating lines
+    let updating_line = "   Updating crates.io index";
+    let up_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(updating_line));
+    assert!(up_matched, "cargo global_noise should match Updating line");
 }
 
 #[test]
 fn test_13_git_rules_match_fixture() {
     let grammar = load_tool_grammar("git");
 
-    // Push outcome should match ref update line
+    // Push outcome should match ref update line (src -> dst pattern)
     let push = grammar.actions.get("push").unwrap();
-    let push_line = "abc1234..def5678 main -> main";
+    let push_line = "   abc1234..def5678 main -> main";
     let push_matched = push.outcome.iter().any(|r| r.pattern.is_match(push_line));
     assert!(push_matched, "git push outcome should match ref update line");
 
     // Push hazard should match rejected
-    let rejected = "! [rejected]        main -> main (non-fast-forward)";
+    let rejected = " ! [rejected]        main -> main (non-fast-forward)";
     let reject_matched = push.hazard.iter().any(|r| r.pattern.is_match(rejected));
     assert!(reject_matched, "git push hazard should match rejected line");
 
@@ -257,11 +274,11 @@ fn test_13_git_rules_match_fixture() {
     let pull_matched = pull.outcome.iter().any(|r| r.pattern.is_match(up_to_date));
     assert!(pull_matched, "git pull outcome should match 'Already up to date'");
 
-    // Clone noise should match Cloning/Receiving/Resolving
+    // Clone noise should match Cloning into/Receiving/Resolving
     let clone = grammar.actions.get("clone").unwrap();
     let cloning_line = "Cloning into 'my-repo'...";
     let clone_noise = clone.noise.iter().any(|r| r.pattern.is_match(cloning_line));
-    assert!(clone_noise, "git clone noise should match Cloning line");
+    assert!(clone_noise, "git clone noise should match 'Cloning into' line");
 
     // Clone outcome should capture directory name
     let clone_outcome = clone.outcome.iter().any(|r| {
@@ -274,26 +291,30 @@ fn test_13_git_rules_match_fixture() {
 fn test_14_docker_rules_match_fixture() {
     let grammar = load_tool_grammar("docker");
 
-    // Build noise should match Step lines
+    // Build noise should match #N CACHED/DONE lines (BuildKit format)
     let build = grammar.actions.get("build").unwrap();
-    let step_line = "Step 1/5 : FROM node:18";
-    let step_matched = build.noise.iter().any(|r| r.pattern.is_match(step_line));
-    assert!(step_matched, "docker build noise should match Step line");
+    let cached_line = " #5 CACHED";
+    let cached_matched = build.noise.iter().any(|r| r.pattern.is_match(cached_line));
+    assert!(cached_matched, "docker build noise should match #N CACHED line");
 
-    // Build noise should match ---> lines
-    let arrow_line = "---> Running in abc123";
-    let arrow_matched = build.noise.iter().any(|r| r.pattern.is_match(arrow_line));
-    assert!(arrow_matched, "docker build noise should match ---> line");
+    let done_line = " #3 DONE 0.1s";
+    let done_matched = build.noise.iter().any(|r| r.pattern.is_match(done_line));
+    assert!(done_matched, "docker build noise should match #N DONE line");
+
+    // Build noise should match timed step lines
+    let timed_line = " #4 0.234 some output";
+    let timed_matched = build.noise.iter().any(|r| r.pattern.is_match(timed_line));
+    assert!(timed_matched, "docker build noise should match timed step line");
 
     // Build hazard should match ERROR
-    let error_line = "ERROR: failed to solve";
+    let error_line = "ERROR failed to solve";
     let error_matched = build.hazard.iter().any(|r| r.pattern.is_match(error_line));
     assert!(error_matched, "docker build hazard should match ERROR line");
 
-    // Build outcome should match "Successfully built"
-    let built_line = "Successfully built abc123def456";
-    let built_matched = build.outcome.iter().any(|r| r.pattern.is_match(built_line));
-    assert!(built_matched, "docker build outcome should match Successfully built");
+    // Build outcome should match "exporting to image"
+    let export_line = "exporting to image";
+    let export_matched = build.outcome.iter().any(|r| r.pattern.is_match(export_line));
+    assert!(export_matched, "docker build outcome should match exporting to image");
 
     // Up outcome should match Container Started
     let up = grammar.actions.get("up").unwrap();
@@ -355,18 +376,27 @@ fn test_17_make_inherits_c_compiler_output_rules() {
     let grammar = grammars.get("make").unwrap();
 
     // After inheritance resolution, global_noise should contain c-compiler-output rules
-    let error_line = "src/main.c:10:5: error: expected ';' after expression";
-    let matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(error_line));
+    // c-compiler-output strips compiler command echoes
+    let gcc_cmd = "gcc -Wall -O2 -c file.c -o file.o";
+    let matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(gcc_cmd));
     assert!(
         matched,
-        "make should inherit c-compiler-output rules matching compiler errors"
+        "make should inherit c-compiler-output rules matching gcc command echo"
     );
 
-    let warning_line = "src/utils.c:22:10: warning: unused variable 'x'";
-    let warn_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(warning_line));
+    let clang_cmd = "clang -std=c11 -o output main.c";
+    let clang_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(clang_cmd));
     assert!(
-        warn_matched,
-        "make should inherit c-compiler-output rules matching compiler warnings"
+        clang_matched,
+        "make should inherit c-compiler-output rules matching clang command echo"
+    );
+
+    // Also check ansi-progress inheritance
+    let progress_line = "  32/57 files compiled";
+    let progress_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(progress_line));
+    assert!(
+        progress_matched,
+        "make should inherit ansi-progress rules matching counter-style progress"
     );
 }
 
@@ -398,7 +428,7 @@ fn test_19_cargo_build_summary_failure() {
     let action = grammar.actions.get("build").unwrap();
 
     let result = format_summary(grammar, Some(action), &[], 1);
-    assert_eq!(result, vec!["! cargo build failed (exit 1)"]);
+    assert_eq!(result, vec!["! build failed (exit 1)"]);
 }
 
 // ===========================================================================
@@ -457,13 +487,13 @@ fn test_21_make_fallback_action() {
     let action = resolve_action(grammar, &args);
     assert!(action.is_some(), "make should have a fallback action");
     let fb = action.unwrap();
-    assert_eq!(fb.summary.success, "+ make succeeded");
+    assert_eq!(fb.summary.success, "+ make complete");
     assert_eq!(fb.summary.failure, "! make failed (exit {exit_code})");
-    assert_eq!(fb.summary.partial, "... building");
+    assert_eq!(fb.summary.partial, "... building ({lines} lines)");
 
     // format_summary should work with fallback
     let result = format_summary(grammar, action, &[], 0);
-    assert_eq!(result, vec!["+ make succeeded"]);
+    assert_eq!(result, vec!["+ make complete"]);
 
     // format_summary failure path
     let result_fail = format_summary(grammar, action, &[], 2);
@@ -521,12 +551,12 @@ fn test_npm_quiet_config() {
     let grammar = grammars.get("npm").unwrap();
     let quiet = grammar.quiet.as_ref().unwrap();
     assert!(
-        quiet.safe_inject.contains(&"--no-progress".to_string()),
-        "npm quiet should include --no-progress"
+        quiet.safe_inject.contains(&"--loglevel=error".to_string()),
+        "npm quiet should include --loglevel=error"
     );
     assert!(
-        quiet.recommend.contains(&"--loglevel=warn".to_string()),
-        "npm quiet should recommend --loglevel=warn"
+        quiet.recommend.contains(&"--silent".to_string()),
+        "npm quiet should recommend --silent"
     );
     let install_quiet = quiet.actions.get("install").unwrap();
     assert!(
@@ -547,13 +577,13 @@ fn test_git_push_summary_success() {
 
     let outcomes = vec![CapturedOutcome {
         captures: HashMap::from([
-            ("from".to_string(), "abc1234".to_string()),
-            ("to".to_string(), "def5678".to_string()),
+            ("src".to_string(), "main".to_string()),
+            ("dst".to_string(), "main".to_string()),
         ]),
     }];
 
     let result = format_summary(grammar, Some(action), &outcomes, 0);
-    assert_eq!(result, vec!["+ pushed (abc1234..def5678)"]);
+    assert_eq!(result, vec!["+ pushed main -> main"]);
 }
 
 #[test]
@@ -618,4 +648,201 @@ fn test_cargo_outcome_captures_from_fixture() {
     }
 
     assert_eq!(captured.get("time").map(|s| s.as_str()), Some("12.3s"));
+}
+
+// ===========================================================================
+// Tests: evaluate_line with real grammars
+// ===========================================================================
+
+#[test]
+fn test_evaluate_line_npm_install_hazard_first() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("npm").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    // ERESOLVE should be classified as hazard
+    let result = evaluate_line(grammar, Some(install), "npm ERR! ERESOLVE unable to resolve");
+    assert!(matches!(result, RuleMatch::Hazard { .. }),
+        "ERESOLVE should be Hazard, got {:?}", result);
+
+    // idealTree should be classified as noise
+    let result = evaluate_line(grammar, Some(install), "idealTree: calculating");
+    assert!(matches!(result, RuleMatch::Noise { .. }),
+        "idealTree should be Noise, got {:?}", result);
+
+    // "added N packages" should be outcome
+    let result = evaluate_line(grammar, Some(install), "added 147 packages in 3.2s");
+    match &result {
+        RuleMatch::Outcome { captures, .. } => {
+            assert_eq!(captures.get("count").map(|s| s.as_str()), Some("147"));
+            assert_eq!(captures.get("time").map(|s| s.as_str()), Some("3.2s"));
+        }
+        other => panic!("expected Outcome, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_evaluate_line_cargo_build_evaluation_order() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("cargo").unwrap();
+    let build = grammar.actions.get("build").unwrap();
+
+    // Hazard: error[E0433] should match hazard before anything else
+    let result = evaluate_line(grammar, Some(build), "error[E0433]: failed to resolve");
+    match &result {
+        RuleMatch::Hazard { severity, captures, .. } => {
+            assert_eq!(*severity, Some(Severity::Error));
+            assert_eq!(captures.get("code").map(|s| s.as_str()), Some("E0433"));
+        }
+        other => panic!("expected Hazard for error line, got {:?}", other),
+    }
+
+    // Outcome: Finished line
+    let result = evaluate_line(grammar, Some(build), "   Finished `dev` profile in 5.2s");
+    match &result {
+        RuleMatch::Outcome { captures, .. } => {
+            assert_eq!(captures.get("time").map(|s| s.as_str()), Some("5.2s"));
+        }
+        other => panic!("expected Outcome for Finished line, got {:?}", other),
+    }
+
+    // Global noise: Compiling (dedup from global_noise)
+    let result = evaluate_line(grammar, Some(build), "   Compiling serde v1.0.0");
+    assert!(matches!(result, RuleMatch::Noise { .. }),
+        "Compiling should be Noise, got {:?}", result);
+}
+
+#[test]
+fn test_evaluate_line_make_fallback() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("make").unwrap();
+
+    // make has no named actions, uses fallback
+    let result = evaluate_line_with_fallback(grammar, "make[1]: *** [Makefile:10: all] Error 2");
+    assert!(matches!(result, RuleMatch::Hazard { .. }),
+        "make *** should be Hazard, got {:?}", result);
+
+    // Noise via fallback: make[N]: Entering directory
+    let result = evaluate_line_with_fallback(grammar, "make[1]: Entering directory '/tmp/foo'");
+    assert!(matches!(result, RuleMatch::Noise { .. }),
+        "make entering dir should be Noise, got {:?}", result);
+
+    // "Nothing to be done" should be outcome
+    let result = evaluate_line_with_fallback(grammar, "make[1]: Nothing to be done for 'all'");
+    assert!(matches!(result, RuleMatch::Outcome { .. }),
+        "Nothing to be done should be Outcome, got {:?}", result);
+}
+
+// ===========================================================================
+// Tests: inheritance order (own rules evaluated before inherited)
+// ===========================================================================
+
+#[test]
+fn test_inheritance_order_npm_own_before_inherited() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("npm").unwrap();
+
+    // npm has 2 own global_noise rules, then inherited ansi-progress + node-stacktrace rules
+    // Verify own rules come first by checking the first 2 rules
+    assert!(grammar.global_noise[0].pattern.is_match("npm timing foo"),
+        "first global_noise should be npm's own (npm timing)");
+    assert!(grammar.global_noise[1].pattern.is_match("npm warn something"),
+        "second global_noise should be npm's own (npm warn)");
+
+    // Verify inherited rules come after by checking that ansi-progress patterns
+    // are found at indices >= 2
+    let counter_progress = "  32/57 done";
+    let found_at = grammar.global_noise.iter().position(|r| r.pattern.is_match(counter_progress));
+    assert!(found_at.is_some(), "inherited ansi-progress counter rule should exist");
+    assert!(found_at.unwrap() >= 2, "inherited rules should come after own rules");
+}
+
+#[test]
+fn test_inheritance_order_make_own_before_inherited() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("make").unwrap();
+
+    // make's own global_noise is empty, so all global_noise should be inherited
+    // (from ansi-progress and c-compiler-output)
+    assert!(!grammar.global_noise.is_empty(),
+        "make should have inherited global_noise rules");
+
+    // Check that inherited c-compiler-output rule matches gcc commands
+    let gcc_match = grammar.global_noise.iter()
+        .any(|r| r.pattern.is_match("gcc -Wall main.c -o main"));
+    assert!(gcc_match, "make should inherit gcc command echo from c-compiler-output");
+}
+
+// ===========================================================================
+// Tests: category resolution
+// ===========================================================================
+
+#[test]
+fn test_resolve_category_npm_defaults_to_condense() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("npm").unwrap();
+
+    // npm grammar has no category field, should default to Condense
+    let result = resolve_category(grammar, None);
+    assert_eq!(result, Category::Condense,
+        "npm with no category field should default to Condense");
+}
+
+#[test]
+fn test_resolve_category_with_categories_map() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("npm").unwrap();
+
+    // Provide a categories map that maps npm -> Narrate
+    let mut map = HashMap::new();
+    map.insert("npm".to_string(), Category::Narrate);
+
+    let result = resolve_category(grammar, Some(&map));
+    assert_eq!(result, Category::Narrate,
+        "npm with categories map entry should resolve to Narrate");
+}
+
+// ===========================================================================
+// Tests: git push/pull/clone outcome pattern matching
+// ===========================================================================
+
+#[test]
+fn test_git_push_outcome_captures_src_dst() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("git").unwrap();
+    let push = grammar.actions.get("push").unwrap();
+
+    let line = "   abc1234..def5678  main -> origin/main";
+    let result = evaluate_line(grammar, Some(push), line);
+    match &result {
+        RuleMatch::Outcome { captures, .. } => {
+            assert!(captures.contains_key("src"), "should capture src");
+            assert!(captures.contains_key("dst"), "should capture dst");
+        }
+        other => panic!("expected Outcome, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_git_pull_conflict_is_hazard() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("git").unwrap();
+    let pull = grammar.actions.get("pull").unwrap();
+
+    let line = "CONFLICT (content): Merge conflict in src/main.rs";
+    let result = evaluate_line(grammar, Some(pull), line);
+    assert!(matches!(result, RuleMatch::Hazard { .. }),
+        "CONFLICT should be Hazard, got {:?}", result);
+}
+
+#[test]
+fn test_docker_up_hazard_error() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("docker").unwrap();
+    let up = grammar.actions.get("up").unwrap();
+
+    let line = "my-app exited with code 1";
+    let result = evaluate_line(grammar, Some(up), line);
+    assert!(matches!(result, RuleMatch::Hazard { .. }),
+        "exited with code 1 should be Hazard, got {:?}", result);
 }

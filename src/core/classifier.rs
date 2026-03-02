@@ -4,7 +4,8 @@
 /// Evaluates in order: Tier 1 (grammar rules) → Tier 2 (universal patterns) → Tier 3 (structural).
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 
@@ -176,6 +177,14 @@ impl UniversalPatterns {
 // Classifier
 // ---------------------------------------------------------------------------
 
+/// Constants for structural heuristics.
+/// Number of consecutive Unknown lines before volume compression kicks in.
+pub const VOLUME_THRESHOLD: usize = 10;
+/// Duration of silence after which next line gets noise immunity.
+pub const SILENCE_THRESHOLD: Duration = Duration::from_secs(2);
+/// Number of lines to keep in the ring buffer for unknown tool fallback.
+pub const RING_BUFFER_SIZE: usize = 5;
+
 pub struct Classifier {
     state: ClassifierState,
 
@@ -191,6 +200,12 @@ pub struct Classifier {
 
     // Tier 3: Structural state
     previous_line: Option<String>,
+    /// Count of consecutive Unknown lines (for volume compression)
+    consecutive_unknown_count: usize,
+    /// Ring buffer of last N lines (for unknown tool fallback)
+    ring_buffer: VecDeque<String>,
+    /// Whether an Outcome has been seen (for ring buffer summary)
+    has_outcome: bool,
 
     // Multiline hazard state
     multiline_remaining: u32,
@@ -199,8 +214,13 @@ pub struct Classifier {
     current_hazard_captures: HashMap<String, String>,
     current_hazard_attached: Vec<String>,
 
+    // Stack trace consuming state
+    consuming_trace_lines: Vec<String>,
+
     // Timing
     last_line_time: Instant,
+    /// Whether the next line should bypass structural noise (temporal boost)
+    temporal_noise_bypass: bool,
 }
 
 impl Classifier {
@@ -229,12 +249,17 @@ impl Classifier {
             has_grammar,
             universal: UniversalPatterns::new(),
             previous_line: None,
+            consecutive_unknown_count: 0,
+            ring_buffer: VecDeque::with_capacity(RING_BUFFER_SIZE + 1),
+            has_outcome: false,
             multiline_remaining: 0,
             current_hazard_severity: Severity::Error,
             current_hazard_text: String::new(),
             current_hazard_captures: HashMap::new(),
             current_hazard_attached: Vec::new(),
+            consuming_trace_lines: Vec::new(),
             last_line_time: Instant::now(),
+            temporal_noise_bypass: false,
         }
     }
 
@@ -248,6 +273,33 @@ impl Classifier {
         if self.state == ClassifierState::AwaitingInput {
             self.state = ClassifierState::Running;
         }
+    }
+
+    /// Notify the classifier of silence (no output for a duration).
+    /// If duration exceeds SILENCE_THRESHOLD, next line gets noise immunity.
+    pub fn notify_silence(&mut self, duration: Duration) {
+        if duration >= SILENCE_THRESHOLD {
+            self.temporal_noise_bypass = true;
+        }
+        // If in Running state and silence > 500ms, transition to MaybePrompt
+        if self.state == ClassifierState::Running && duration >= Duration::from_millis(500) {
+            self.state = ClassifierState::MaybePrompt;
+        }
+    }
+
+    /// Get the ring buffer of last lines (for unknown tool fallback on exit).
+    pub fn ring_buffer(&self) -> &VecDeque<String> {
+        &self.ring_buffer
+    }
+
+    /// Whether we've seen any Outcome classifications.
+    pub fn has_outcome(&self) -> bool {
+        self.has_outcome
+    }
+
+    /// Get count of consecutive Unknown lines (for volume compression).
+    pub fn consecutive_unknown_count(&self) -> usize {
+        self.consecutive_unknown_count
     }
 
     /// Notify the classifier that the process has exited.
@@ -266,6 +318,18 @@ impl Classifier {
         // Transition from Idle to Running on first input
         if self.state == ClassifierState::Idle {
             self.state = ClassifierState::Running;
+        }
+
+        // If we were in MaybePrompt and output resumes, go back to Running
+        if self.state == ClassifierState::MaybePrompt {
+            self.state = ClassifierState::Running;
+        }
+
+        // Check temporal: if time since last line exceeds silence threshold,
+        // give this line noise immunity
+        let elapsed = self.last_line_time.elapsed();
+        if elapsed >= SILENCE_THRESHOLD {
+            self.temporal_noise_bypass = true;
         }
 
         self.last_line_time = Instant::now();
@@ -307,7 +371,7 @@ impl Classifier {
         let meta = VteStripper::strip(raw.as_bytes());
         let clean = &meta.clean_text;
 
-        // If consuming a multiline hazard, attach this line
+        // If consuming a multiline hazard, attach this line unconditionally
         if self.multiline_remaining > 0 {
             self.multiline_remaining -= 1;
             self.current_hazard_attached.push(clean.clone());
@@ -337,43 +401,113 @@ impl Classifier {
             };
         }
 
+        // If consuming a stack trace, check if this line continues it
+        if self.state == ClassifierState::ConsumingTrace {
+            if self.is_stack_continuation(clean) {
+                self.consuming_trace_lines.push(clean.clone());
+                // Suppress continuation lines — they'll be emitted compressed
+                return Classification::Noise {
+                    action: NoiseAction::Strip,
+                    text: String::new(),
+                };
+            } else {
+                // End of stack trace — transition back to Running
+                self.state = ClassifierState::Running;
+                self.consuming_trace_lines.clear();
+                // Fall through to classify this line normally
+            }
+        }
+
+        // Save temporal bypass state before classification consumes it
+        let has_temporal_bypass = self.temporal_noise_bypass;
+        self.temporal_noise_bypass = false;
+
         // Tier 1: Grammar rules (if grammar loaded)
         if self.has_grammar {
-            if let Some(c) = self.classify_tier1(clean) {
-                self.previous_line = Some(clean.clone());
+            if let Some(c) = self.classify_tier1_mut(clean) {
+                self.update_tracking(clean, &c);
                 return c;
             }
         }
 
         // Tier 2: Universal patterns
         if let Some(c) = self.classify_tier2(clean, &meta) {
-            self.previous_line = Some(clean.clone());
+            // Check if this is a stack trace start — enter CONSUMING_TRACE
+            if matches!(c, Classification::Hazard { .. }) && self.is_stack_trace_start(clean) {
+                self.state = ClassifierState::ConsumingTrace;
+                self.consuming_trace_lines.clear();
+                self.consuming_trace_lines.push(clean.clone());
+            }
+            self.update_tracking(clean, &c);
             return c;
         }
 
         // Tier 3: Structural heuristics
-        if let Some(c) = self.classify_tier3(clean) {
-            self.previous_line = Some(clean.clone());
-            return c;
+        // If temporal bypass is active, skip structural noise classification
+        if !has_temporal_bypass {
+            if let Some(c) = self.classify_tier3(clean) {
+                self.update_tracking(clean, &c);
+                return c;
+            }
         }
 
-        self.previous_line = Some(clean.clone());
-        Classification::Unknown {
+        // No match — classify as Unknown
+        let result = Classification::Unknown {
             text: clean.clone(),
+        };
+        self.update_tracking(clean, &result);
+        result
+    }
+
+    /// Update tracking state after classification: ring buffer, volume compression, previous line.
+    fn update_tracking(&mut self, clean: &str, classification: &Classification) {
+        // Ring buffer: always push, maintaining max size
+        self.ring_buffer.push_back(clean.to_string());
+        if self.ring_buffer.len() > RING_BUFFER_SIZE {
+            self.ring_buffer.pop_front();
         }
+
+        // Track outcomes for ring buffer summary decision
+        if matches!(classification, Classification::Outcome { .. }) {
+            self.has_outcome = true;
+        }
+
+        // Volume compression: track consecutive Unknown count
+        if matches!(classification, Classification::Unknown { .. }) {
+            self.consecutive_unknown_count += 1;
+        } else {
+            self.consecutive_unknown_count = 0;
+        }
+
+        self.previous_line = Some(clean.to_string());
     }
 
     /// Tier 1: Grammar rule evaluation — hazard → outcome → noise.
-    fn classify_tier1(&self, clean: &str) -> Option<Classification> {
+    /// Uses &mut self to support multiline hazard state transitions.
+    fn classify_tier1_mut(&mut self, clean: &str) -> Option<Classification> {
         // 1a. Hazard rules (never suppress errors)
         for rule in &self.hazard_rules {
             if rule.pattern.is_match(clean) {
                 let captures = extract_captures(&rule.pattern, clean, &rule.captures);
                 let severity = rule.severity.unwrap_or(Severity::Error);
 
-                // Check for multiline — handled by caller after we return
-                // We can't set multiline_remaining here since &self is immutable
-                // Instead, return the classification and let classify_complete handle it
+                // Check for multiline attachment
+                if let Some(n) = rule.multiline {
+                    if n > 0 {
+                        self.multiline_remaining = n;
+                        self.current_hazard_severity = severity;
+                        self.current_hazard_text = clean.to_string();
+                        self.current_hazard_captures = captures;
+                        self.current_hazard_attached.clear();
+                        self.state = ClassifierState::ConsumingTrace;
+                        // Suppress the initial line — full hazard emitted after all N lines collected
+                        return Some(Classification::Noise {
+                            action: NoiseAction::Strip,
+                            text: String::new(),
+                        });
+                    }
+                }
+
                 return Some(Classification::Hazard {
                     severity,
                     text: clean.to_string(),
@@ -563,7 +697,42 @@ impl Classifier {
             });
         }
 
+        // 3b. Edit-distance similarity
+        if let Some(ref prev) = self.previous_line {
+            if is_similar(clean, prev) {
+                return Some(Classification::Noise {
+                    action: NoiseAction::Dedup,
+                    text: clean.to_string(),
+                });
+            }
+        }
+
         None
+    }
+
+    /// Check whether a line is a stack trace start (for entering CONSUMING_TRACE).
+    fn is_stack_trace_start(&self, clean: &str) -> bool {
+        for pat in &self.universal.stack_start {
+            if pat.is_match(clean) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check whether a line continues an active stack trace.
+    fn is_stack_continuation(&self, clean: &str) -> bool {
+        // Indented lines continue a stack trace
+        if self.universal.stack_continue.is_match(clean) {
+            return true;
+        }
+        // Stack-start patterns also continue (e.g., more "at" frames)
+        for pat in &self.universal.stack_start {
+            if pat.is_match(clean) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -585,6 +754,83 @@ fn extract_captures(
         }
     }
     map
+}
+
+/// Compute the Levenshtein edit distance between two strings.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+
+    // Use two-row optimization
+    let mut prev = vec![0usize; n + 1];
+    let mut curr = vec![0usize; n + 1];
+
+    for j in 0..=n {
+        prev[j] = j;
+    }
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
+}
+
+/// Check if two lines are similar enough to dedup (normalized edit distance < 0.3).
+///
+/// Optimization: only computes edit distance when lines are similar length
+/// (within 2x of each other) and start with the same first token.
+fn is_similar(current: &str, previous: &str) -> bool {
+    let cur_len = current.len();
+    let prev_len = previous.len();
+
+    // Both empty → similar
+    if cur_len == 0 && prev_len == 0 {
+        return true;
+    }
+    // One empty, one not → not similar
+    if cur_len == 0 || prev_len == 0 {
+        return false;
+    }
+
+    // Length check: within 2x of each other
+    let max_len = cur_len.max(prev_len);
+    let min_len = cur_len.min(prev_len);
+    if max_len > min_len * 2 {
+        return false;
+    }
+
+    // First token check
+    let cur_first = current.split_whitespace().next().unwrap_or("");
+    let prev_first = previous.split_whitespace().next().unwrap_or("");
+    if cur_first != prev_first {
+        return false;
+    }
+
+    let distance = levenshtein(current, previous);
+    let normalized = distance as f64 / max_len as f64;
+
+    normalized < 0.3
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,6 +1612,683 @@ success = "ok"
             result,
             Classification::Hazard {
                 severity: Severity::Error,
+                ..
+            }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3 Enhancement Tests
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Tier 1: Multiline hazard consumption
+    // -----------------------------------------------------------------------
+
+    // Test 50: Multiline hazard attaches next N lines unconditionally
+    #[test]
+    fn test_multiline_hazard_attaches_lines() {
+        let toml_str = r#"
+[tool]
+name = "test"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.hazard]]
+pattern = '^ERROR:'
+severity = "error"
+action = "keep"
+multiline = 2
+
+[actions.build.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("build").unwrap();
+        let mut c = Classifier::new(Some(&grammar), Some(action));
+
+        // First line triggers multiline — suppressed during collection
+        let r1 = c.classify(Line::Complete("ERROR: assertion failed".into()));
+        assert!(matches!(r1, Classification::Noise { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Second line (attached unconditionally)
+        let r2 = c.classify(Line::Complete("  expected: 42".into()));
+        assert!(matches!(r2, Classification::Noise { .. }));
+
+        // Third line (last attached) — now the full hazard is emitted
+        let r3 = c.classify(Line::Complete("  actual: 0".into()));
+        match r3 {
+            Classification::Hazard {
+                severity, text, ..
+            } => {
+                assert_eq!(severity, Severity::Error);
+                assert!(text.contains("ERROR: assertion failed"));
+                assert!(text.contains("expected: 42"));
+                assert!(text.contains("actual: 0"));
+            }
+            other => panic!("expected Hazard, got: {:?}", other),
+        }
+
+        // State should return to Running
+        assert_eq!(c.state(), ClassifierState::Running);
+    }
+
+    // Test 51: Multiline hazard content is immune to noise rules
+    #[test]
+    fn test_multiline_hazard_immune_to_noise() {
+        let toml_str = r#"
+[tool]
+name = "test"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.hazard]]
+pattern = '^FAIL:'
+severity = "error"
+action = "keep"
+multiline = 1
+
+[[actions.build.noise]]
+pattern = '^\s+at\s'
+action = "strip"
+
+[actions.build.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("build").unwrap();
+        let mut c = Classifier::new(Some(&grammar), Some(action));
+
+        // Hazard line
+        let _r1 = c.classify(Line::Complete("FAIL: test_foo".into()));
+
+        // This line matches a noise rule, but multiline attachment overrides
+        let r2 = c.classify(Line::Complete("  at module.test (test.js:42:5)".into()));
+
+        // Should get the full hazard (not noise stripped)
+        match r2 {
+            Classification::Hazard { text, .. } => {
+                assert!(text.contains("FAIL: test_foo"));
+                assert!(text.contains("at module.test"));
+            }
+            other => panic!("expected Hazard, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 2: Stack trace CONSUMING_TRACE state
+    // -----------------------------------------------------------------------
+
+    // Test 52: Node.js stack trace enters CONSUMING_TRACE and consumes continuations
+    #[test]
+    fn test_stack_trace_consuming_nodejs() {
+        let mut c = Classifier::new(None, None);
+
+        // First line: stack trace start — classified as Hazard, enters CONSUMING_TRACE
+        let r1 = c.classify(Line::Complete(
+            "    at UserService.getUser (src/user.ts:42:5)".into(),
+        ));
+        assert!(matches!(
+            r1,
+            Classification::Hazard {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Continuation frame (indented) — consumed as noise
+        let r2 = c.classify(Line::Complete(
+            "    at Router.dispatch (node_modules/express/lib/router.js:73:3)".into(),
+        ));
+        assert!(matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Strip,
+                ..
+            }
+        ));
+
+        // Non-indented, non-stack line → ends trace, classified normally
+        let r3 = c.classify(Line::Complete("Process exited with code 1".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+        // This line doesn't match any patterns → Unknown
+        assert!(matches!(r3, Classification::Unknown { .. }));
+    }
+
+    // Test 53: Python stack trace enters CONSUMING_TRACE
+    #[test]
+    fn test_stack_trace_consuming_python() {
+        let mut c = Classifier::new(None, None);
+
+        let r1 = c.classify(Line::Complete(
+            "  File \"/app/main.py\", line 42".into(),
+        ));
+        assert!(matches!(
+            r1,
+            Classification::Hazard {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Code line (indented 4 spaces)
+        let r2 = c.classify(Line::Complete("    result = process(data)".into()));
+        assert!(matches!(r2, Classification::Noise { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+    }
+
+    // Test 54: Rust backtrace enters CONSUMING_TRACE
+    #[test]
+    fn test_stack_trace_consuming_rust() {
+        let mut c = Classifier::new(None, None);
+
+        let r1 = c.classify(Line::Complete(
+            "   0: 0x7ff612345678 - std::panicking::begin_panic".into(),
+        ));
+        assert!(matches!(r1, Classification::Hazard { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Continuation
+        let r2 = c.classify(Line::Complete(
+            "   1: 0x7ff612345679 - core::result::unwrap_failed".into(),
+        ));
+        assert!(matches!(r2, Classification::Noise { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 3: Edit-distance similarity
+    // -----------------------------------------------------------------------
+
+    // Test 55: Similar consecutive lines → Noise(Dedup)
+    #[test]
+    fn test_edit_distance_similar_lines_dedup() {
+        let mut c = Classifier::new(None, None);
+
+        let _r1 = c.classify(Line::Complete("Downloading package foo v1.0.0".into()));
+        let r2 = c.classify(Line::Complete("Downloading package bar v1.0.0".into()));
+        assert!(matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+    }
+
+    // Test 56: Dissimilar lines are NOT deduped
+    #[test]
+    fn test_edit_distance_dissimilar_not_deduped() {
+        let mut c = Classifier::new(None, None);
+
+        let _r1 = c.classify(Line::Complete("Starting build process".into()));
+        let r2 = c.classify(Line::Complete("All tests passed successfully".into()));
+        assert!(!matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+    }
+
+    // Test 57: Edit distance with different first tokens → no dedup
+    #[test]
+    fn test_edit_distance_different_first_token_no_dedup() {
+        let mut c = Classifier::new(None, None);
+
+        let _r1 = c.classify(Line::Complete("Building module A".into()));
+        let r2 = c.classify(Line::Complete("Testing module A".into()));
+        // Different first token → skip edit distance
+        assert!(!matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 3: Volume compression (consecutive unknowns)
+    // -----------------------------------------------------------------------
+
+    // Test 58: Consecutive Unknown lines tracked
+    #[test]
+    fn test_volume_compression_consecutive_unknowns() {
+        let mut c = Classifier::new(None, None);
+
+        // Feed 12 distinct Unknown lines (different enough to avoid dedup)
+        for i in 0..12 {
+            c.classify(Line::Complete(format!("uniqueline_{i}_aaaa")));
+        }
+        assert!(c.consecutive_unknown_count() >= VOLUME_THRESHOLD);
+    }
+
+    // Test 59: Hazard resets consecutive Unknown count
+    #[test]
+    fn test_volume_compression_reset_by_hazard() {
+        let mut c = Classifier::new(None, None);
+
+        // Feed some unknowns
+        for i in 0..5 {
+            c.classify(Line::Complete(format!("uniqueline_{i}_bbbb")));
+        }
+        assert_eq!(c.consecutive_unknown_count(), 5);
+
+        // Now a hazard
+        c.classify(Line::Complete("error: something broke".into()));
+        assert_eq!(c.consecutive_unknown_count(), 0);
+
+        // Resume unknowns
+        c.classify(Line::Complete("uniqueline_after_hazard".into()));
+        assert_eq!(c.consecutive_unknown_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 3: Temporal heuristics
+    // -----------------------------------------------------------------------
+
+    // Test 60: Lines after silence bypass structural noise
+    #[test]
+    fn test_temporal_silence_bypass() {
+        let mut c = Classifier::new(None, None);
+
+        // First line sets up a previous line for potential dedup
+        c.classify(Line::Complete("Downloading package foo v1.0.0".into()));
+
+        // Notify silence exceeding threshold
+        c.notify_silence(Duration::from_secs(3));
+
+        // This line would normally dedup with the previous, but silence gives immunity
+        let r2 = c.classify(Line::Complete("Downloading package bar v1.0.0".into()));
+        // Should NOT be Noise(Dedup) because temporal boost is active
+        assert!(!matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+    }
+
+    // Test 61: Silence transitions to MaybePrompt
+    #[test]
+    fn test_silence_to_maybe_prompt() {
+        let mut c = Classifier::new(None, None);
+        c.classify(Line::Complete("hello".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+
+        c.notify_silence(Duration::from_millis(600));
+        assert_eq!(c.state(), ClassifierState::MaybePrompt);
+    }
+
+    // Test 62: Output resumes from MaybePrompt → Running
+    #[test]
+    fn test_maybe_prompt_to_running() {
+        let mut c = Classifier::new(None, None);
+        c.classify(Line::Complete("hello".into()));
+        c.notify_silence(Duration::from_millis(600));
+        assert_eq!(c.state(), ClassifierState::MaybePrompt);
+
+        c.classify(Line::Complete("more output".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 3: Ring buffer
+    // -----------------------------------------------------------------------
+
+    // Test 63: Ring buffer tracks last 5 lines
+    #[test]
+    fn test_ring_buffer_last_5() {
+        let mut c = Classifier::new(None, None);
+
+        for i in 0..8 {
+            c.classify(Line::Complete(format!("uniqueline_{i}_cccc")));
+        }
+
+        let buf = c.ring_buffer();
+        assert_eq!(buf.len(), RING_BUFFER_SIZE);
+        // Should contain lines 3..8 (the last 5)
+        assert!(buf[0].contains("uniqueline_3_cccc"));
+        assert!(buf[4].contains("uniqueline_7_cccc"));
+    }
+
+    // Test 64: Ring buffer available on exit with no outcome
+    #[test]
+    fn test_ring_buffer_no_outcome() {
+        let mut c = Classifier::new(None, None);
+
+        c.classify(Line::Complete("line_a_uniqueX".into()));
+        c.classify(Line::Complete("line_b_uniqueX".into()));
+        c.classify(Line::Complete("line_c_uniqueX".into()));
+
+        assert!(!c.has_outcome());
+        let buf = c.ring_buffer();
+        assert_eq!(buf.len(), 3);
+    }
+
+    // Test 65: Outcome tracked for ring buffer decision
+    #[test]
+    fn test_ring_buffer_has_outcome() {
+        let mut c = Classifier::new(None, None);
+
+        c.classify(Line::Complete("uniqueline_d_xyz".into()));
+        assert!(!c.has_outcome());
+
+        // Trigger an Outcome via green ANSI + success keyword
+        c.classify(Line::Complete("\x1b[32mBuild succeeded\x1b[0m".into()));
+        assert!(c.has_outcome());
+    }
+
+    // -----------------------------------------------------------------------
+    // Hazards NEVER suppressed by noise (cross-tier invariant)
+    // -----------------------------------------------------------------------
+
+    // Test 66: Grammar hazard rules always evaluated before noise rules
+    #[test]
+    fn test_hazard_never_suppressed_by_grammar_noise() {
+        // The key invariant: if a grammar DEFINES a hazard rule, it runs before noise.
+        // Even when both hazard and noise patterns could match, hazard wins.
+        let toml_str2 = r#"
+[tool]
+name = "test2"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.hazard]]
+pattern = 'FATAL'
+severity = "error"
+action = "keep"
+
+[[actions.build.noise]]
+pattern = 'FATAL.*noise'
+action = "strip"
+
+[actions.build.summary]
+success = "ok"
+"#;
+        let grammar2 = load_grammar_from_str(toml_str2).unwrap();
+        let action2 = grammar2.actions.get("build").unwrap();
+        let mut c = Classifier::new(Some(&grammar2), Some(action2));
+
+        // Both hazard and noise could match — hazard wins
+        let result = c.classify(Line::Complete("FATAL crash noise here".into()));
+        assert!(matches!(
+            result,
+            Classification::Hazard {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+    }
+
+    // Test 67: Decorative noise cannot suppress error keyword
+    #[test]
+    fn test_tier2_error_not_suppressed_by_tier3() {
+        let mut c = Classifier::new(None, None);
+
+        // "error:" at start — Tier 2 should catch this before Tier 3
+        let result = c.classify(Line::Complete("error: compilation failed".into()));
+        assert!(matches!(
+            result,
+            Classification::Hazard {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Prompt detection requires Partial line type
+    // -----------------------------------------------------------------------
+
+    // Test 68: REPL prompt on Partial line
+    #[test]
+    fn test_prompt_repl_partial() {
+        let mut c = Classifier::new(None, None);
+        let result = c.classify(Line::Partial("node> ".into()));
+        assert!(matches!(result, Classification::Prompt { .. }));
+        assert_eq!(c.state(), ClassifierState::AwaitingInput);
+    }
+
+    // Test 69: "Enter" prompt on Partial line
+    #[test]
+    fn test_prompt_enter_partial() {
+        let mut c = Classifier::new(None, None);
+        let result = c.classify(Line::Partial("Enter your name: ".into()));
+        assert!(matches!(result, Classification::Prompt { .. }));
+    }
+
+    // Test 70: "Press any key" on Partial line
+    #[test]
+    fn test_prompt_press_any_key_partial() {
+        let mut c = Classifier::new(None, None);
+        let result = c.classify(Line::Partial("Press any key to continue".into()));
+        assert!(matches!(result, Classification::Prompt { .. }));
+    }
+
+    // Test 71: REPL prompt on Complete line → NOT a prompt
+    #[test]
+    fn test_prompt_repl_complete_not_prompt() {
+        let mut c = Classifier::new(None, None);
+        let result = c.classify(Line::Complete("node> ".into()));
+        // Complete lines don't trigger prompt detection
+        assert!(!matches!(result, Classification::Prompt { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // State machine transitions (extended)
+    // -----------------------------------------------------------------------
+
+    // Test 72: ConsumingTrace → Running when trace ends
+    #[test]
+    fn test_state_consuming_trace_to_running() {
+        let mut c = Classifier::new(None, None);
+
+        // Enter CONSUMING_TRACE via stack trace
+        c.classify(Line::Complete(
+            "    at func (file.js:10:5)".into(),
+        ));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Non-matching line ends the trace
+        c.classify(Line::Complete("Done.".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+    }
+
+    // Test 73: AwaitingInput → Running via resume_from_prompt
+    #[test]
+    fn test_state_awaiting_input_resume() {
+        let mut c = Classifier::new(None, None);
+        c.classify(Line::Partial("Password: ".into()));
+        assert_eq!(c.state(), ClassifierState::AwaitingInput);
+
+        c.resume_from_prompt();
+        assert_eq!(c.state(), ClassifierState::Running);
+
+        // Calling resume when not AwaitingInput does nothing
+        c.resume_from_prompt();
+        assert_eq!(c.state(), ClassifierState::Running);
+    }
+
+    // Test 74: Idle → Running → MaybePrompt → Running
+    #[test]
+    fn test_state_full_maybe_prompt_cycle() {
+        let mut c = Classifier::new(None, None);
+        assert_eq!(c.state(), ClassifierState::Idle);
+
+        c.classify(Line::Complete("output".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+
+        c.notify_silence(Duration::from_millis(600));
+        assert_eq!(c.state(), ClassifierState::MaybePrompt);
+
+        c.classify(Line::Complete("more output".into()));
+        assert_eq!(c.state(), ClassifierState::Running);
+    }
+
+    // -----------------------------------------------------------------------
+    // Levenshtein distance unit tests
+    // -----------------------------------------------------------------------
+
+    // Test 75: Levenshtein identical strings
+    #[test]
+    fn test_levenshtein_identical() {
+        assert_eq!(levenshtein("hello", "hello"), 0);
+    }
+
+    // Test 76: Levenshtein single edit
+    #[test]
+    fn test_levenshtein_single_edit() {
+        assert_eq!(levenshtein("hello", "hallo"), 1);
+        assert_eq!(levenshtein("cat", "cats"), 1);
+    }
+
+    // Test 77: Levenshtein empty strings
+    #[test]
+    fn test_levenshtein_empty() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+    }
+
+    // Test 78: is_similar with very different lines
+    #[test]
+    fn test_is_similar_very_different() {
+        assert!(!is_similar("hello world", "goodbye universe"));
+    }
+
+    // Test 79: is_similar with nearly identical lines
+    #[test]
+    fn test_is_similar_nearly_identical() {
+        assert!(is_similar(
+            "Compiling serde v1.0.195",
+            "Compiling serde v1.0.196"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 1 evaluation order: action-specific noise → global noise → inherited
+    // -----------------------------------------------------------------------
+
+    // Test 80: Action noise rules checked before global noise
+    #[test]
+    fn test_tier1_action_noise_before_global() {
+        let toml_str = r#"
+[tool]
+name = "test"
+
+[[global_noise]]
+pattern = '^progress'
+action = "dedup"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.noise]]
+pattern = '^progress'
+action = "strip"
+
+[actions.build.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("build").unwrap();
+        let mut c = Classifier::new(Some(&grammar), Some(action));
+
+        let result = c.classify(Line::Complete("progress: 50%".into()));
+        // Action-specific noise (strip) should win over global (dedup)
+        assert!(matches!(
+            result,
+            Classification::Noise {
+                action: NoiseAction::Strip,
+                ..
+            }
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases and integration
+    // -----------------------------------------------------------------------
+
+    // Test 81: Box-drawing characters → Noise(Strip)
+    #[test]
+    fn test_tier3_box_drawing() {
+        let mut c = Classifier::new(None, None);
+        let result = c.classify(Line::Complete("┌──────────────┐".into()));
+        assert!(matches!(
+            result,
+            Classification::Noise {
+                action: NoiseAction::Strip,
+                ..
+            }
+        ));
+    }
+
+    // Test 82: Mixed scenario — grammar + universal + structural
+    #[test]
+    fn test_mixed_scenario_full_pipeline() {
+        let grammar = make_npm_grammar();
+        let action = grammar.actions.get("install").unwrap();
+        let mut c = Classifier::new(Some(&grammar), Some(action));
+
+        // Tier 1 noise
+        let r1 = c.classify(Line::Complete("idealTree: loading".into()));
+        assert!(matches!(r1, Classification::Noise { .. }));
+
+        // Tier 1 outcome
+        let r2 = c.classify(Line::Complete("added 42 packages in 2.1s".into()));
+        assert!(matches!(r2, Classification::Outcome { .. }));
+
+        // Tier 2 error (no grammar match)
+        let r3 = c.classify(Line::Complete("FATAL: out of memory".into()));
+        assert!(matches!(
+            r3,
+            Classification::Hazard {
+                severity: Severity::Error,
+                ..
+            }
+        ));
+
+        // Tier 3 decorative
+        let r4 = c.classify(Line::Complete("========".into()));
+        assert!(matches!(
+            r4,
+            Classification::Noise {
+                action: NoiseAction::Strip,
+                ..
+            }
+        ));
+
+        // Unknown
+        let r5 = c.classify(Line::Complete("some random output xyzzy".into()));
+        assert!(matches!(r5, Classification::Unknown { .. }));
+    }
+
+    // Test 83: Temporal heuristic - elapsed time triggers noise bypass automatically
+    #[test]
+    fn test_temporal_auto_bypass_via_elapsed() {
+        let mut c = Classifier::new(None, None);
+
+        // Classify first line to set a baseline
+        c.classify(Line::Complete("Downloading package foo v1.0.0".into()));
+
+        // Manually set last_line_time to the past to simulate silence
+        c.last_line_time = Instant::now() - Duration::from_secs(3);
+
+        // This line would normally dedup, but elapsed > SILENCE_THRESHOLD
+        let result = c.classify(Line::Complete("Downloading package bar v1.0.0".into()));
+        assert!(!matches!(
+            result,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
                 ..
             }
         ));

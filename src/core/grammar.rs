@@ -579,18 +579,15 @@ pub fn load_all_grammars(
     Ok(grammars)
 }
 
-/// Resolve `inherit` references by prepending shared rules into `global_noise`.
+/// Resolve `inherit` references by appending shared rules into `global_noise`.
+///
+/// Inherited rules are evaluated **after** the tool's own rules. This allows
+/// a tool grammar to override shared behavior when needed.
 fn resolve_inherit(grammar: &mut Grammar, shared_rules: &HashMap<String, Vec<Rule>>) {
-    let mut inherited: Vec<Rule> = Vec::new();
     for name in &grammar.inherit {
         if let Some(rules) = shared_rules.get(name) {
-            inherited.extend(rules.iter().cloned());
+            grammar.global_noise.extend(rules.iter().cloned());
         }
-    }
-    // Prepend inherited rules before grammar-specific global_noise
-    if !inherited.is_empty() {
-        inherited.append(&mut grammar.global_noise);
-        grammar.global_noise = inherited;
     }
 }
 
@@ -698,6 +695,142 @@ pub fn format_summary(
     }
 
     vec![result]
+}
+
+// ---------------------------------------------------------------------------
+// Public API — rule evaluation
+// ---------------------------------------------------------------------------
+
+/// The result of evaluating a line against grammar rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleMatch {
+    /// Line matched a hazard rule.
+    Hazard {
+        action: RuleAction,
+        severity: Option<Severity>,
+        captures: HashMap<String, String>,
+        multiline: Option<u32>,
+    },
+    /// Line matched an outcome rule.
+    Outcome {
+        action: RuleAction,
+        captures: HashMap<String, String>,
+        multiline: Option<u32>,
+    },
+    /// Line matched a noise rule (action-specific or global).
+    Noise {
+        action: RuleAction,
+        multiline: Option<u32>,
+    },
+    /// No rule matched this line.
+    NoMatch,
+}
+
+/// Try to match a single line against a single rule.
+/// Returns the extracted captures if the rule matches.
+fn try_match_rule(rule: &Rule, line: &str) -> Option<HashMap<String, String>> {
+    let caps = rule.pattern.captures(line)?;
+    let mut captured = HashMap::new();
+    for name in &rule.captures {
+        if let Some(m) = caps.name(name) {
+            captured.insert(name.clone(), m.as_str().to_string());
+        }
+    }
+    Some(captured)
+}
+
+/// Evaluate a line against a grammar action's rules in the specified order:
+///
+/// 1. **Hazard rules** (action-specific) -- never suppress an error
+/// 2. **Outcome rules** (action-specific) -- extract summary-worthy info
+/// 3. **Noise rules** (action-specific, then global_noise) -- strip or dedup
+///
+/// First match wins. If no rule matches, returns `RuleMatch::NoMatch`.
+pub fn evaluate_line(grammar: &Grammar, action: Option<&Action>, line: &str) -> RuleMatch {
+    if let Some(act) = action {
+        // Step 1: Hazard rules (highest priority)
+        for rule in &act.hazard {
+            if let Some(captures) = try_match_rule(rule, line) {
+                return RuleMatch::Hazard {
+                    action: rule.action,
+                    severity: rule.severity,
+                    captures,
+                    multiline: rule.multiline,
+                };
+            }
+        }
+
+        // Step 2: Outcome rules
+        for rule in &act.outcome {
+            if let Some(captures) = try_match_rule(rule, line) {
+                return RuleMatch::Outcome {
+                    action: rule.action,
+                    captures,
+                    multiline: rule.multiline,
+                };
+            }
+        }
+
+        // Step 3: Action-specific noise rules
+        for rule in &act.noise {
+            if rule.pattern.is_match(line) {
+                return RuleMatch::Noise {
+                    action: rule.action,
+                    multiline: rule.multiline,
+                };
+            }
+        }
+    }
+
+    // Step 4: Global noise rules (includes inherited rules, which come last)
+    for rule in &grammar.global_noise {
+        if rule.pattern.is_match(line) {
+            return RuleMatch::Noise {
+                action: rule.action,
+                multiline: rule.multiline,
+            };
+        }
+    }
+
+    RuleMatch::NoMatch
+}
+
+/// Evaluate a line against a grammar's fallback action rules.
+///
+/// Convenience wrapper that uses the fallback action for grammars
+/// like `make` that don't have named actions.
+pub fn evaluate_line_with_fallback(grammar: &Grammar, line: &str) -> RuleMatch {
+    evaluate_line(grammar, grammar.fallback.as_ref(), line)
+}
+
+// ---------------------------------------------------------------------------
+// Public API — category resolution (grammar-level)
+// ---------------------------------------------------------------------------
+
+/// Resolve the category for a grammar.
+///
+/// Resolution order (first match wins):
+/// 1. Grammar front matter `category` field
+/// 2. categories.toml mapping (caller provides)
+/// 3. Default to Condense
+pub fn resolve_category(
+    grammar: &Grammar,
+    categories_map: Option<&HashMap<String, Category>>,
+) -> Category {
+    // Step 1: Grammar front matter
+    if let Some(cat) = grammar.category {
+        return cat;
+    }
+
+    // Step 2: categories.toml mapping (look up the grammar's tool name)
+    if let Some(map) = categories_map {
+        if let Some(&cat) = map.get(&grammar.tool.name) {
+            return cat;
+        }
+    }
+
+    // Step 3: Default
+    Category::default()
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,5 +1346,583 @@ description = "Progress bar with percentage"
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].action, RuleAction::Strip);
         assert_eq!(rules[1].action, RuleAction::Strip);
+    }
+
+    // -----------------------------------------------------------------------
+    // New tests: evaluate_line
+    // -----------------------------------------------------------------------
+
+    /// Build a grammar with hazard, outcome, and noise rules for testing evaluate_line.
+    fn build_eval_grammar() -> Grammar {
+        let toml_str = r#"
+[tool]
+name = "cargo"
+
+[[global_noise]]
+pattern = '^\s+Compiling'
+action = "strip"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.hazard]]
+pattern = '^error\[(?P<code>E\d+)\]'
+severity = "error"
+action = "keep"
+captures = ["code"]
+multiline = 3
+
+[[actions.build.hazard]]
+pattern = '^warning:'
+severity = "warning"
+action = "dedup"
+
+[[actions.build.outcome]]
+pattern = '^\s+Finished .* in (?P<time>.+)'
+action = "promote"
+captures = ["time"]
+
+[[actions.build.noise]]
+pattern = '^\s+Fresh'
+action = "strip"
+
+[actions.build.summary]
+success = "+ built in {time}"
+failure = "! build failed"
+"#;
+        load_grammar_from_str(toml_str).unwrap()
+    }
+
+    #[test]
+    fn test_evaluate_line_hazard_match() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "error[E0433]: some error");
+        match result {
+            RuleMatch::Hazard { action, severity, captures, multiline } => {
+                assert_eq!(action, RuleAction::Keep);
+                assert_eq!(severity, Some(Severity::Error));
+                assert_eq!(captures.get("code").map(|s| s.as_str()), Some("E0433"));
+                assert_eq!(multiline, Some(3));
+            }
+            other => panic!("expected Hazard, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_outcome_match() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "   Finished `dev` profile in 5.2s");
+        match result {
+            RuleMatch::Outcome { action, captures, .. } => {
+                assert_eq!(action, RuleAction::Promote);
+                assert_eq!(captures.get("time").map(|s| s.as_str()), Some("5.2s"));
+            }
+            other => panic!("expected Outcome, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_action_noise_match() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "   Fresh serde v1.0.0");
+        match result {
+            RuleMatch::Noise { action, .. } => {
+                assert_eq!(action, RuleAction::Strip);
+            }
+            other => panic!("expected Noise, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_global_noise_match() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "   Compiling serde v1.0.0");
+        match result {
+            RuleMatch::Noise { action, .. } => {
+                assert_eq!(action, RuleAction::Strip);
+            }
+            other => panic!("expected Noise (global), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_no_match() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "some random output line");
+        assert_eq!(result, RuleMatch::NoMatch);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rule evaluation order: hazard > outcome > noise
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_evaluate_line_hazard_takes_priority_over_outcome() {
+        // Create a grammar where a line matches BOTH a hazard and an outcome rule.
+        // Hazard should win.
+        let toml_str = r#"
+[tool]
+name = "test-tool"
+
+[actions.check]
+detect = ["check"]
+
+[[actions.check.hazard]]
+pattern = 'CRITICAL'
+severity = "error"
+action = "keep"
+
+[[actions.check.outcome]]
+pattern = 'CRITICAL'
+action = "promote"
+
+[actions.check.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("check").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "CRITICAL: something failed");
+        match result {
+            RuleMatch::Hazard { .. } => { /* expected */ }
+            other => panic!("expected Hazard (priority over Outcome), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_hazard_takes_priority_over_noise() {
+        // A line that matches both hazard and noise should be classified as hazard.
+        let toml_str = r#"
+[tool]
+name = "test-tool"
+
+[actions.run]
+detect = ["run"]
+
+[[actions.run.hazard]]
+pattern = '^error:'
+severity = "error"
+action = "keep"
+
+[[actions.run.noise]]
+pattern = '^error:'
+action = "strip"
+
+[actions.run.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("run").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "error: something went wrong");
+        match result {
+            RuleMatch::Hazard { severity, .. } => {
+                assert_eq!(severity, Some(Severity::Error));
+            }
+            other => panic!("expected Hazard (priority over Noise), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_outcome_takes_priority_over_noise() {
+        // A line that matches both outcome and noise should be classified as outcome.
+        let toml_str = r#"
+[tool]
+name = "test-tool"
+
+[actions.run]
+detect = ["run"]
+
+[[actions.run.outcome]]
+pattern = '^done in'
+action = "promote"
+
+[[actions.run.noise]]
+pattern = '^done'
+action = "strip"
+
+[actions.run.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("run").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "done in 3s");
+        match result {
+            RuleMatch::Outcome { action, .. } => {
+                assert_eq!(action, RuleAction::Promote);
+            }
+            other => panic!("expected Outcome (priority over Noise), got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Inheritance: inherited rules appended (evaluated last)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_inheritance_appends_shared_rules_after_own() {
+        // Build two shared rule sets and a grammar that inherits them.
+        // Verify inherited rules come AFTER the grammar's own global_noise.
+        let shared_toml_a = r#"
+[[rules]]
+pattern = '^SHARED_A'
+action = "strip"
+"#;
+        let shared_toml_b = r#"
+[[rules]]
+pattern = '^SHARED_B'
+action = "strip"
+"#;
+        let grammar_toml = r#"
+[tool]
+name = "test"
+inherit = ["shared_a", "shared_b"]
+
+[[global_noise]]
+pattern = '^OWN_RULE'
+action = "strip"
+"#;
+        let mut grammar = load_grammar_from_str(grammar_toml).unwrap();
+
+        let shared_a = load_shared_rules_from_str(shared_toml_a).unwrap();
+        let shared_b = load_shared_rules_from_str(shared_toml_b).unwrap();
+
+        let mut shared_rules: HashMap<String, Vec<Rule>> = HashMap::new();
+        shared_rules.insert("shared_a".to_string(), shared_a);
+        shared_rules.insert("shared_b".to_string(), shared_b);
+
+        resolve_inherit(&mut grammar, &shared_rules);
+
+        // Own rules should come first
+        assert_eq!(grammar.global_noise.len(), 3);
+        assert!(grammar.global_noise[0].pattern.is_match("OWN_RULE here"),
+            "first rule should be own rule (OWN_RULE)");
+
+        // Inherited rules should come after
+        // Note: HashMap iteration order is non-deterministic, but both shared rules
+        // should be at indices 1 and 2
+        let inherited_patterns: Vec<bool> = grammar.global_noise[1..].iter()
+            .map(|r| r.pattern.is_match("SHARED_A test") || r.pattern.is_match("SHARED_B test"))
+            .collect();
+        assert!(inherited_patterns.iter().all(|&x| x),
+            "inherited rules should come after own rules");
+    }
+
+    #[test]
+    fn test_inheritance_own_rules_take_priority_in_evaluate_line() {
+        // When a line matches both an own global_noise rule and an inherited rule,
+        // the own rule should match first (because inherited rules are appended after).
+        let toml_str = r#"
+[tool]
+name = "test"
+
+[[global_noise]]
+pattern = '^progress'
+action = "dedup"
+"#;
+        let mut grammar = load_grammar_from_str(toml_str).unwrap();
+
+        // Simulate inherited rule that also matches "progress" but with strip action
+        let shared_toml = r#"
+[[rules]]
+pattern = '^progress'
+action = "strip"
+"#;
+        let shared_rules_vec = load_shared_rules_from_str(shared_toml).unwrap();
+        let mut shared_rules: HashMap<String, Vec<Rule>> = HashMap::new();
+        shared_rules.insert("shared".to_string(), shared_rules_vec);
+        grammar.inherit = vec!["shared".to_string()];
+        resolve_inherit(&mut grammar, &shared_rules);
+
+        // The own rule (dedup) should be at index 0, inherited (strip) at index 1
+        assert_eq!(grammar.global_noise.len(), 2);
+        assert_eq!(grammar.global_noise[0].action, RuleAction::Dedup, "own rule should come first");
+        assert_eq!(grammar.global_noise[1].action, RuleAction::Strip, "inherited rule should come second");
+
+        // When evaluating, the own rule (dedup) should be found first
+        let result = evaluate_line(&grammar, None, "progress: 50%");
+        match result {
+            RuleMatch::Noise { action, .. } => {
+                assert_eq!(action, RuleAction::Dedup, "own rule should win over inherited");
+            }
+            other => panic!("expected Noise with Dedup, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // evaluate_line_with_fallback
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_evaluate_line_with_fallback() {
+        let toml_str = r#"
+[tool]
+name = "make"
+
+[fallback]
+
+[[fallback.hazard]]
+pattern = '^make.*\*\*\*'
+severity = "error"
+action = "keep"
+
+[[fallback.noise]]
+pattern = '^make\[\d+\]:'
+action = "strip"
+
+[fallback.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+
+        // Hazard match via fallback
+        let result = evaluate_line_with_fallback(&grammar, "make[2]: *** Error 1");
+        match result {
+            RuleMatch::Hazard { severity, .. } => {
+                assert_eq!(severity, Some(Severity::Error));
+            }
+            other => panic!("expected Hazard via fallback, got: {:?}", other),
+        }
+
+        // Noise match via fallback
+        let result = evaluate_line_with_fallback(&grammar, "make[1]: Entering directory");
+        match result {
+            RuleMatch::Noise { action, .. } => {
+                assert_eq!(action, RuleAction::Strip);
+            }
+            other => panic!("expected Noise via fallback, got: {:?}", other),
+        }
+
+        // No match
+        let result = evaluate_line_with_fallback(&grammar, "some other line");
+        assert_eq!(result, RuleMatch::NoMatch);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_category
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_category_from_grammar_front_matter() {
+        let toml_str = r#"
+[tool]
+name = "vim"
+category = "interactive"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let result = resolve_category(&grammar, None);
+        assert_eq!(result, Category::Interactive);
+    }
+
+    #[test]
+    fn test_resolve_category_from_categories_map() {
+        let toml_str = r#"
+[tool]
+name = "ls"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut map = HashMap::new();
+        map.insert("ls".to_string(), Category::Passthrough);
+
+        let result = resolve_category(&grammar, Some(&map));
+        assert_eq!(result, Category::Passthrough);
+    }
+
+    #[test]
+    fn test_resolve_category_default_condense() {
+        let toml_str = r#"
+[tool]
+name = "unknown-tool"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let result = resolve_category(&grammar, None);
+        assert_eq!(result, Category::Condense);
+    }
+
+    #[test]
+    fn test_resolve_category_grammar_overrides_map() {
+        let toml_str = r#"
+[tool]
+name = "git"
+category = "structured"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut map = HashMap::new();
+        map.insert("git".to_string(), Category::Passthrough);
+
+        // Grammar front matter (Structured) should win over map (Passthrough)
+        let result = resolve_category(&grammar, Some(&map));
+        assert_eq!(result, Category::Structured);
+    }
+
+    // -----------------------------------------------------------------------
+    // evaluate_line with None action (no action, only global noise)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_evaluate_line_with_no_action_uses_global_noise() {
+        let toml_str = r#"
+[tool]
+name = "npm"
+
+[[global_noise]]
+pattern = '^npm timing'
+action = "strip"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+
+        let result = evaluate_line(&grammar, None, "npm timing idealTree 12ms");
+        match result {
+            RuleMatch::Noise { action, .. } => {
+                assert_eq!(action, RuleAction::Strip);
+            }
+            other => panic!("expected Noise, got: {:?}", other),
+        }
+
+        // Line that doesn't match global noise
+        let result2 = evaluate_line(&grammar, None, "something else");
+        assert_eq!(result2, RuleMatch::NoMatch);
+    }
+
+    // -----------------------------------------------------------------------
+    // Warning severity hazard match
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_evaluate_line_warning_hazard() {
+        let grammar = build_eval_grammar();
+        let action = grammar.actions.get("build").unwrap();
+
+        let result = evaluate_line(&grammar, Some(action), "warning: unused variable");
+        match result {
+            RuleMatch::Hazard { action, severity, .. } => {
+                assert_eq!(action, RuleAction::Dedup);
+                assert_eq!(severity, Some(Severity::Warning));
+            }
+            other => panic!("expected Hazard(Warning), got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Real grammar file tests (load from grammars/ directory)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_all_grammars_from_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        // All 5 grammars should be loaded
+        assert!(grammars.contains_key("npm"), "should load npm");
+        assert!(grammars.contains_key("cargo"), "should load cargo");
+        assert!(grammars.contains_key("git"), "should load git");
+        assert!(grammars.contains_key("docker"), "should load docker");
+        assert!(grammars.contains_key("make"), "should load make");
+
+        // npm should have inherited rules appended to global_noise
+        let npm = grammars.get("npm").unwrap();
+        // npm has 2 own global_noise + ansi-progress (4 rules) + node-stacktrace (1 rule)
+        assert!(npm.global_noise.len() >= 5,
+            "npm should have own + inherited global_noise, got {}", npm.global_noise.len());
+
+        // npm's own rules should come first
+        assert!(npm.global_noise[0].pattern.is_match("npm timing foo"),
+            "first global_noise rule should be npm's own (npm timing)");
+        assert!(npm.global_noise[1].pattern.is_match("npm warn something"),
+            "second global_noise rule should be npm's own (npm warn)");
+    }
+
+    #[test]
+    fn test_detect_tool_all_five_from_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        let test_cases = vec![
+            (vec!["npm", "install"], "npm", true),
+            (vec!["npx", "serve"], "npm", false),
+            (vec!["cargo", "build"], "cargo", true),
+            (vec!["cargo", "t"], "cargo", true),
+            (vec!["git", "push"], "git", true),
+            (vec!["git", "pull"], "git", true),
+            (vec!["git", "clone", "url"], "git", true),
+            (vec!["docker", "build", "."], "docker", true),
+            (vec!["make", "all"], "make", true),
+            (vec!["gmake", "clean"], "make", true),
+            (vec!["unknown-cmd"], "none", false),
+        ];
+
+        for (args_raw, expected_tool, expect_action) in test_cases {
+            let args: Vec<String> = args_raw.iter().map(|s| s.to_string()).collect();
+            let result = detect_tool(&args, &grammars);
+
+            if expected_tool == "none" {
+                assert!(result.is_none(), "should not detect: {:?}", args_raw);
+            } else {
+                assert!(result.is_some(), "should detect {} for {:?}", expected_tool, args_raw);
+                let (g, a) = result.unwrap();
+                assert_eq!(g.tool.name, expected_tool, "wrong grammar for {:?}", args_raw);
+                if expect_action {
+                    assert!(a.is_some(), "should have action for {:?}", args_raw);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_evaluate_line_with_real_cargo_grammar() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+        let grammar = grammars.get("cargo").unwrap();
+        let build = grammar.actions.get("build").unwrap();
+
+        // Hazard: error should match first
+        let result = evaluate_line(grammar, Some(build), "error[E0433]: failed to resolve");
+        assert!(matches!(result, RuleMatch::Hazard { .. }), "error line should be Hazard");
+
+        // Outcome: Finished line
+        let result = evaluate_line(grammar, Some(build), "   Finished `dev` profile in 5s");
+        assert!(matches!(result, RuleMatch::Outcome { .. }), "Finished line should be Outcome");
+
+        // Global noise: Compiling line
+        let result = evaluate_line(grammar, Some(build), "   Compiling serde v1.0.0");
+        assert!(matches!(result, RuleMatch::Noise { .. }), "Compiling line should be Noise");
+
+        // No match
+        let result = evaluate_line(grammar, Some(build), "some random output");
+        assert_eq!(result, RuleMatch::NoMatch, "random line should be NoMatch");
+    }
+
+    #[test]
+    fn test_evaluate_line_with_real_make_grammar_fallback() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+        let grammar = grammars.get("make").unwrap();
+
+        // Use fallback action (make has no named actions)
+        // Hazard: make *** error
+        let result = evaluate_line_with_fallback(grammar, "make[1]: *** [Makefile:10: all] Error 2");
+        assert!(matches!(result, RuleMatch::Hazard { .. }),
+            "make *** should be Hazard, got {:?}", result);
+
+        // Noise: make[N]: Entering directory (from fallback)
+        let result = evaluate_line_with_fallback(grammar, "make[1]: Entering directory '/tmp'");
+        assert!(matches!(result, RuleMatch::Noise { .. }),
+            "make entering dir should be Noise, got {:?}", result);
+
+        // Inherited (global noise): gcc command echo (from c-compiler-output)
+        let result = evaluate_line(grammar, None, "gcc -Wall -O2 -c main.c -o main.o");
+        assert!(matches!(result, RuleMatch::Noise { .. }),
+            "gcc command should be Noise (inherited), got {:?}", result);
     }
 }
