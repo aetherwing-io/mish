@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use regex::Regex;
 use crate::config::MishConfig;
@@ -15,6 +16,7 @@ use crate::mcp::types::{
     ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SESSION_NOT_FOUND,
 };
 use crate::safety;
+use crate::process::spool::OutputSpool;
 use crate::process::table::{ProcessTable, ProcessTableError};
 use crate::session::manager::SessionManager;
 
@@ -56,25 +58,32 @@ pub fn reset_alias_counter() {
 }
 
 // ---------------------------------------------------------------------------
-// Handle
+// SpawnSetup — returned by setup(), consumed by wait_for_match()
 // ---------------------------------------------------------------------------
 
-/// Handle an sh_spawn tool call.
-///
-/// Workflow:
-/// 1. Resolve session name (default: "main")
-/// 2. Validate/generate alias
-/// 3. Check alias uniqueness in ProcessTable (error -32004 on conflict)
-/// 4. Send command to session shell as a background job (`cmd &`)
-/// 5. Register process in ProcessTable
-/// 6. If wait_for provided: poll output spool until regex matches or timeout
-/// 7. Return spawn response with process digest
-pub async fn handle(
+/// Intermediate state after spawning but before waiting.
+/// Holds the spool Arc so the caller can release the ProcessTable lock.
+pub struct SpawnSetup {
+    pub alias: String,
+    pub pid: u32,
+    pub session: String,
+    pub spool: Arc<OutputSpool>,
+    pub wait_for: Option<String>,
+    pub timeout: Duration,
+}
+
+// ---------------------------------------------------------------------------
+// Setup (requires ProcessTable lock)
+// ---------------------------------------------------------------------------
+
+/// Phase 1: Validate params, spawn background job, register in process table.
+/// Returns SpawnSetup so the caller can release the table lock before waiting.
+pub async fn setup(
     params: ShSpawnParams,
     session_manager: &SessionManager,
     process_table: &mut ProcessTable,
     _config: &MishConfig,
-) -> Result<serde_json::Value, ToolError> {
+) -> Result<SpawnSetup, ToolError> {
     let session_name = DEFAULT_SESSION;
     let alias = params.alias.clone();
     let timeout_sec = params.timeout.unwrap_or(DEFAULT_TIMEOUT_SEC);
@@ -107,15 +116,13 @@ pub async fn handle(
         .ok_or_else(|| ToolError::new(ERR_SESSION_NOT_FOUND, format!("session not found: {session_name}")))?;
 
     // Send command as background job to the session shell.
-    // We append ` &` and `echo` the background PID so we can capture it.
-    // The command format: `<cmd> & echo "MISH_BG_PID:$!"`
     let bg_cmd = format!("{} &\necho \"MISH_BG_PID:$!\"", params.cmd);
     let result = session_manager
         .execute_in_session(session_name, &bg_cmd, timeout)
         .await
         .map_err(|e| ToolError::new(e.error_code(), e.to_string()))?;
 
-    // Extract PID from output. Look for "MISH_BG_PID:<pid>".
+    // Extract PID from output.
     let pid = extract_bg_pid(&result.output).unwrap_or(0);
 
     // Register in process table.
@@ -123,120 +130,174 @@ pub async fn handle(
         .register(&alias, session_name, pid, None)
         .map_err(|e| ToolError::from_process_table_error(&e))?;
 
+    // Clone spool Arc before we return (caller will drop table lock).
+    let spool = process_table
+        .get(&alias)
+        .map(|e| e.spool.clone())
+        .expect("just registered");
+
     // Write initial output to the process spool.
-    if let Some(entry) = process_table.get(&alias) {
-        // Strip the MISH_BG_PID line from output before storing.
-        let clean_output = clean_bg_output(&result.output);
-        if !clean_output.is_empty() {
-            entry.spool.write(clean_output.as_bytes());
+    let clean_output = clean_bg_output(&result.output);
+    if !clean_output.is_empty() {
+        spool.write(clean_output.as_bytes());
+    }
+
+    Ok(SpawnSetup {
+        alias,
+        pid,
+        session: session_name.to_string(),
+        spool,
+        wait_for: params.wait_for,
+        timeout,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Wait (does NOT require ProcessTable lock)
+// ---------------------------------------------------------------------------
+
+/// Phase 2: Poll the spool for a wait_for regex match.
+/// Operates on Arc<OutputSpool> — no ProcessTable lock needed.
+pub async fn wait_for_match(
+    setup: &SpawnSetup,
+    session_manager: &SessionManager,
+) -> ShSpawnResponse {
+    let Some(ref wait_pattern) = setup.wait_for else {
+        // No wait_for — return immediately.
+        return ShSpawnResponse {
+            alias: setup.alias.clone(),
+            pid: setup.pid,
+            session: setup.session.clone(),
+            state: "running".to_string(),
+            wait_matched: false,
+            match_line: None,
+            duration_to_match_ms: None,
+            output_tail: None,
+            reason: None,
+        };
+    };
+
+    let regex = match Regex::new(&format!("(?i){}", wait_pattern)) {
+        Ok(r) => r,
+        Err(e) => {
+            return ShSpawnResponse {
+                alias: setup.alias.clone(),
+                pid: setup.pid,
+                session: setup.session.clone(),
+                state: "running".to_string(),
+                wait_matched: false,
+                match_line: None,
+                duration_to_match_ms: None,
+                output_tail: None,
+                reason: Some(format!("invalid wait_for regex '{}': {}", wait_pattern, e)),
+            };
+        }
+    };
+
+    let start = Instant::now();
+
+    // Check existing spool output first.
+    {
+        let existing = String::from_utf8_lossy(&setup.spool.read_all()).to_string();
+        if let Some(matched) = find_match_line(&existing, &regex) {
+            return ShSpawnResponse {
+                alias: setup.alias.clone(),
+                pid: setup.pid,
+                session: setup.session.clone(),
+                state: "running".to_string(),
+                wait_matched: true,
+                match_line: Some(matched),
+                duration_to_match_ms: Some(start.elapsed().as_millis() as u64),
+                output_tail: None,
+                reason: None,
+            };
         }
     }
 
-    // If wait_for is specified, poll the spool for a regex match.
+    // Poll for new output.
+    loop {
+        if start.elapsed() >= setup.timeout {
+            let raw = setup.spool.read_all();
+            let text = String::from_utf8_lossy(&raw);
+            let lines: Vec<&str> = text.lines().collect();
+            let tail_start = lines.len().saturating_sub(OUTPUT_TAIL_LINES);
+            let output_tail = lines[tail_start..].join("\n");
+
+            return ShSpawnResponse {
+                alias: setup.alias.clone(),
+                pid: setup.pid,
+                session: setup.session.clone(),
+                state: "running".to_string(),
+                wait_matched: false,
+                match_line: None,
+                duration_to_match_ms: None,
+                output_tail: Some(output_tail),
+                reason: Some(format!(
+                    "wait_for regex did not match within {}s timeout",
+                    setup.timeout.as_secs()
+                )),
+            };
+        }
+
+        tokio::time::sleep(WAIT_POLL_INTERVAL).await;
+
+        // Read new output from session directly into spool.
+        let mut buf = vec![0u8; 4096];
+        match session_manager
+            .read_from_session(&setup.session, &mut buf)
+            .await
+        {
+            Ok(n) if n > 0 => {
+                setup.spool.write(&buf[..n]);
+            }
+            _ => {}
+        }
+
+        // Check spool for match.
+        let all_output = String::from_utf8_lossy(&setup.spool.read_all()).to_string();
+        if let Some(matched) = find_match_line(&all_output, &regex) {
+            return ShSpawnResponse {
+                alias: setup.alias.clone(),
+                pid: setup.pid,
+                session: setup.session.clone(),
+                state: "running".to_string(),
+                wait_matched: true,
+                match_line: Some(matched),
+                duration_to_match_ms: Some(start.elapsed().as_millis() as u64),
+                output_tail: None,
+                reason: None,
+            };
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Original handle() — delegates to setup() + wait_for_match()
+// ---------------------------------------------------------------------------
+
+/// Handle an sh_spawn tool call.
+///
+/// NOTE: This function holds the ProcessTable reference for the entire call.
+/// For concurrent access, use setup() + wait_for_match() separately and
+/// release the table lock between them.
+pub async fn handle(
+    params: ShSpawnParams,
+    session_manager: &SessionManager,
+    process_table: &mut ProcessTable,
+    config: &MishConfig,
+) -> Result<serde_json::Value, ToolError> {
+    // Validate wait_for regex early (before setup) to return ToolError.
     if let Some(ref wait_pattern) = params.wait_for {
-        let regex = Regex::new(&format!("(?i){}", wait_pattern)).map_err(|e| {
+        Regex::new(&format!("(?i){}", wait_pattern)).map_err(|e| {
             ToolError::new(
                 ERR_INVALID_PARAMS,
                 format!("invalid wait_for regex '{}': {}", wait_pattern, e),
             )
         })?;
-
-        let start = Instant::now();
-
-        // First check existing output (already in spool).
-        if let Some(entry) = process_table.get(&alias) {
-            let existing = String::from_utf8_lossy(&entry.spool.read_all()).to_string();
-            if let Some(matched) = find_match_line(&existing, &regex) {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                let response = ShSpawnResponse {
-                    alias: alias.clone(),
-                    pid,
-                    session: session_name.to_string(),
-                    state: "running".to_string(),
-                    wait_matched: true,
-                    match_line: Some(matched),
-                    duration_to_match_ms: Some(duration_ms),
-                    output_tail: None,
-                    reason: None,
-                };
-                return Ok(serde_json::to_value(&response).unwrap());
-            }
-        }
-
-        // Poll for new output by reading from the session.
-        loop {
-            if start.elapsed() >= timeout {
-                // Timeout — return with wait_matched: false.
-                let output_tail = get_output_tail(process_table, &alias, OUTPUT_TAIL_LINES);
-                let response = ShSpawnResponse {
-                    alias: alias.clone(),
-                    pid,
-                    session: session_name.to_string(),
-                    state: "running".to_string(),
-                    wait_matched: false,
-                    match_line: None,
-                    duration_to_match_ms: None,
-                    output_tail: Some(output_tail),
-                    reason: Some(format!(
-                        "wait_for regex did not match within {}s timeout",
-                        timeout_sec
-                    )),
-                };
-                return Ok(serde_json::to_value(&response).unwrap());
-            }
-
-            // Small sleep before polling.
-            tokio::time::sleep(WAIT_POLL_INTERVAL).await;
-
-            // Read any new output from the session.
-            let mut buf = vec![0u8; 4096];
-            match session_manager
-                .read_from_session(session_name, &mut buf)
-                .await
-            {
-                Ok(n) if n > 0 => {
-                    if let Some(entry) = process_table.get(&alias) {
-                        entry.spool.write(&buf[..n]);
-                    }
-                }
-                _ => {}
-            }
-
-            // Check spool for match.
-            if let Some(entry) = process_table.get(&alias) {
-                let all_output = String::from_utf8_lossy(&entry.spool.read_all()).to_string();
-                if let Some(matched) = find_match_line(&all_output, &regex) {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    let response = ShSpawnResponse {
-                        alias: alias.clone(),
-                        pid,
-                        session: session_name.to_string(),
-                        state: "running".to_string(),
-                        wait_matched: true,
-                        match_line: Some(matched),
-                        duration_to_match_ms: Some(duration_ms),
-                        output_tail: None,
-                        reason: None,
-                    };
-                    return Ok(serde_json::to_value(&response).unwrap());
-                }
-            }
-        }
     }
 
-    // No wait_for — return immediately.
-    let response = ShSpawnResponse {
-        alias: alias.clone(),
-        pid,
-        session: session_name.to_string(),
-        state: "running".to_string(),
-        wait_matched: false,
-        match_line: None,
-        duration_to_match_ms: None,
-        output_tail: None,
-        reason: None,
-    };
-
+    let spawn_setup = setup(params, session_manager, process_table, config).await?;
+    let response = wait_for_match(&spawn_setup, session_manager).await;
     Ok(serde_json::to_value(&response).unwrap())
 }
 

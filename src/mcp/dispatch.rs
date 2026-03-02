@@ -218,11 +218,33 @@ impl McpDispatcher {
         let params: ShSpawnParams = serde_json::from_value(arguments)
             .map_err(|e| (ERR_INVALID_PARAMS, format!("Invalid sh_spawn params: {e}")))?;
 
-        let mut pt = self.process_table.lock().await;
-        let result = sh_spawn::handle(params, &self.session_manager, &mut pt, &self.config)
-            .await
-            .map_err(|e| (e.code, e.message))?;
-        let digest = pt.digest(DigestMode::Full);
+        // Validate wait_for regex early (before locking) to fail fast.
+        if let Some(ref wait_pattern) = params.wait_for {
+            regex::Regex::new(&format!("(?i){}", wait_pattern)).map_err(|e| {
+                (ERR_INVALID_PARAMS, format!("invalid wait_for regex '{}': {}", wait_pattern, e))
+            })?;
+        }
+
+        // Phase 1: Lock table, register process, clone spool Arc.
+        let spawn_setup = {
+            let mut pt = self.process_table.lock().await;
+            sh_spawn::setup(params, &self.session_manager, &mut pt, &self.config)
+                .await
+                .map_err(|e| (e.code, e.message))?
+            // Lock dropped here
+        };
+
+        // Phase 2: Wait for match WITHOUT holding the table lock.
+        let response = sh_spawn::wait_for_match(&spawn_setup, &self.session_manager).await;
+        let result = serde_json::to_value(&response)
+            .map_err(|e| (ERR_INTERNAL, format!("Failed to serialize sh_spawn result: {e}")))?;
+
+        // Phase 3: Re-acquire lock for digest only.
+        let digest = {
+            let mut pt = self.process_table.lock().await;
+            pt.digest(DigestMode::Full)
+        };
+
         Ok((result, digest))
     }
 
@@ -705,5 +727,73 @@ mod tests {
         assert!(props["shell"].is_object(), "sh_session schema should have 'shell' property");
         assert_eq!(props["name"]["type"], "string");
         assert_eq!(props["shell"]["type"], "string");
+    }
+
+    // ── Test 17: sh_spawn wait_for does NOT block concurrent sh_help ──
+
+    #[tokio::test]
+    #[serial(pty)]
+    async fn sh_spawn_wait_for_does_not_block_sh_help() {
+        let config = test_config();
+        let sm = Arc::new(SessionManager::new(config.clone()));
+        sm.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("should create main session");
+        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let rc = crate::config_loader::default_runtime_config();
+        let dispatcher = Arc::new(McpDispatcher::new(
+            sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns,
+        ));
+
+        // Spawn a command with wait_for that will NOT match (2s timeout).
+        let d1 = dispatcher.clone();
+        let spawn_handle = tokio::spawn(async move {
+            let req = make_request(
+                json!(100),
+                "tools/call",
+                Some(json!({
+                    "name": "sh_spawn",
+                    "arguments": {
+                        "alias": "slow",
+                        "cmd": "echo no_match_here",
+                        "wait_for": "will_never_match_this_pattern",
+                        "timeout": 2
+                    }
+                })),
+            );
+            d1.dispatch(req).await
+        });
+
+        // Give spawn a moment to acquire the lock and enter its poll loop.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Now call sh_help — this should complete quickly, not wait 2s.
+        let d2 = dispatcher.clone();
+        let start = std::time::Instant::now();
+        let help_req = make_request(
+            json!(101),
+            "tools/call",
+            Some(json!({ "name": "sh_help", "arguments": {} })),
+        );
+        let help_resp = d2.dispatch(help_req).await.unwrap();
+        let help_elapsed = start.elapsed();
+
+        assert!(
+            help_resp.error.is_none(),
+            "sh_help should succeed, got: {:?}",
+            help_resp.error
+        );
+        // sh_help must complete in under 500ms — if the mutex is held for 2s, this fails.
+        assert!(
+            help_elapsed < std::time::Duration::from_millis(500),
+            "sh_help took {:?} — blocked by sh_spawn mutex",
+            help_elapsed,
+        );
+
+        // Wait for spawn to finish (timeout after 2s).
+        let spawn_resp = spawn_handle.await.unwrap().unwrap();
+        assert_eq!(spawn_resp.result.unwrap()["result"]["wait_matched"], false);
+
+        sm.close_all().await;
     }
 }
