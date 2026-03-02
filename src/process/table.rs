@@ -5,7 +5,6 @@
 //! to every MCP tool response so the LLM has ambient awareness of process state.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -114,7 +113,7 @@ const TERMINAL_RETAIN: usize = 10;
 /// Global process table.
 pub struct ProcessTable {
     entries: HashMap<String, ProcessEntry>,
-    sequence_counter: AtomicU64,
+    sequence_counter: u64,
     last_client_seq: u64,
     spool_manager: SpoolManager,
     max_processes: usize,
@@ -126,7 +125,7 @@ impl ProcessTable {
     pub fn new(config: &MishConfig) -> Self {
         Self {
             entries: HashMap::new(),
-            sequence_counter: AtomicU64::new(0),
+            sequence_counter: 0,
             last_client_seq: 0,
             spool_manager: SpoolManager::new(config.server.max_spool_bytes_total),
             max_processes: config.server.max_processes,
@@ -135,8 +134,9 @@ impl ProcessTable {
     }
 
     /// Advance the sequence counter and return the new value.
-    fn next_seq(&self) -> u64 {
-        self.sequence_counter.fetch_add(1, Ordering::SeqCst) + 1
+    fn next_seq(&mut self) -> u64 {
+        self.sequence_counter += 1;
+        self.sequence_counter
     }
 
     /// Register a new process.
@@ -350,7 +350,7 @@ impl ProcessTable {
         }
 
         // Update client sequence and mark entries as seen.
-        let current_seq = self.sequence_counter.load(Ordering::SeqCst);
+        let current_seq = self.sequence_counter;
         self.last_client_seq = current_seq;
 
         // Mark all returned entries as seen.

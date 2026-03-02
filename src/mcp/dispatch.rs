@@ -14,7 +14,8 @@ use crate::core::grammar::Grammar;
 use crate::mcp::types::{
     InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse, ProcessDigestEntry,
     ServerCapabilities, ServerInfo, ShInteractParams, ShRunParams, ShSpawnParams,
-    ToolDefinition, ToolsCapability, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND,
+    ToolDefinition, ToolsCapability, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST,
+    ERR_METHOD_NOT_FOUND,
 };
 use crate::process::table::{DigestMode, ProcessTable};
 use crate::router::categories::{CategoriesConfig, DangerousPattern};
@@ -52,13 +53,33 @@ impl McpDispatcher {
         }
     }
 
+    /// Mark the dispatcher as initialized (for testing or after protocol handshake).
+    #[cfg(test)]
+    pub fn mark_initialized(&self) {
+        self.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Handle a single JSON-RPC request and return a response.
     /// Returns `None` for notifications (no response expected).
     pub async fn dispatch(&self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
         match request.method.as_str() {
             "initialize" => Some(self.handle_initialize(request)),
             "tools/list" => Some(self.handle_tools_list(request)),
-            "tools/call" => Some(self.handle_tools_call(request).await),
+            "tools/call" => {
+                if !self.initialized.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Some(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: ERR_INVALID_REQUEST,
+                            message: "Server not initialized. Send 'initialize' and 'notifications/initialized' before calling tools.".to_string(),
+                            data: None,
+                        }),
+                    });
+                }
+                Some(self.handle_tools_call(request).await)
+            }
             m if m.starts_with("notifications/") => {
                 if m == "notifications/initialized" {
                     self.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -376,7 +397,9 @@ mod tests {
         let sm = Arc::new(SessionManager::new(config.clone()));
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
-        McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns)
+        let d = McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
+        d.mark_initialized();
+        d
     }
 
     fn make_request(id: serde_json::Value, method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
@@ -428,6 +451,29 @@ mod tests {
 
         let resp = dispatcher.dispatch(req).await;
         assert!(resp.is_none(), "Notifications should not produce a response");
+    }
+
+    // ── Test 2b: tools/call before initialization returns error ──
+
+    #[tokio::test]
+    async fn tools_call_before_initialized_returns_error() {
+        let config = test_config();
+        let sm = Arc::new(SessionManager::new(config.clone()));
+        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let rc = crate::config_loader::default_runtime_config();
+        // Intentionally do NOT mark_initialized.
+        let dispatcher = McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
+
+        let req = make_request(
+            json!(99),
+            "tools/call",
+            Some(json!({ "name": "sh_help", "arguments": {} })),
+        );
+
+        let resp = dispatcher.dispatch(req).await.unwrap();
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, ERR_INVALID_REQUEST);
+        assert!(err.message.contains("not initialized"));
     }
 
     // ── Test 3: Unknown method returns method-not-found ──
@@ -576,6 +622,7 @@ mod tests {
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
+        dispatcher.mark_initialized();
 
         let req = make_request(
             json!(50),
@@ -608,6 +655,7 @@ mod tests {
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
+        dispatcher.mark_initialized();
 
         let req = make_request(
             json!(60),
@@ -741,9 +789,13 @@ mod tests {
             .expect("should create main session");
         let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
-        let dispatcher = Arc::new(McpDispatcher::new(
-            sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns,
-        ));
+        let dispatcher = Arc::new({
+            let d = McpDispatcher::new(
+                sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns,
+            );
+            d.mark_initialized();
+            d
+        });
 
         // Spawn a command with wait_for that will NOT match (2s timeout).
         let d1 = dispatcher.clone();

@@ -10,7 +10,7 @@ use crate::core::format::{
     self, EnrichmentLine, FormatInput, HazardEntry, OutputMode,
 };
 use crate::handlers::structured::StructuredData;
-use crate::router::categories::{CategoriesConfig, Category};
+use crate::router::categories::CategoriesConfig;
 use crate::router::{self, HandlerOutput, RouterResult};
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
 /// Convert a RouterResult into a FormatInput for the formatter.
 fn router_result_to_format_input(result: &RouterResult, command: &[String]) -> FormatInput {
     let cmd_str = command.join(" ");
-    let category = category_to_str(result.category);
+    let category = result.category.to_string();
 
     let (body, raw_output, outcomes, hazards) = match &result.output {
         HandlerOutput::Condensed(summary) => {
@@ -301,16 +301,6 @@ fn format_structured_data(data: &StructuredData) -> String {
     }
 }
 
-fn category_to_str(cat: Category) -> &'static str {
-    match cat {
-        Category::Condense => "condense",
-        Category::Narrate => "narrate",
-        Category::Passthrough => "passthrough",
-        Category::Structured => "structured",
-        Category::Interactive => "interactive",
-        Category::Dangerous => "dangerous",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

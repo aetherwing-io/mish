@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::mcp::types::{
-    self as mcp_types, ShSessionListResponse,
+    self as mcp_types, SessionAction, ShSessionListResponse,
 };
 use crate::process::table::ProcessTable;
 use crate::session::manager::SessionManager;
@@ -23,7 +23,7 @@ use super::ToolError;
 /// for create and close actions.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShSessionParams {
-    pub action: String,
+    pub action: SessionAction,
     pub name: Option<String>,
     pub shell: Option<String>,
 }
@@ -41,15 +41,10 @@ pub async fn handle(
     session_manager: &SessionManager,
     process_table: &ProcessTable,
 ) -> Result<serde_json::Value, ToolError> {
-    let result = match params.action.as_str() {
-        "create" => handle_create(params, session_manager).await?,
-        "list" => handle_list(session_manager, process_table).await?,
-        "close" => handle_close(params, session_manager).await?,
-        other => {
-            return Err(ToolError::invalid_params(
-                format!("unknown action: {other}; expected create, list, or close"),
-            ));
-        }
+    let result = match params.action {
+        SessionAction::Create => handle_create(params, session_manager).await?,
+        SessionAction::List => handle_list(session_manager, process_table).await?,
+        SessionAction::Close => handle_close(params, session_manager).await?,
     };
 
     Ok(result)
@@ -160,12 +155,10 @@ async fn handle_close(
 mod tests {
     use super::*;
     use crate::config::{default_config, MishConfig};
-    use crate::mcp::types::ERR_INVALID_PARAMS;
+    use crate::mcp::types::{SessionAction, ERR_INVALID_PARAMS};
     use crate::session::manager::SessionError;
     use serial_test::serial;
     use std::sync::Arc;
-
-    const ERR_UNKNOWN_ACTION: i32 = ERR_INVALID_PARAMS;
 
     fn bash_path() -> &'static str {
         "/bin/bash"
@@ -207,7 +200,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "create".to_string(),
+            action: SessionAction::Create,
             name: Some("test-session".to_string()),
             shell: Some("/bin/bash".to_string()),
         };
@@ -236,7 +229,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "list".to_string(),
+            action: SessionAction::List,
             name: None,
             shell: None,
         };
@@ -266,7 +259,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "close".to_string(),
+            action: SessionAction::Close,
             name: Some("ephemeral".to_string()),
             shell: None,
         };
@@ -292,7 +285,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "close".to_string(),
+            action: SessionAction::Close,
             name: Some("ghost".to_string()),
             shell: None,
         };
@@ -325,7 +318,7 @@ mod tests {
             .expect("create first");
 
         let params = ShSessionParams {
-            action: "create".to_string(),
+            action: SessionAction::Create,
             name: Some("second".to_string()),
             shell: Some("/bin/bash".to_string()),
         };
@@ -355,7 +348,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "create".to_string(),
+            action: SessionAction::Create,
             name: Some("dupe".to_string()),
             shell: Some("/bin/bash".to_string()),
         };
@@ -379,27 +372,16 @@ mod tests {
     // Test 7: Unknown action (error)
     // ------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn test_unknown_action() {
-        let mgr = SessionManager::new(test_config());
-        let pt = test_process_table();
-
-        let params = ShSessionParams {
-            action: "destroy".to_string(),
-            name: None,
-            shell: None,
-        };
-
-        let result = handle(params, &mgr, &pt).await;
-        assert!(result.is_err(), "unknown action should fail");
-
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ERR_UNKNOWN_ACTION);
-        assert!(
-            err.message.contains("unknown action"),
-            "error message should mention 'unknown action', got: {}",
-            err.message
-        );
+    #[test]
+    fn test_unknown_action_rejected_by_serde() {
+        // With the SessionAction enum, unknown action strings are rejected
+        // at deserialization time by serde, not by the handler.
+        let json_str = r#"{"action": "destroy"}"#;
+        let result: Result<ShSessionParams, _> = serde_json::from_str(json_str);
+        assert!(result.is_err(), "unknown action should fail deserialization");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("destroy") || err_msg.contains("unknown variant"),
+            "error should mention the bad action, got: {err_msg}");
     }
 
     // ------------------------------------------------------------------
@@ -412,7 +394,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "create".to_string(),
+            action: SessionAction::Create,
             name: None,
             shell: Some("/bin/bash".to_string()),
         };
@@ -439,7 +421,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "close".to_string(),
+            action: SessionAction::Close,
             name: None,
             shell: None,
         };
@@ -474,7 +456,7 @@ mod tests {
             .expect("create beta");
 
         let params = ShSessionParams {
-            action: "list".to_string(),
+            action: SessionAction::List,
             name: None,
             shell: None,
         };
@@ -503,7 +485,7 @@ mod tests {
         let pt = test_process_table();
 
         let params = ShSessionParams {
-            action: "list".to_string(),
+            action: SessionAction::List,
             name: None,
             shell: None,
         };
@@ -524,7 +506,7 @@ mod tests {
     fn test_params_deserialize_create() {
         let json = r#"{"action": "create", "name": "dev", "shell": "/bin/zsh"}"#;
         let params: ShSessionParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.action, "create");
+        assert_eq!(params.action, SessionAction::Create);
         assert_eq!(params.name, Some("dev".to_string()));
         assert_eq!(params.shell, Some("/bin/zsh".to_string()));
     }
@@ -533,7 +515,7 @@ mod tests {
     fn test_params_deserialize_list() {
         let json = r#"{"action": "list"}"#;
         let params: ShSessionParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.action, "list");
+        assert_eq!(params.action, SessionAction::List);
         assert!(params.name.is_none());
         assert!(params.shell.is_none());
     }
@@ -542,7 +524,7 @@ mod tests {
     fn test_params_deserialize_close() {
         let json = r#"{"action": "close", "name": "dev"}"#;
         let params: ShSessionParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.action, "close");
+        assert_eq!(params.action, SessionAction::Close);
         assert_eq!(params.name, Some("dev".to_string()));
         assert!(params.shell.is_none());
     }
@@ -599,7 +581,7 @@ mod tests {
 
         // Create
         let create_params = ShSessionParams {
-            action: "create".to_string(),
+            action: SessionAction::Create,
             name: Some("lifecycle".to_string()),
             shell: Some("/bin/bash".to_string()),
         };
@@ -609,7 +591,7 @@ mod tests {
 
         // List - should contain the session
         let list_params = ShSessionParams {
-            action: "list".to_string(),
+            action: SessionAction::List,
             name: None,
             shell: None,
         };
@@ -624,7 +606,7 @@ mod tests {
 
         // Close
         let close_params = ShSessionParams {
-            action: "close".to_string(),
+            action: SessionAction::Close,
             name: Some("lifecycle".to_string()),
             shell: None,
         };
@@ -634,7 +616,7 @@ mod tests {
 
         // List again - should be empty
         let list_params2 = ShSessionParams {
-            action: "list".to_string(),
+            action: SessionAction::List,
             name: None,
             shell: None,
         };

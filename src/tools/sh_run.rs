@@ -6,6 +6,7 @@
 //! with process table digest.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use regex::Regex;
@@ -39,6 +40,9 @@ const DEFAULT_SESSION: &str = "main";
 
 /// Regex to detect preset names: `@[a-z_]+`.
 const PRESET_PATTERN: &str = r"^@[a-z_]+$";
+
+/// Compiled preset regex, initialized once and reused.
+static PRESET_RE: OnceLock<Regex> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -130,7 +134,7 @@ pub async fn handle(
         exit_code: result.exit_code,
         duration_ms: result.duration.as_millis() as u64,
         cwd: result.cwd,
-        category: category_to_str(category).to_string(),
+        category: category.to_string(),
         output: final_output,
         matched_lines,
         lines: LineCount {
@@ -218,7 +222,7 @@ fn resolve_watch_pattern(
     watch: &str,
     config: &MishConfig,
 ) -> Result<PatternMatcher, ToolError> {
-    let preset_re = Regex::new(PRESET_PATTERN).unwrap();
+    let preset_re = PRESET_RE.get_or_init(|| Regex::new(PRESET_PATTERN).unwrap());
 
     let pattern_strings: Vec<String> = if preset_re.is_match(watch) {
         // Check config watch_presets first, fall back to built-in Presets.
@@ -285,17 +289,6 @@ fn strip_ansi(raw: &str) -> String {
         .join("\n")
 }
 
-/// Convert a Category enum to its string representation.
-fn category_to_str(cat: Category) -> &'static str {
-    match cat {
-        Category::Condense => "condense",
-        Category::Narrate => "narrate",
-        Category::Passthrough => "passthrough",
-        Category::Structured => "structured",
-        Category::Interactive => "interactive",
-        Category::Dangerous => "dangerous",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -581,7 +574,7 @@ mod tests {
     #[test]
     fn test_preset_detection_vs_raw_regex() {
         // @errors -> preset
-        let preset_re = Regex::new(PRESET_PATTERN).unwrap();
+        let preset_re = PRESET_RE.get_or_init(|| Regex::new(PRESET_PATTERN).unwrap());
         assert!(preset_re.is_match("@errors"));
         assert!(preset_re.is_match("@warnings"));
         assert!(preset_re.is_match("@npm"));
@@ -1103,15 +1096,15 @@ mod tests {
         assert_eq!(strip_ansi(""), "");
     }
 
-    // -- category_to_str unit tests --------------------------------------
+    // -- Category Display unit tests --------------------------------------
 
     #[test]
-    fn test_category_to_str_all_variants() {
-        assert_eq!(category_to_str(Category::Condense), "condense");
-        assert_eq!(category_to_str(Category::Narrate), "narrate");
-        assert_eq!(category_to_str(Category::Passthrough), "passthrough");
-        assert_eq!(category_to_str(Category::Structured), "structured");
-        assert_eq!(category_to_str(Category::Interactive), "interactive");
-        assert_eq!(category_to_str(Category::Dangerous), "dangerous");
+    fn test_category_display_all_variants() {
+        assert_eq!(Category::Condense.to_string(), "condense");
+        assert_eq!(Category::Narrate.to_string(), "narrate");
+        assert_eq!(Category::Passthrough.to_string(), "passthrough");
+        assert_eq!(Category::Structured.to_string(), "structured");
+        assert_eq!(Category::Interactive.to_string(), "interactive");
+        assert_eq!(Category::Dangerous.to_string(), "dangerous");
     }
 }

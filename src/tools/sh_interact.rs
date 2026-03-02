@@ -7,7 +7,7 @@ use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 
 use crate::mcp::types::{
-    ShInteractParams, ShInteractKillResponse, ShInteractReadTailResponse,
+    InteractAction, ShInteractParams, ShInteractKillResponse, ShInteractReadTailResponse,
     ShInteractSendResponse, ShInteractSignalResponse, ShInteractStatusResponse,
     ERR_SHELL_ERROR,
 };
@@ -49,16 +49,13 @@ pub async fn handle(
     session_manager: &SessionManager,
     process_table: &mut ProcessTable,
 ) -> Result<serde_json::Value, ToolError> {
-    match params.action.as_str() {
-        "read_tail" => handle_read_tail(params, process_table),
-        "read_full" => handle_read_full(params, process_table),
-        "send_input" => handle_send_input(params, session_manager, process_table).await,
-        "send_signal" => handle_send_signal(params, process_table),
-        "kill" => handle_kill(params, process_table),
-        "status" => handle_status(params, process_table),
-        other => Err(ToolError::invalid_params(format!(
-            "unknown action: {other}. Expected one of: read_tail, read_full, send_input, send_signal, kill, status"
-        ))),
+    match params.action {
+        InteractAction::ReadTail => handle_read_tail(params, process_table),
+        InteractAction::ReadFull => handle_read_full(params, process_table),
+        InteractAction::SendInput => handle_send_input(params, session_manager, process_table).await,
+        InteractAction::SendSignal => handle_send_signal(params, process_table),
+        InteractAction::Kill => handle_kill(params, process_table),
+        InteractAction::Status => handle_status(params, process_table),
     }
 }
 
@@ -316,7 +313,7 @@ fn handle_status(
 mod tests {
     use super::*;
     use crate::config::MishConfig;
-    use crate::mcp::types::{ShInteractParams, ERR_ALIAS_NOT_FOUND, ERR_INVALID_ACTION, ERR_INVALID_PARAMS};
+    use crate::mcp::types::{InteractAction, ShInteractParams, ERR_ALIAS_NOT_FOUND, ERR_INVALID_ACTION, ERR_INVALID_PARAMS};
     use crate::process::table::{ProcessTable, ProcessTableError};
 
     fn test_config() -> MishConfig {
@@ -348,28 +345,28 @@ mod tests {
         table
     }
 
-    fn params(alias: &str, action: &str) -> ShInteractParams {
+    fn params(alias: &str, action: InteractAction) -> ShInteractParams {
         ShInteractParams {
             alias: alias.to_string(),
-            action: action.to_string(),
+            action,
             input: None,
             lines: None,
         }
     }
 
-    fn params_with_input(alias: &str, action: &str, input: &str) -> ShInteractParams {
+    fn params_with_input(alias: &str, action: InteractAction, input: &str) -> ShInteractParams {
         ShInteractParams {
             alias: alias.to_string(),
-            action: action.to_string(),
+            action,
             input: Some(input.to_string()),
             lines: None,
         }
     }
 
-    fn params_with_lines(alias: &str, action: &str, lines: usize) -> ShInteractParams {
+    fn params_with_lines(alias: &str, action: InteractAction, lines: usize) -> ShInteractParams {
         ShInteractParams {
             alias: alias.to_string(),
-            action: action.to_string(),
+            action,
             input: None,
             lines: Some(lines),
         }
@@ -383,7 +380,7 @@ mod tests {
         let entry = table.get("server").unwrap();
         entry.spool.write(b"line1\nline2\nline3\nline4\nline5\n");
 
-        let result = handle_read_tail(params_with_lines("server", "read_tail", 3), &table);
+        let result = handle_read_tail(params_with_lines("server", InteractAction::ReadTail, 3), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -407,7 +404,7 @@ mod tests {
         // Write fewer lines than default (50).
         entry.spool.write(b"line1\nline2\nline3\n");
 
-        let result = handle_read_tail(params("server", "read_tail"), &table);
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -418,7 +415,7 @@ mod tests {
     fn read_tail_empty_spool() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_tail(params("server", "read_tail"), &table);
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -433,7 +430,7 @@ mod tests {
         let entry = table.get("build").unwrap();
         entry.spool.write(b"Build succeeded\n");
 
-        let result = handle_read_tail(params("build", "read_tail"), &table);
+        let result = handle_read_tail(params("build", InteractAction::ReadTail), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -444,7 +441,7 @@ mod tests {
     fn read_tail_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_tail(params("nonexistent", "read_tail"), &table);
+        let result = handle_read_tail(params("nonexistent", InteractAction::ReadTail), &table);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_ALIAS_NOT_FOUND);
@@ -458,7 +455,7 @@ mod tests {
         let entry = table.get("server").unwrap();
         entry.spool.write(b"line1\nline2\nline3\n");
 
-        let result = handle_read_full(params("server", "read_full"), &table);
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -477,7 +474,7 @@ mod tests {
     fn read_full_empty_spool() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_full(params("server", "read_full"), &table);
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -489,7 +486,7 @@ mod tests {
     fn read_full_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_full(params("ghost", "read_full"), &table);
+        let result = handle_read_full(params("ghost", InteractAction::ReadFull), &table);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_ALIAS_NOT_FOUND);
     }
@@ -511,7 +508,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = rt.block_on(handle_send_input(
-            params("server", "send_input"),
+            params("server", InteractAction::SendInput),
             &mgr,
             &table,
         ));
@@ -528,7 +525,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = rt.block_on(handle_send_input(
-            params_with_input("build", "send_input", "hello\n"),
+            params_with_input("build", InteractAction::SendInput, "hello\n"),
             &mgr,
             &table,
         ));
@@ -548,7 +545,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = rt.block_on(handle_send_input(
-            params_with_input("server", "send_input", "data\n"),
+            params_with_input("server", InteractAction::SendInput, "data\n"),
             &mgr,
             &table,
         ));
@@ -565,7 +562,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = rt.block_on(handle_send_input(
-            params_with_input("ghost", "send_input", "hello\n"),
+            params_with_input("ghost", InteractAction::SendInput, "hello\n"),
             &mgr,
             &table,
         ));
@@ -585,7 +582,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = rt.block_on(handle_send_input(
-            params_with_input("server", "send_input", "yes\n"),
+            params_with_input("server", InteractAction::SendInput, "yes\n"),
             &mgr,
             &table,
         ));
@@ -601,7 +598,7 @@ mod tests {
     fn send_signal_default_sigint() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_send_signal(params("server", "send_signal"), &table);
+        let result = handle_send_signal(params("server", InteractAction::SendSignal), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -616,7 +613,7 @@ mod tests {
         let table = make_table_with_running_process("server");
 
         let result = handle_send_signal(
-            params_with_input("server", "send_signal", "SIGTERM"),
+            params_with_input("server", InteractAction::SendSignal, "SIGTERM"),
             &table,
         );
         assert!(result.is_ok());
@@ -630,7 +627,7 @@ mod tests {
         let table = make_table_with_running_process("server");
 
         let result = handle_send_signal(
-            params_with_input("server", "send_signal", "SIGHUP"),
+            params_with_input("server", InteractAction::SendSignal, "SIGHUP"),
             &table,
         );
         assert!(result.is_ok());
@@ -644,7 +641,7 @@ mod tests {
         let table = make_table_with_running_process("server");
 
         let result = handle_send_signal(
-            params_with_input("server", "send_signal", "SIGUSR1"),
+            params_with_input("server", InteractAction::SendSignal, "SIGUSR1"),
             &table,
         );
         assert!(result.is_err());
@@ -655,7 +652,7 @@ mod tests {
     fn send_signal_to_completed_process_returns_invalid_action() {
         let table = make_table_with_completed_process("build");
 
-        let result = handle_send_signal(params("build", "send_signal"), &table);
+        let result = handle_send_signal(params("build", InteractAction::SendSignal), &table);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_INVALID_ACTION);
@@ -666,7 +663,7 @@ mod tests {
     fn send_signal_to_awaiting_input_process_succeeds() {
         let table = make_table_with_awaiting_input_process("server");
 
-        let result = handle_send_signal(params("server", "send_signal"), &table);
+        let result = handle_send_signal(params("server", InteractAction::SendSignal), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -677,7 +674,7 @@ mod tests {
     fn send_signal_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_send_signal(params("ghost", "send_signal"), &table);
+        let result = handle_send_signal(params("ghost", InteractAction::SendSignal), &table);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_ALIAS_NOT_FOUND);
     }
@@ -688,7 +685,7 @@ mod tests {
     fn kill_updates_state_to_killed() {
         let mut table = make_table_with_running_process("server");
 
-        let result = handle_kill(params("server", "kill"), &mut table);
+        let result = handle_kill(params("server", InteractAction::Kill), &mut table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -705,7 +702,7 @@ mod tests {
     fn kill_awaiting_input_process_succeeds() {
         let mut table = make_table_with_awaiting_input_process("server");
 
-        let result = handle_kill(params("server", "kill"), &mut table);
+        let result = handle_kill(params("server", InteractAction::Kill), &mut table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -716,7 +713,7 @@ mod tests {
     fn kill_completed_process_returns_invalid_action() {
         let mut table = make_table_with_completed_process("build");
 
-        let result = handle_kill(params("build", "kill"), &mut table);
+        let result = handle_kill(params("build", InteractAction::Kill), &mut table);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_INVALID_ACTION);
@@ -727,7 +724,7 @@ mod tests {
         let mut table = make_table_with_running_process("server");
         table.update_state("server", ProcessState::Killed).unwrap();
 
-        let result = handle_kill(params("server", "kill"), &mut table);
+        let result = handle_kill(params("server", InteractAction::Kill), &mut table);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_INVALID_ACTION);
     }
@@ -736,7 +733,7 @@ mod tests {
     fn kill_unknown_alias_returns_error() {
         let mut table = make_table_with_running_process("server");
 
-        let result = handle_kill(params("ghost", "kill"), &mut table);
+        let result = handle_kill(params("ghost", InteractAction::Kill), &mut table);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_ALIAS_NOT_FOUND);
     }
@@ -747,7 +744,7 @@ mod tests {
     fn status_running_process() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_status(params("server", "status"), &table);
+        let result = handle_status(params("server", InteractAction::Status), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -769,7 +766,7 @@ mod tests {
         table.set_exit_code("build", 42);
         table.set_output_summary("build", "Build finished");
 
-        let result = handle_status(params("build", "status"), &table);
+        let result = handle_status(params("build", InteractAction::Status), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -787,7 +784,7 @@ mod tests {
         table.set_error_tail("build", "error[E0308]: mismatched types");
         table.set_signal("build", "SIGTERM");
 
-        let result = handle_status(params("build", "status"), &table);
+        let result = handle_status(params("build", InteractAction::Status), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -803,7 +800,7 @@ mod tests {
         table.update_state("deploy", ProcessState::AwaitingInput).unwrap();
         table.set_prompt_tail("deploy", "Password: ");
 
-        let result = handle_status(params("deploy", "status"), &table);
+        let result = handle_status(params("deploy", InteractAction::Status), &table);
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -815,30 +812,23 @@ mod tests {
     fn status_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_status(params("ghost", "status"), &table);
+        let result = handle_status(params("ghost", InteractAction::Status), &table);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_ALIAS_NOT_FOUND);
     }
 
     // ── Unknown action ────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn unknown_action_returns_invalid_params() {
-        let mut table = make_table_with_running_process("server");
-        let config = std::sync::Arc::new(test_config());
-        let mgr = SessionManager::new(config);
-
-        let result = handle(
-            params("server", "foobar"),
-            &mgr,
-            &mut table,
-        ).await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ERR_INVALID_PARAMS);
-        assert!(err.message.contains("unknown action"));
-        assert!(err.message.contains("foobar"));
+    #[test]
+    fn unknown_action_rejected_by_serde() {
+        // With the InteractAction enum, unknown action strings are rejected
+        // at deserialization time by serde, not by the handler.
+        let json_str = r#"{"alias": "server", "action": "foobar"}"#;
+        let result: Result<ShInteractParams, _> = serde_json::from_str(json_str);
+        assert!(result.is_err(), "unknown action should fail deserialization");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("foobar") || err_msg.contains("unknown variant"),
+            "error should mention the bad action, got: {err_msg}");
     }
 
     // ── handle() dispatch integration ─────────────────────────────────
@@ -853,7 +843,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = handle(
-            params("server", "read_tail"),
+            params("server", InteractAction::ReadTail),
             &mgr,
             &mut table,
         ).await;
@@ -871,7 +861,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = handle(
-            params("server", "read_full"),
+            params("server", InteractAction::ReadFull),
             &mgr,
             &mut table,
         ).await;
@@ -886,7 +876,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = handle(
-            params("server", "status"),
+            params("server", InteractAction::Status),
             &mgr,
             &mut table,
         ).await;
@@ -901,7 +891,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = handle(
-            params("server", "kill"),
+            params("server", InteractAction::Kill),
             &mgr,
             &mut table,
         ).await;
@@ -918,7 +908,7 @@ mod tests {
         let mgr = SessionManager::new(config);
 
         let result = handle(
-            params("server", "send_signal"),
+            params("server", InteractAction::SendSignal),
             &mgr,
             &mut table,
         ).await;

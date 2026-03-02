@@ -46,6 +46,24 @@ use serde::Deserialize;
 use crate::core::grammar::Grammar;
 
 // ---------------------------------------------------------------------------
+// Display for Category
+// ---------------------------------------------------------------------------
+
+impl fmt::Display for Category {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Category::Condense => "condense",
+            Category::Narrate => "narrate",
+            Category::Passthrough => "passthrough",
+            Category::Structured => "structured",
+            Category::Interactive => "interactive",
+            Category::Dangerous => "dangerous",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 

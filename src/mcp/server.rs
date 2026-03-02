@@ -425,15 +425,19 @@ mod tests {
     async fn test_server_tools_call_sh_help() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#,
-            "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#, "\n",
         );
         let mut transport = make_transport(input);
 
         server.run(&mut transport).await.unwrap();
 
         let output = get_output(transport);
-        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let lines: Vec<&str> = output.trim().lines().collect();
+        // 2 responses: initialize + tools/call (notification produces none)
+        assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
+        let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(parsed["error"].is_null());
         assert!(parsed["result"]["result"]["tools"].is_array());
         assert!(parsed["result"]["processes"].is_array());
@@ -445,15 +449,18 @@ mod tests {
     async fn test_server_unknown_tool_error() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"bogus","arguments":{}}}"#,
-            "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"bogus","arguments":{}}}"#, "\n",
         );
         let mut transport = make_transport(input);
 
         server.run(&mut transport).await.unwrap();
 
         let output = get_output(transport);
-        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let lines: Vec<&str> = output.trim().lines().collect();
+        assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
+        let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(parsed["error"].is_object());
         assert!(parsed["error"]["data"]["processes"].is_array());
     }
@@ -508,15 +515,18 @@ mod tests {
             .expect("should create main session");
 
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo mcp_server_test","timeout":5}}}"#,
-            "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo mcp_server_test","timeout":5}}}"#, "\n",
         );
         let mut transport = make_transport(input);
 
         server.run(&mut transport).await.unwrap();
 
         let output = get_output(transport);
-        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let lines: Vec<&str> = output.trim().lines().collect();
+        assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
+        let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(
             parsed["error"].is_null(),
             "Expected success, got: {parsed}"

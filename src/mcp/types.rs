@@ -98,17 +98,36 @@ pub struct ShSpawnParams {
     pub timeout: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractAction {
+    ReadTail,
+    ReadFull,
+    SendInput,
+    SendSignal,
+    Kill,
+    Status,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShInteractParams {
     pub alias: String,
-    pub action: String,
+    pub action: InteractAction,
     pub input: Option<String>,
     pub lines: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAction {
+    Create,
+    List,
+    Close,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShSessionParams {
-    pub action: String,
+    pub action: SessionAction,
 }
 
 // sh_help has no parameters
@@ -929,10 +948,10 @@ mod tests {
 
     #[test]
     fn sh_interact_params_deserialize() {
-        let json_str = r#"{"alias": "myapp", "action": "send", "input": "yes\n", "lines": 50}"#;
+        let json_str = r#"{"alias": "myapp", "action": "send_input", "input": "yes\n", "lines": 50}"#;
         let params: ShInteractParams = serde_json::from_str(json_str).unwrap();
         assert_eq!(params.alias, "myapp");
-        assert_eq!(params.action, "send");
+        assert_eq!(params.action, InteractAction::SendInput);
         assert_eq!(params.input, Some("yes\n".to_string()));
         assert_eq!(params.lines, Some(50));
     }
@@ -942,7 +961,7 @@ mod tests {
         let json_str = r#"{"alias": "myapp", "action": "status"}"#;
         let params: ShInteractParams = serde_json::from_str(json_str).unwrap();
         assert_eq!(params.alias, "myapp");
-        assert_eq!(params.action, "status");
+        assert_eq!(params.action, InteractAction::Status);
         assert!(params.input.is_none());
         assert!(params.lines.is_none());
     }
@@ -951,7 +970,7 @@ mod tests {
     fn sh_session_params_deserialize() {
         let json_str = r#"{"action": "list"}"#;
         let params: ShSessionParams = serde_json::from_str(json_str).unwrap();
-        assert_eq!(params.action, "list");
+        assert_eq!(params.action, SessionAction::List);
     }
 
     // ---- Additional tests for protocol types ----
