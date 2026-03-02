@@ -1,0 +1,15 @@
+[+] Building 8.2s (6/14)                                         docker:default
+ => [internal] load build definition from Dockerfile              0.0s
+ => => transferring dockerfile: 512B                              0.0s
+ => [internal] load metadata for docker.io/library/node:20-slim   1.2s
+ => [internal] load .dockerignore                                 0.0s
+ => [1/8] FROM docker.io/library/node:20-slim@sha256:abc123       0.0s
+ #1 CACHED
+ #2 CACHED
+ #3 DONE 0.1s
+ #4 0.234 npm install --production
+ #4 2.891 npm ERR! code ERESOLVE
+ #4 2.892 npm ERR! ERESOLVE unable to resolve dependency tree
+ #5 DONE 3.1s
+ERROR failed to solve: process "/bin/sh -c npm install --production" did not complete successfully: exit code: 1
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.

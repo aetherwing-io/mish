@@ -1,0 +1,19 @@
+[+] Building 12.3s (14/14) FINISHED                              docker:default
+ => [internal] load build definition from Dockerfile              0.0s
+ => => transferring dockerfile: 512B                              0.0s
+ => [internal] load metadata for docker.io/library/node:20-slim   1.2s
+ => [internal] load .dockerignore                                 0.0s
+ => [1/8] FROM docker.io/library/node:20-slim@sha256:abc123       0.0s
+ #1 CACHED
+ #2 CACHED
+ #3 DONE 0.1s
+ #4 0.234 npm install --production
+ #4 1.456 added 147 packages in 1.4s
+ #5 CACHED
+ #6 DONE 0.3s
+ #7 0.100 COPY . /app
+ #8 DONE 0.1s
+ => exporting to image                                            0.2s
+ => => exporting layers                                           0.1s
+ => => writing image sha256:a1b2c3d4e5f6a1b2c3d4e5f6              0.0s
+ => => naming to docker.io/library/myapp:latest                   0.0s

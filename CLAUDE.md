@@ -65,6 +65,19 @@ Wraps individual commands with category-aware structured output. Defined in `PRO
 - **File stat primitives** — shared by VERBOSITY.md (narration on success) and ENRICH.md (diagnostics on failure)
 - **Grammar system** — TOML tool grammars with dialect support, used for classification, categorization, and preflight in both modes
 
+## Development
+
+**Always use `make test` instead of bare `cargo test`.** The Makefile kills orphaned test runners before starting new tests. Interrupted test runs leave zombie `target/debug/deps/mish-*` processes that hold PTY file descriptors and cargo locks, blocking subsequent runs.
+
+| Command | What |
+|---------|------|
+| `make test` | Full test suite (cleans zombies first) |
+| `make test-lib` | Lib unit tests only |
+| `make test-integration` | Grammar + fixture pipeline tests |
+| `make release` | Release build + update symlink |
+
+**Never pipe `cargo test`** — pipes swallow output and create unkillable zombie processes.
+
 ## Tech Stack
 
 Rust, tokio, `vte` crate (ANSI parsing), `nix` crate (PTY via `forkpty`), TOML config, MCP stdio transport.

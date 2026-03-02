@@ -1,0 +1,29 @@
+npm http fetch GET 200 https://registry.npmjs.org/react 38ms (cache revalidated)
+npm http fetch GET 200 https://registry.npmjs.org/react-dom 41ms (cache revalidated)
+npm timing idealTree:init Completed in 8ms
+npm timing idealTree:userRequests Completed in 3ms
+npm sill idealTree buildDeps
+npm timing idealTree:buildDeps Completed in 45ms
+npm verb reify Loading actual tree
+npm timing reify:loadTrees Completed in 112ms
+npm ERR! code ERESOLVE
+npm ERR! ERESOLVE unable to resolve dependency tree
+npm ERR!
+npm ERR! While resolving: my-app@1.0.0
+npm ERR! Found: react@18.2.0
+npm ERR! node_modules/react
+npm ERR!   react@"^18.2.0" from the root project
+npm ERR!
+npm ERR! Could not resolve dependency:
+npm ERR! peer react@"^16.8.0 || ^17.0.0" from old-component@2.1.0
+npm ERR! node_modules/old-component
+npm ERR!   old-component@"^2.1.0" from the root project
+npm ERR!
+npm ERR! Fix the upstream dependency conflict, or retry
+npm ERR! this command with --force or --legacy-peer-deps
+npm ERR! Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules'
+npm ERR!   errno: -13
+npm ERR!   code: 'EACCES'
+npm ERR!   syscall: 'mkdir'
+npm ERR!   path: '/usr/local/lib/node_modules'
+npm ERR! A complete log of this run can be found in: /home/user/.npm/_logs/2026-03-02T12_00_00_000Z-debug-0.log

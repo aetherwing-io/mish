@@ -24,4 +24,5 @@ npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supp
 resolving packages...
 idealTree: calculating ideal tree
 reify: timing completed
+6 vulnerabilities (2 moderate, 4 high)
 added 147 packages in 3.2s

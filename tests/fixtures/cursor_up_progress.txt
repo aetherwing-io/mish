@@ -1,0 +1,9 @@
+   Compiling serde v1.0.197
+   Compiling tokio v1.36.0
+   Compiling regex v1.10.3
+   Compiling mish v0.1.0
+    Building [==>                 ]  12/57: serde, tokio
+    Building [======>             ]  24/57: regex, mish
+    Building [==========>         ]  36/57: mish
+    Building [==============>     ]  48/57: mish
+    Building [===================>] 57/57: done

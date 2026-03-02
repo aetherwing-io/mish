@@ -1,0 +1,18 @@
+make[1]: Entering directory '/home/user/project/src'
+gcc -Wall -O2 -I../include -c main.c -o main.o
+gcc -Wall -O2 -I../include -c utils.c -o utils.o
+main.c:42:10: warning: unused variable 'tmp' [-Wunused-variable]
+   42 |     int tmp = 0;
+      |          ^~~
+gcc -Wall -O2 -I../include -c parser.c -o parser.o
+parser.c:18:5: error: expected ';' before 'return'
+   18 |     return 0
+      |     ^~~~~~
+parser.c:25:1: error: unknown type name 'struc'
+   25 | struc Node {
+      | ^~~~~
+gcc -o project main.o utils.o parser.o lexer.o -lm
+/usr/bin/ld: utils.o: in function `helper':
+utils.c:(.text+0x42): undefined reference to `missing_function'
+make[1]: *** [Makefile:10: all] Error 2
+make[1]: Leaving directory '/home/user/project/src'

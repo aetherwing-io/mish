@@ -1,0 +1,30 @@
+   Compiling mish v0.1.0 (/home/user/projects/mish)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.2s
+     Running unittests src/lib.rs (target/debug/deps/mish-abc123)
+
+running 12 tests
+test core::grammar::tests::test_load_grammar ... ok
+test core::grammar::tests::test_detect_tool ... ok
+test core::grammar::tests::test_resolve_action ... ok
+test core::classifier::tests::test_classify_hazard ... ok
+test core::classifier::tests::test_classify_outcome ... ok
+test core::classifier::tests::test_classify_noise ... ok
+test core::emit::tests::test_emit_hazard ... ok
+test core::emit::tests::test_emit_outcome ... ok
+test core::emit::tests::test_ring_buffer ... ok
+test squasher::dedup::tests::test_dedup_basic ... ok
+test squasher::vte_strip::tests::test_strip_ansi ... FAILED
+test squasher::truncate::tests::test_oreo ... ok
+
+failures:
+
+---- squasher::vte_strip::tests::test_strip_ansi stdout ----
+thread 'squasher::vte_strip::tests::test_strip_ansi' panicked at src/squasher/vte_strip.rs:142:5:
+assertion `left == right` failed
+  left: "hello world"
+ right: "hello  world"
+
+failures:
+    squasher::vte_strip::tests::test_strip_ansi
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s

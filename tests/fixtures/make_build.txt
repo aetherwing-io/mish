@@ -1,0 +1,11 @@
+make[1]: Entering directory '/home/user/project/src'
+gcc -Wall -O2 -I../include -c main.c -o main.o
+gcc -Wall -O2 -I../include -c utils.c -o utils.o
+main.c:42:10: warning: unused variable 'tmp' [-Wunused-variable]
+   42 |     int tmp = 0;
+      |          ^~~
+gcc -Wall -O2 -I../include -c parser.c -o parser.o
+gcc -Wall -O2 -I../include -c lexer.c -o lexer.o
+ar rcs libproject.a main.o utils.o parser.o lexer.o
+gcc -o project main.o utils.o parser.o lexer.o -lm
+make[1]: Leaving directory '/home/user/project/src'
