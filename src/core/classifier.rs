@@ -907,7 +907,7 @@ fn is_similar(current: &str, previous: &str) -> bool {
 mod tests {
     use super::*;
     use crate::core::grammar::{
-        load_grammar_from_str, Severity,
+        detect_tool, load_all_grammars, load_grammar_from_str, Severity,
     };
     use crate::core::line_buffer::Line;
 
@@ -2664,5 +2664,62 @@ success = "ok"
         let deferred = c.drain_deferred();
         assert!(deferred.is_some());
         assert!(matches!(deferred.unwrap(), Classification::Unknown { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Grammar inheritance end-to-end through Classifier (d2)
+    // -----------------------------------------------------------------------
+
+    // Test 92: npm grammar inherits ansi-progress — progress patterns classified as Noise(Strip)
+    #[test]
+    fn test_grammar_inheritance_npm_ansi_progress_in_classifier() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        // Detect npm install
+        let args: Vec<String> = vec!["npm", "install"].iter().map(|s| s.to_string()).collect();
+        let (grammar, action) = detect_tool(&args, &grammars).expect("npm should detect");
+
+        let mut c = Classifier::new(Some(grammar), action);
+
+        // Standalone percentage — inherited from ansi-progress (pattern: '^\s*\d{1,3}%\s*$')
+        let r1 = c.classify(Line::Complete("  75%  ".into()));
+        assert!(
+            matches!(r1, Classification::Noise { action: NoiseAction::Strip, .. }),
+            "inherited ansi-progress '75%%' should be Noise(Strip), got {:?}", r1
+        );
+
+        // Progress bar shape — inherited from ansi-progress
+        let r2 = c.classify(Line::Complete("[########        ]".into()));
+        assert!(
+            matches!(r2, Classification::Noise { action: NoiseAction::Strip, .. }),
+            "inherited ansi-progress bar should be Noise(Strip), got {:?}", r2
+        );
+
+        // npm's own global_noise rule should still work
+        let r3 = c.classify(Line::Complete("npm timing idealTree Completed in 123ms".into()));
+        assert!(
+            matches!(r3, Classification::Noise { action: NoiseAction::Strip, .. }),
+            "npm's own global_noise should be Noise(Strip), got {:?}", r3
+        );
+    }
+
+    // Test 93: Own rules take priority over inherited rules in classifier
+    #[test]
+    fn test_grammar_inheritance_own_rules_priority_in_classifier() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        let args: Vec<String> = vec!["npm", "install"].iter().map(|s| s.to_string()).collect();
+        let (grammar, action) = detect_tool(&args, &grammars).expect("npm should detect");
+
+        let mut c = Classifier::new(Some(grammar), action);
+
+        // "npm warn" matches own global_noise (dedup), NOT inherited ansi-progress
+        let r = c.classify(Line::Complete("npm warn deprecated package".into()));
+        assert!(
+            matches!(r, Classification::Noise { action: NoiseAction::Dedup, .. }),
+            "npm warn should be Noise(Dedup) from own rule, got {:?}", r
+        );
     }
 }
