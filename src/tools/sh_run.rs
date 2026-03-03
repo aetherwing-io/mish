@@ -14,9 +14,10 @@ use serde_json;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::MishConfig;
+use crate::core::enrich;
 use crate::core::grammar::Grammar;
 use crate::mcp::types::{
-    LineCount, ProcessDigestEntry, ShRunMetrics, ShRunParams, ShRunResponse,
+    EnrichmentEntry, LineCount, ProcessDigestEntry, ShRunMetrics, ShRunParams, ShRunResponse,
     ERR_COMMAND_BLOCKED,
 };
 use crate::router::categories::{CategoriesConfig, Category, DangerousPattern};
@@ -28,7 +29,6 @@ use crate::session::manager::SessionManager;
 use crate::squasher::pattern::{PatternMatcher, Presets};
 use crate::squasher::pipeline::{Pipeline, PipelineConfig};
 use crate::squasher::truncate::TruncateConfig;
-use crate::squasher::vte_strip::VteStripper;
 use crate::core::line_buffer::Line;
 
 // ---------------------------------------------------------------------------
@@ -100,41 +100,65 @@ pub async fn handle(
         .await
         .map_err(ToolError::from_session_error)?;
 
-    // 5. Post-process based on category.
+    // 5. Post-process via unified pipeline (category-aware dispatch).
     let raw_output = &result.output;
     let total_lines = raw_output.lines().count() as u64;
 
-    let (processed_output, shown_lines, run_metrics) = match category {
-        Category::Condense => {
-            // Full squasher pipeline: VTE strip, progress removal, dedup, truncation.
-            let squash_start = std::time::Instant::now();
-            let (squashed, pipeline_metrics) = squash_output(raw_output, config);
-            let squash_ms = squash_start.elapsed().as_millis() as u64;
-            let shown = squashed.lines().count() as u64;
-            let raw_bytes = raw_output.len() as u64;
-            let squashed_bytes = squashed.len() as u64;
-            let compression_ratio = if raw_bytes == 0 {
-                1.0
-            } else {
-                squashed_bytes as f64 / raw_bytes as f64
-            };
-            let metrics = Some(ShRunMetrics {
-                compression_ratio,
-                raw_bytes,
-                squashed_bytes,
-                lines_in: pipeline_metrics.lines_in,
-                lines_out: pipeline_metrics.lines_out,
-                wall_ms: result.duration.as_millis() as u64,
-                squash_ms,
-            });
-            (squashed, shown, metrics)
+    let squash_start = std::time::Instant::now();
+    let pipeline_config = PipelineConfig {
+        truncate: TruncateConfig {
+            head: config.squasher.oreo_head,
+            tail: config.squasher.oreo_tail,
+        },
+        dedup_all: true,
+    };
+    let mut pipeline = Pipeline::new(pipeline_config);
+    let raw_lines: Vec<Line> = raw_output
+        .lines()
+        .map(|l| Line::Complete(l.to_string()))
+        .collect();
+    let pipeline_result = pipeline.process(raw_lines, category);
+    let squash_ms = squash_start.elapsed().as_millis() as u64;
+
+    let processed_output = pipeline_result.output.join("\n");
+    let shown_lines = pipeline_result.metrics.lines_out;
+    let raw_bytes = raw_output.len() as u64;
+    let squashed_bytes = processed_output.len() as u64;
+    let compression_ratio = if raw_bytes == 0 {
+        1.0
+    } else {
+        squashed_bytes as f64 / raw_bytes as f64
+    };
+    let run_metrics = Some(ShRunMetrics {
+        compression_ratio,
+        raw_bytes,
+        squashed_bytes,
+        lines_in: pipeline_result.metrics.lines_in,
+        lines_out: pipeline_result.metrics.lines_out,
+        wall_ms: result.duration.as_millis() as u64,
+        squash_ms,
+    });
+
+    // 5b. Error enrichment on non-zero exit.
+    let enrichment = if result.exit_code != 0 {
+        let cmd_parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        let enrichment_result = enrich::enrich(&cmd_parts, result.exit_code, "", None);
+        if enrichment_result.diagnostics.is_empty() {
+            None
+        } else {
+            Some(
+                enrichment_result
+                    .diagnostics
+                    .into_iter()
+                    .map(|d| EnrichmentEntry {
+                        kind: d.key,
+                        message: d.value,
+                    })
+                    .collect(),
+            )
         }
-        _ => {
-            // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
-            let stripped = strip_ansi(raw_output);
-            let shown = stripped.lines().count() as u64;
-            (stripped, shown, None)
-        }
+    } else {
+        None
     };
 
     // 6. Apply watch pattern filtering if requested.
@@ -164,6 +188,7 @@ pub async fn handle(
             },
         },
         metrics: run_metrics,
+        enrichment,
     };
 
     let response_json = serde_json::to_value(&response)
@@ -206,6 +231,7 @@ fn resolve_timeout(params: &ShRunParams, cmd: &str, config: &MishConfig) -> Dura
 
 /// Run output through the squasher pipeline (VTE strip, progress removal,
 /// dedup, truncation). Returns the squashed output and pipeline metrics.
+#[cfg(test)]
 fn squash_output(raw: &str, config: &MishConfig) -> (String, crate::squasher::pipeline::PipelineMetrics) {
     let pipeline_config = PipelineConfig {
         truncate: TruncateConfig {
@@ -291,9 +317,9 @@ fn apply_watch_filter(
 }
 
 /// Strip ANSI escape sequences from output, line by line.
-/// Used for non-condense categories where we want clean text
-/// without the full squasher pipeline (no dedup, no truncation).
+#[cfg(test)]
 fn strip_ansi(raw: &str) -> String {
+    use crate::squasher::vte_strip::VteStripper;
     raw.lines()
         .map(|line| VteStripper::strip(line.as_bytes()).clean_text)
         .collect::<Vec<_>>()

@@ -151,6 +151,15 @@ pub struct ShRunResponse {
     pub lines: LineCount,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<ShRunMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<Vec<EnrichmentEntry>>,
+}
+
+/// A diagnostic entry from error enrichment, surfaced in sh_run responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnrichmentEntry {
+    pub kind: String,
+    pub message: String,
 }
 
 /// Squasher metrics exposed to MCP clients in sh_run responses.
@@ -425,6 +434,7 @@ mod tests {
                 shown: 2,
             },
             metrics: None,
+            enrichment: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -454,6 +464,7 @@ mod tests {
                 shown: 2,
             },
             metrics: None,
+            enrichment: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -704,6 +715,7 @@ mod tests {
                 shown: 1,
             },
             metrics: None,
+            enrichment: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -856,6 +868,7 @@ mod tests {
                 shown: 1,
             },
             metrics: None,
+            enrichment: None,
         };
 
         let tool_resp = ToolResponse {
@@ -1157,6 +1170,7 @@ mod tests {
                 wall_ms: 200,
                 squash_ms: 15,
             }),
+            enrichment: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -1185,6 +1199,7 @@ mod tests {
                 shown: 1,
             },
             metrics: None,
+            enrichment: None,
         };
 
         let json = serde_json::to_value(&resp).unwrap();

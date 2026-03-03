@@ -1286,7 +1286,7 @@ mod tests {
         logger.log_session_start("sess-conv");
         logger.flush();
 
-        let content = read_log(&dir);
+        let content = read_session_log(&dir, "sess-conv");
         let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(parsed["session"], "sess-conv");
         assert_eq!(parsed["event"]["type"], "SessionStart");
@@ -1312,7 +1312,7 @@ mod tests {
         logger.log_session_end("sess-end", stats);
         logger.flush();
 
-        let content = read_log(&dir);
+        let content = read_session_log(&dir, "sess-end");
         let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(parsed["session"], "sess-end");
         assert_eq!(parsed["event"]["type"], "SessionEnd");
@@ -1350,7 +1350,7 @@ mod tests {
         logger.log_session_end("sess-ratio", stats);
         logger.flush();
 
-        let content = read_log(&dir);
+        let content = read_session_log(&dir, "sess-ratio");
         let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         let logged_ratio = parsed["event"]["aggregate_ratio"].as_f64().unwrap();
         assert!(
@@ -1383,7 +1383,7 @@ mod tests {
         });
         logger.flush();
 
-        let content = read_log(&dir);
+        let content = read_session_log(&dir, "sess-cat");
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2, "SessionStart and SessionEnd should always be logged regardless of category flags");
     }
