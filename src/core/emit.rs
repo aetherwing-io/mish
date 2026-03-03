@@ -52,6 +52,15 @@ pub struct EmittedHazard {
     pub attached_lines: Vec<String>,
 }
 
+/// Metrics collected during emit buffer processing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmitMetrics {
+    pub noise_lines: u64,
+    pub signal_lines: u64,
+    pub outcome_lines: u64,
+    pub unclassified_lines: u64,
+}
+
 /// Final summary produced when the process exits.
 #[derive(Debug, Clone)]
 pub struct Summary {
@@ -110,6 +119,7 @@ pub struct EmitBuffer {
     start_time: Instant,
     last_emit_time: Instant,
     output: Vec<String>,
+    metrics: EmitMetrics,
 }
 
 impl EmitBuffer {
@@ -125,6 +135,7 @@ impl EmitBuffer {
             start_time: now,
             last_emit_time: now,
             output: Vec::new(),
+            metrics: EmitMetrics::default(),
         }
     }
 
@@ -145,6 +156,7 @@ impl EmitBuffer {
                 text,
                 captures: _,
             } => {
+                self.metrics.signal_lines += 1;
                 // Flush pending noise count first (preserve ordering)
                 self.flush_pending_count();
                 self.dedup.flush_into(&mut self.output);
@@ -164,6 +176,7 @@ impl EmitBuffer {
             }
 
             Classification::Outcome { text, captures } => {
+                self.metrics.outcome_lines += 1;
                 self.outcomes.push(CapturedOutcome { text, captures });
             }
 
@@ -171,6 +184,7 @@ impl EmitBuffer {
                 action: NoiseAction::Strip,
                 ..
             } => {
+                self.metrics.noise_lines += 1;
                 self.pending_count += 1;
             }
 
@@ -178,11 +192,13 @@ impl EmitBuffer {
                 action: NoiseAction::Dedup,
                 text,
             } => {
+                self.metrics.noise_lines += 1;
                 self.dedup.ingest(&text);
                 self.pending_count += 1;
             }
 
             Classification::Prompt { text } => {
+                self.metrics.signal_lines += 1;
                 self.flush_pending_count();
                 self.dedup.flush_into(&mut self.output);
                 self.output.push(format!(" ? {}", text));
@@ -190,6 +206,7 @@ impl EmitBuffer {
             }
 
             Classification::Unknown { .. } => {
+                self.metrics.unclassified_lines += 1;
                 self.pending_count += 1;
             }
         }
@@ -207,6 +224,19 @@ impl EmitBuffer {
                 .push(format!(" ... {} lines", self.pending_count));
         }
         self.pending_count = 0;
+    }
+
+    /// Finalize the buffer and return metrics alongside the summary.
+    pub fn finalize_with_metrics(
+        self,
+        exit_code: i32,
+        elapsed: Duration,
+        grammar: Option<&Grammar>,
+        action: Option<&Action>,
+    ) -> (Summary, EmitMetrics) {
+        let metrics = self.metrics.clone();
+        let summary = self.finalize(exit_code, elapsed, grammar, action);
+        (summary, metrics)
     }
 
     /// Finalize the buffer when the process exits, producing a Summary.
@@ -668,5 +698,113 @@ failure = "! npm install failed (exit {exit_code})"
         assert!(summary.header.contains("0 lines"));
         assert!(summary.summary_lines.is_empty());
         assert!(summary.hazard_lines.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // EmitMetrics tests
+    // -----------------------------------------------------------------------
+
+    // Test 24: EmitMetrics default zeros
+    #[test]
+    fn test_emit_metrics_default_zeros() {
+        let metrics = EmitMetrics::default();
+        assert_eq!(metrics.noise_lines, 0);
+        assert_eq!(metrics.signal_lines, 0);
+        assert_eq!(metrics.outcome_lines, 0);
+        assert_eq!(metrics.unclassified_lines, 0);
+    }
+
+    // Test 25: finalize_with_metrics returns metrics alongside summary
+    #[test]
+    fn test_finalize_with_metrics_returns_both() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Hazard {
+            severity: Severity::Error,
+            text: "error".into(),
+            captures: HashMap::new(),
+        });
+        buf.accept(Classification::Noise {
+            action: NoiseAction::Strip,
+            text: "noise".into(),
+        });
+        buf.accept(Classification::Unknown {
+            text: "unknown".into(),
+        });
+        let (summary, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
+        assert!(summary.header.contains("3 lines"));
+        assert_eq!(metrics.signal_lines, 1);  // hazard
+        assert_eq!(metrics.noise_lines, 1);
+        assert_eq!(metrics.unclassified_lines, 1);
+        assert_eq!(metrics.outcome_lines, 0);
+    }
+
+    // Test 26: metrics counts noise (strip + dedup)
+    #[test]
+    fn test_emit_metrics_noise_counts() {
+        let mut buf = EmitBuffer::new();
+        for _ in 0..5 {
+            buf.accept(Classification::Noise {
+                action: NoiseAction::Strip,
+                text: "strip".into(),
+            });
+        }
+        for _ in 0..3 {
+            buf.accept(Classification::Noise {
+                action: NoiseAction::Dedup,
+                text: "dedup".into(),
+            });
+        }
+        let (_, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
+        assert_eq!(metrics.noise_lines, 8);
+    }
+
+    // Test 27: metrics counts signal (hazards + prompts)
+    #[test]
+    fn test_emit_metrics_signal_counts() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Hazard {
+            severity: Severity::Error,
+            text: "err".into(),
+            captures: HashMap::new(),
+        });
+        buf.accept(Classification::Hazard {
+            severity: Severity::Warning,
+            text: "warn".into(),
+            captures: HashMap::new(),
+        });
+        buf.accept(Classification::Prompt {
+            text: "confirm?".into(),
+        });
+        let (_, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
+        assert_eq!(metrics.signal_lines, 3);
+    }
+
+    // Test 28: metrics counts outcomes
+    #[test]
+    fn test_emit_metrics_outcome_counts() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Outcome {
+            text: "result 1".into(),
+            captures: HashMap::new(),
+        });
+        buf.accept(Classification::Outcome {
+            text: "result 2".into(),
+            captures: HashMap::new(),
+        });
+        let (_, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
+        assert_eq!(metrics.outcome_lines, 2);
+    }
+
+    // Test 29: metrics counts unclassified
+    #[test]
+    fn test_emit_metrics_unclassified_counts() {
+        let mut buf = EmitBuffer::new();
+        for _ in 0..7 {
+            buf.accept(Classification::Unknown {
+                text: "whatever".into(),
+            });
+        }
+        let (_, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
+        assert_eq!(metrics.unclassified_lines, 7);
     }
 }

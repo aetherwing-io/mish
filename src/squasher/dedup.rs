@@ -54,6 +54,15 @@ impl DedupGroup {
     }
 }
 
+/// Statistics from dedup processing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DedupStats {
+    /// Number of distinct template groups
+    pub groups: u64,
+    /// Number of lines absorbed into existing groups (total count - groups)
+    pub absorbed: u64,
+}
+
 pub struct DedupEngine {
     groups: HashMap<String, DedupGroup>,
     recent_templates: VecDeque<String>,
@@ -204,6 +213,16 @@ impl DedupEngine {
             }
         }
         None
+    }
+
+    /// Get current dedup statistics (call before flush).
+    pub fn stats(&self) -> DedupStats {
+        let groups = self.groups.len() as u64;
+        let total: u64 = self.groups.values().map(|g| g.count as u64).sum();
+        DedupStats {
+            groups,
+            absorbed: total.saturating_sub(groups),
+        }
     }
 
     /// Flush all groups and return formatted output lines.
