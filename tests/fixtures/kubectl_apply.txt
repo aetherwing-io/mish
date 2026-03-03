@@ -1,0 +1,6 @@
+namespace/staging configured
+deployment.apps/web-server configured
+service/web-server unchanged
+configmap/app-config created
+secret/db-credentials configured
+horizontalpodautoscaler.autoscaling/web-server configured

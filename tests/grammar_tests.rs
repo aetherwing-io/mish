@@ -439,7 +439,7 @@ fn test_19_cargo_build_summary_failure() {
 fn test_20_load_all_grammars_loads_all() {
     let grammars = build_grammars_map();
 
-    for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest", "jest", "webpack"] {
+    for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest", "jest", "webpack", "kubectl", "terraform"] {
         assert!(
             grammars.contains_key(*name),
             "load_all_grammars should load {name}"
@@ -1212,4 +1212,154 @@ fn test_webpack_outcome_captures_from_fixture() {
 
     assert_eq!(captured.get("status").map(|s| s.as_str()), Some("successfully"));
     assert_eq!(captured.get("time").map(|s| s.as_str()), Some("4523 ms"));
+}
+
+// ===========================================================================
+// kubectl + terraform grammar tests (e3)
+// ===========================================================================
+
+#[test]
+fn test_kubectl_grammar_parses() {
+    let grammar = load_tool_grammar("kubectl");
+    assert_eq!(grammar.tool.name, "kubectl");
+    assert!(grammar.detect.contains(&"kubectl".to_string()));
+    assert!(grammar.actions.contains_key("apply"));
+    assert!(grammar.actions.contains_key("get"));
+    assert!(grammar.actions.contains_key("delete"));
+}
+
+#[test]
+fn test_terraform_grammar_parses() {
+    let grammar = load_tool_grammar("terraform");
+    assert_eq!(grammar.tool.name, "terraform");
+    assert!(grammar.detect.contains(&"terraform".to_string()));
+    assert!(grammar.actions.contains_key("plan"));
+    assert!(grammar.actions.contains_key("apply"));
+    assert!(grammar.actions.contains_key("init"));
+}
+
+#[test]
+fn test_detect_tool_kubectl() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["kubectl", "apply", "-f", "deploy.yaml"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "kubectl should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "kubectl");
+    assert!(a.is_some(), "apply action should be resolved");
+}
+
+#[test]
+fn test_detect_tool_terraform() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["terraform", "apply"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "terraform should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "terraform");
+    assert!(a.is_some(), "apply action should be resolved");
+}
+
+#[test]
+fn test_kubectl_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("kubectl").unwrap();
+    let apply = grammar.actions.get("apply").unwrap();
+
+    // Noise: unchanged
+    let unchanged = "service/web-server unchanged";
+    let un_matched = apply.noise.iter().any(|r| r.pattern.is_match(unchanged));
+    assert!(un_matched, "kubectl apply noise should match unchanged");
+
+    // Noise: configured (dedup)
+    let configured = "deployment.apps/web-server configured";
+    let conf_matched = apply.noise.iter().any(|r| r.pattern.is_match(configured));
+    assert!(conf_matched, "kubectl apply noise should match configured");
+
+    // Outcome: created
+    let created = "configmap/app-config created";
+    let cr_matched = apply.outcome.iter().any(|r| r.pattern.is_match(created));
+    assert!(cr_matched, "kubectl apply outcome should match created");
+
+    // Hazard: error
+    let error_line = "error: unable to recognize \"deploy.yaml\"";
+    let err_matched = apply.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "kubectl apply hazard should match error:");
+}
+
+#[test]
+fn test_terraform_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("terraform").unwrap();
+    let apply = grammar.actions.get("apply").unwrap();
+
+    // Noise: Still creating
+    let still = "aws_instance.web: Still creating... [10s elapsed]";
+    let still_matched = apply.noise.iter().any(|r| r.pattern.is_match(still));
+    assert!(still_matched, "terraform apply noise should match 'Still creating'");
+
+    // Hazard: Error:
+    let error_line = "Error: creating EC2 Instance: operation error EC2";
+    let err_matched = apply.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "terraform apply hazard should match 'Error:'");
+
+    // Outcome: Apply complete
+    let complete = "Apply complete! Resources: 1 added, 1 changed, 0 destroyed.";
+    let comp_matched = apply.outcome.iter().any(|r| r.pattern.is_match(complete));
+    assert!(comp_matched, "terraform apply outcome should match 'Apply complete!'");
+
+    // Outcome captures
+    for rule in &apply.outcome {
+        if let Some(caps) = rule.pattern.captures(complete) {
+            if let Some(m) = caps.name("added") {
+                assert_eq!(m.as_str(), "1");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_terraform_plan_outcome_captures() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("terraform").unwrap();
+    let plan = grammar.actions.get("plan").unwrap();
+
+    let plan_line = "Plan: 1 to add, 1 to change, 0 to destroy.";
+    let mut captured = HashMap::new();
+    for rule in &plan.outcome {
+        if let Some(caps) = rule.pattern.captures(plan_line) {
+            for name in &rule.captures {
+                if let Some(m) = caps.name(name) {
+                    captured.insert(name.clone(), m.as_str().to_string());
+                }
+            }
+        }
+    }
+    assert_eq!(captured.get("add").map(|s| s.as_str()), Some("1"));
+    assert_eq!(captured.get("change").map(|s| s.as_str()), Some("1"));
+    assert_eq!(captured.get("destroy").map(|s| s.as_str()), Some("0"));
+}
+
+#[test]
+fn test_terraform_apply_summary_format() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("terraform").unwrap();
+    let action = grammar.actions.get("apply").unwrap();
+
+    let outcomes = vec![CapturedOutcome {
+        captures: HashMap::from([
+            ("added".to_string(), "1".to_string()),
+            ("changed".to_string(), "1".to_string()),
+            ("destroyed".to_string(), "0".to_string()),
+        ]),
+    }];
+
+    let result = format_summary(grammar, Some(action), &outcomes, 0);
+    assert_eq!(result, vec!["+ applied: 1 added, 1 changed, 0 destroyed"]);
 }

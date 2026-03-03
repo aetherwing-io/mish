@@ -1,0 +1,79 @@
+[tool]
+name = "kubectl"
+detect = ["kubectl", "k"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Verbose API request/response lines
+pattern = '^I\d{4}\s+'
+action = "strip"
+
+# ---- apply action ----
+
+[actions.apply]
+detect = ["apply"]
+
+[[actions.apply.noise]]
+# unchanged resources
+pattern = '\bunchanged$'
+action = "strip"
+
+[[actions.apply.noise]]
+# configured/created are numerous — dedup similar
+pattern = '\b(configured|created)$'
+action = "dedup"
+
+[[actions.apply.hazard]]
+pattern = '^error:|^Error from server'
+severity = "error"
+action = "keep"
+
+[[actions.apply.hazard]]
+pattern = '(?i)\bforbidden\b|cannot\s+|unable\s+to'
+severity = "error"
+action = "keep"
+
+[[actions.apply.hazard]]
+pattern = '^warning:|^Warning:'
+severity = "warning"
+action = "keep"
+
+[[actions.apply.outcome]]
+pattern = '(?P<resource>\S+)\s+(configured|created|deleted)$'
+action = "promote"
+captures = ["resource"]
+
+[actions.apply.summary]
+success = "+ kubectl apply complete"
+failure = "! kubectl apply failed (exit {exit_code})"
+partial = "... applying ({lines} lines)"
+
+# ---- get action ----
+
+[actions.get]
+detect = ["get"]
+
+[[actions.get.noise]]
+# Column headers (NAME, READY, STATUS, etc.)
+pattern = '^NAME\s+'
+action = "strip"
+
+[actions.get.summary]
+success = "+ kubectl get complete"
+failure = "! kubectl get failed (exit {exit_code})"
+partial = "... fetching ({lines} lines)"
+
+# ---- delete action ----
+
+[actions.delete]
+detect = ["delete"]
+
+[[actions.delete.outcome]]
+pattern = '(?P<resource>\S+)\s+"(?P<name>[^"]+)"\s+deleted'
+action = "promote"
+captures = ["resource", "name"]
+
+[actions.delete.summary]
+success = "+ deleted {resource} {name}"
+failure = "! kubectl delete failed (exit {exit_code})"
+partial = "... deleting ({lines} lines)"

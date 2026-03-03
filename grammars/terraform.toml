@@ -1,0 +1,109 @@
+[tool]
+name = "terraform"
+detect = ["terraform", "tf"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Resource action symbol legend
+pattern = '^Resource actions are indicated'
+action = "strip"
+
+[[global_noise]]
+# Symbol definitions (  + create, ~ update, etc.)
+pattern = '^\s+[+~\-]\s+(create|update|destroy|read)'
+action = "strip"
+
+[[global_noise]]
+# Empty lines between plan blocks
+pattern = '^\s*$'
+action = "strip"
+
+# ---- plan action ----
+
+[actions.plan]
+detect = ["plan"]
+
+[[actions.plan.noise]]
+# HCL attribute lines in plan output
+pattern = '^\s+[+~\-]\s+\w+\s+=\s+'
+action = "dedup"
+
+[[actions.plan.outcome]]
+pattern = '^Plan: (?P<add>\d+) to add, (?P<change>\d+) to change, (?P<destroy>\d+) to destroy'
+action = "promote"
+captures = ["add", "change", "destroy"]
+
+[[actions.plan.outcome]]
+pattern = '^No changes\.'
+action = "promote"
+
+[actions.plan.summary]
+success = "+ plan: {add} add, {change} change, {destroy} destroy"
+failure = "! terraform plan failed (exit {exit_code})"
+partial = "... planning ({lines} lines)"
+
+# ---- apply action ----
+
+[actions.apply]
+detect = ["apply"]
+
+[[actions.apply.noise]]
+# "Still creating" progress lines
+pattern = 'Still (creating|modifying|destroying)\.\.\.'
+action = "dedup"
+
+[[actions.apply.noise]]
+# HCL attribute lines in plan output
+pattern = '^\s+[+~\-]\s+\w+\s+=\s+'
+action = "dedup"
+
+[[actions.apply.noise]]
+# Resource block headers in plan (# aws_instance.web will be ...)
+pattern = '^\s+#\s+\S+\s+will be'
+action = "dedup"
+
+[[actions.apply.hazard]]
+pattern = '^Error:'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[actions.apply.hazard]]
+pattern = '(?i)failed to|could not|cannot'
+severity = "error"
+action = "keep"
+
+[[actions.apply.outcome]]
+pattern = '^Apply complete! Resources: (?P<added>\d+) added, (?P<changed>\d+) changed, (?P<destroyed>\d+) destroyed'
+action = "promote"
+captures = ["added", "changed", "destroyed"]
+
+[[actions.apply.outcome]]
+# Individual resource completion
+pattern = '(?P<resource>\S+): (Creation|Modifications?) complete'
+action = "promote"
+captures = ["resource"]
+
+[actions.apply.summary]
+success = "+ applied: {added} added, {changed} changed, {destroyed} destroyed"
+failure = "! terraform apply failed (exit {exit_code})"
+partial = "... applying ({lines} lines)"
+
+# ---- init action ----
+
+[actions.init]
+detect = ["init"]
+
+[[actions.init.noise]]
+# Provider download lines
+pattern = '^- (Installing|Finding|Downloading)\s+'
+action = "dedup"
+
+[[actions.init.outcome]]
+pattern = '^Terraform has been successfully initialized'
+action = "promote"
+
+[actions.init.summary]
+success = "+ terraform initialized"
+failure = "! terraform init failed (exit {exit_code})"
+partial = "... initializing ({lines} lines)"

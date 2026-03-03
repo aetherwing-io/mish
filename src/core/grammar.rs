@@ -1824,7 +1824,7 @@ action = "strip"
         let grammars = load_all_grammars(&dir).unwrap();
 
         // All grammars should be loaded
-        for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest", "jest", "webpack"] {
+        for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest", "jest", "webpack", "kubectl", "terraform"] {
             assert!(grammars.contains_key(*name), "should load {name}");
         }
 
