@@ -1,10 +1,12 @@
 /// Condense handler — full pipeline integration.
 ///
-/// PTY capture → LineBuffer → Classifier → EmitBuffer → condensed Summary.
+/// Two paths process the same raw PTY output:
+/// - **Streaming**: LineBuffer → Classifier → EmitBuffer → Summary (outcomes, hazards)
+/// - **Batch**: raw Lines → Pipeline::process(Condense) → cleaned output (VTE strip,
+///   progress removal, dedup, truncation) — consistent with the MCP sh_run path.
 ///
 /// This is the primary handler for verbose command output. It spawns a command
-/// in a PTY, feeds output through the classification pipeline, and produces a
-/// condensed summary with hazards, outcomes, and noise counts.
+/// in a PTY, feeds output through both paths, and returns the combined result.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,19 +16,38 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use crate::core::classifier::Classifier;
 use crate::core::emit::{EmitBuffer, Summary, TimingConfig};
 use crate::core::grammar::{Action, Grammar};
-use crate::core::line_buffer::LineBuffer;
+use crate::core::line_buffer::{Line, LineBuffer};
 use crate::core::pty::{ExitStatus, PtyCapture};
+use crate::router::categories::Category;
+use crate::squasher::pipeline::{Pipeline, PipelineConfig, PipelineMetrics};
 
 /// Result of running a command through the condense pipeline.
 pub struct CondenseResult {
     pub summary: Summary,
+    /// Batch output processed through the unified squasher pipeline
+    /// (VTE strip → progress removal → dedup → truncation).
+    pub pipeline_output: Vec<String>,
+    /// Metrics from the squasher pipeline pass.
+    pub pipeline_metrics: PipelineMetrics,
+}
+
+/// Post-process raw output lines through the squasher pipeline.
+///
+/// Runs lines through VTE strip → progress removal → dedup → truncation.
+/// Used as the batch-output path for consistency with the MCP handler.
+pub fn post_process(raw_lines: Vec<Line>) -> (Vec<String>, PipelineMetrics) {
+    let config = PipelineConfig::default();
+    let mut pipeline = Pipeline::new(config);
+    let result = pipeline.process(raw_lines, Category::Condense);
+    (result.output, result.metrics)
 }
 
 /// Run a command through the condense pipeline.
 ///
 /// Spawns the command in a PTY, reads output through the classification
 /// pipeline (LineBuffer → Classifier → EmitBuffer), and returns a condensed
-/// summary when the process exits.
+/// summary when the process exits. Raw output is also batch-processed
+/// through the unified squasher Pipeline for consistency with the MCP path.
 pub fn handle(
     args: &[String],
     grammar: Option<&Grammar>,
@@ -39,6 +60,7 @@ pub fn handle(
     let mut line_buffer = LineBuffer::new();
     let mut classifier = Classifier::new(grammar, action);
     let mut emit_buffer = EmitBuffer::new();
+    let mut raw_lines: Vec<Line> = Vec::new();
 
     // 3. Event loop: read PTY output and feed through pipeline
     let mut buf = [0u8; 4096];
@@ -58,6 +80,8 @@ pub fn handle(
             // Feed raw bytes into LineBuffer to produce lines
             let lines = line_buffer.ingest(&buf[..n]);
             for line in lines {
+                // Collect raw lines for batch pipeline processing
+                raw_lines.push(line.clone());
                 // Classifier handles VTE stripping internally
                 let classification = classifier.classify(line);
                 emit_buffer.accept(classification);
@@ -89,6 +113,7 @@ pub fn handle(
 
         // Check for partial line timeout
         if let Some(partial) = line_buffer.emit_partial() {
+            raw_lines.push(partial.clone());
             let classification = classifier.classify(partial);
             emit_buffer.accept(classification);
         }
@@ -116,6 +141,7 @@ pub fn handle(
     // 5. Finalize line buffer with remaining bytes
     let final_lines = line_buffer.finalize(&remaining);
     for line in final_lines {
+        raw_lines.push(line.clone());
         let classification = classifier.classify(line);
         emit_buffer.accept(classification);
     }
@@ -137,7 +163,14 @@ pub fn handle(
     let elapsed = pty.elapsed();
     let summary = emit_buffer.finalize(exit_code, elapsed, grammar, action);
 
-    Ok(CondenseResult { summary })
+    // 8. Batch-process raw output through unified Pipeline
+    let (pipeline_output, pipeline_metrics) = post_process(raw_lines);
+
+    Ok(CondenseResult {
+        summary,
+        pipeline_output,
+        pipeline_metrics,
+    })
 }
 
 #[cfg(test)]
@@ -145,8 +178,120 @@ mod tests {
     use super::*;
     use crate::core::classifier::{Classification, NoiseAction};
     use crate::core::grammar::load_grammar_from_str;
+    use crate::core::line_buffer::Line;
     use nix::sys::signal::Signal;
     use serial_test::serial;
+
+    // -----------------------------------------------------------------------
+    // Pipeline integration unit tests (no PTY needed)
+    // -----------------------------------------------------------------------
+
+    // Test: post_process strips ANSI codes from raw lines
+    #[test]
+    fn test_post_process_strips_ansi() {
+        let lines = vec![
+            Line::Complete("\x1b[31mERROR: fail\x1b[0m".into()),
+            Line::Complete("clean line".into()),
+        ];
+        let (output, metrics) = post_process(lines);
+        assert!(
+            output.iter().all(|l| !l.contains("\x1b")),
+            "expected no ANSI codes in pipeline output, got: {:?}",
+            output
+        );
+        assert_eq!(metrics.vte_stripped, 1);
+    }
+
+    // Test: post_process deduplicates repetitive lines
+    #[test]
+    fn test_post_process_dedup_repetitive() {
+        let lines: Vec<Line> = (0..20)
+            .map(|i| Line::Complete(format!("Downloading https://registry.npmjs.org/pkg{}", i)))
+            .collect();
+        let (output, _metrics) = post_process(lines);
+        assert!(
+            output.len() < 20,
+            "expected dedup to reduce count from 20, got {}",
+            output.len()
+        );
+        assert!(
+            output.iter().any(|l| l.contains("(x")),
+            "expected dedup group marker, got: {:?}",
+            output
+        );
+    }
+
+    // Test: post_process collapses progress bar overwrites
+    #[test]
+    fn test_post_process_collapses_progress() {
+        let lines = vec![
+            Line::Complete("Starting...".into()),
+            Line::Overwrite("10%".into()),
+            Line::Overwrite("50%".into()),
+            Line::Overwrite("100%".into()),
+            Line::Complete("Done!".into()),
+        ];
+        let (output, metrics) = post_process(lines);
+        assert!(
+            !output.iter().any(|l| l.contains("10%") || l.contains("50%")),
+            "expected progress lines removed, got: {:?}",
+            output
+        );
+        assert!(
+            output.iter().any(|l| l == "Done!"),
+            "expected 'Done!' in output, got: {:?}",
+            output
+        );
+        assert!(
+            metrics.progress_stripped > 0,
+            "expected progress_stripped > 0"
+        );
+    }
+
+    // Test: post_process produces same output as Pipeline::process(Condense)
+    #[test]
+    fn test_post_process_matches_pipeline() {
+        use crate::squasher::pipeline::{Pipeline, PipelineConfig};
+        use crate::router::categories::Category;
+
+        let lines = vec![
+            Line::Complete("\x1b[31mERROR\x1b[0m".into()),
+            Line::Overwrite("50%".into()),
+            Line::Overwrite("100%".into()),
+            Line::Complete("done".into()),
+        ];
+
+        // Direct Pipeline path (what MCP uses)
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let expected = pipe.process(lines.clone(), Category::Condense);
+
+        // post_process path (what CLI condense uses)
+        let (output, metrics) = post_process(lines);
+
+        assert_eq!(output, expected.output);
+        assert_eq!(metrics, expected.metrics);
+    }
+
+    // Test: CondenseResult includes pipeline_output and pipeline_metrics
+    #[test]
+    #[serial(pty)]
+    fn test_condense_result_has_pipeline_output() {
+        let args = sh_cmd("echo 'hello world'");
+        let result = handle(&args, None, None).unwrap();
+
+        // Pipeline output should be populated
+        assert!(
+            !result.pipeline_output.is_empty(),
+            "expected pipeline_output to be populated"
+        );
+        // Pipeline output should be clean (no ANSI)
+        assert!(
+            result.pipeline_output.iter().all(|l| !l.contains("\x1b")),
+            "expected no ANSI in pipeline_output"
+        );
+        // Summary still works (backward compat)
+        assert_eq!(result.summary.exit_code, 0);
+    }
 
     // Helper: build a /bin/sh -c command
     fn sh_cmd(script: &str) -> Vec<String> {
