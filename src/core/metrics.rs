@@ -99,6 +99,7 @@ mod tests {
             dedup_groups: 2,
             dedup_absorbed: 10,
             oreo_suppressed: 60,
+            binary_detected: false,
         };
         let report = SquasherReport::from_pipeline(pm, 500, 120, 15, 8000, 1600);
 
@@ -158,6 +159,7 @@ mod tests {
             dedup_groups: 0,
             dedup_absorbed: 0,
             oreo_suppressed: 0,
+            binary_detected: false,
         };
         let report = SquasherReport::from_pipeline(pm, 0, 0, 0, 0, 0);
 

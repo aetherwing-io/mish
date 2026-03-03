@@ -19,6 +19,7 @@ pub struct PipelineMetrics {
     pub dedup_groups: u64,
     pub dedup_absorbed: u64,
     pub oreo_suppressed: u64,
+    pub binary_detected: bool,
 }
 
 /// Configuration for the squasher pipeline.
@@ -172,7 +173,15 @@ impl Pipeline {
     /// - **Passthrough** — VTE strip only
     /// - **Interactive** — passthrough (no processing at all)
     /// - **Dangerous** — passthrough (no processing at all)
+    ///
+    /// Binary detection: if >10% of characters are U+FFFD (replacement char from
+    /// invalid UTF-8), short-circuits with a `<binary output, N bytes>` marker.
     pub fn process(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
+        // Binary detection: scan for high U+FFFD density
+        if let Some(result) = self.check_binary(&raw_lines, category) {
+            return result;
+        }
+
         match category {
             Category::Condense => self.process_condense(raw_lines, category),
             Category::Narrate | Category::Structured | Category::Passthrough => {
@@ -182,6 +191,49 @@ impl Pipeline {
                 self.process_raw_passthrough(raw_lines, category)
             }
         }
+    }
+
+    /// Check if input looks like binary data (>10% U+FFFD replacement chars).
+    /// Returns a short-circuit PipelineResult if binary is detected.
+    fn check_binary(&self, lines: &[Line], category: Category) -> Option<PipelineResult> {
+        let mut total_chars: usize = 0;
+        let mut replacement_chars: usize = 0;
+
+        for line in lines {
+            let text = match line {
+                Line::Complete(s) | Line::Partial(s) | Line::Overwrite(s) => s,
+            };
+            for ch in text.chars() {
+                total_chars += 1;
+                if ch == '\u{FFFD}' {
+                    replacement_chars += 1;
+                }
+            }
+        }
+
+        if total_chars == 0 {
+            return None;
+        }
+
+        let ratio = replacement_chars as f64 / total_chars as f64;
+        if ratio <= 0.10 {
+            return None;
+        }
+
+        // Estimate byte count: each char is roughly 1 byte for ASCII,
+        // but U+FFFD represents 1 original invalid byte each.
+        let estimated_bytes = total_chars;
+
+        Some(PipelineResult {
+            output: vec![format!("<binary output, {} bytes>", estimated_bytes)],
+            metrics: PipelineMetrics {
+                lines_in: lines.len() as u64,
+                lines_out: 1,
+                binary_detected: true,
+                ..Default::default()
+            },
+            category,
+        })
     }
 
     /// Full condense pipeline: VTE strip -> progress -> dedup -> truncation.
@@ -711,6 +763,134 @@ mod tests {
             );
             assert_eq!(result.metrics.lines_in, 0);
             assert_eq!(result.metrics.lines_out, 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Binary detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_binary_detection_random_bytes() {
+        // Simulate 1KB of random binary data that went through Utf8Decoder.
+        // Each invalid byte becomes U+FFFD. Random bytes produce ~50% FFFD.
+        let mut binary_content = String::new();
+        for _ in 0..512 {
+            binary_content.push('\u{FFFD}');
+        }
+        for _ in 0..512 {
+            binary_content.push('a'); // some valid chars too
+        }
+
+        let lines = vec![Line::Complete(binary_content)];
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        // Should detect binary and short-circuit
+        assert!(result.metrics.binary_detected, "should detect binary output");
+        assert_eq!(result.output.len(), 1);
+        assert!(
+            result.output[0].contains("binary output"),
+            "should contain binary marker, got: {}",
+            result.output[0]
+        );
+        assert!(
+            result.output[0].contains("1024"),
+            "should mention byte count, got: {}",
+            result.output[0]
+        );
+    }
+
+    #[test]
+    fn test_binary_detection_normal_text_not_triggered() {
+        let lines = vec![
+            Line::Complete("Compiling mish v0.1.0".into()),
+            Line::Complete("warning: unused variable".into()),
+            Line::Complete("Finished dev profile".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert!(!result.metrics.binary_detected, "normal text should not trigger binary detection");
+        assert!(result.output.len() >= 1, "should produce output");
+    }
+
+    #[test]
+    fn test_binary_detection_threshold_just_below() {
+        // 9% replacement chars — just below the 10% threshold
+        let mut content = String::new();
+        for _ in 0..9 {
+            content.push('\u{FFFD}');
+        }
+        for _ in 0..91 {
+            content.push('x');
+        }
+
+        let lines = vec![Line::Complete(content)];
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert!(!result.metrics.binary_detected, "9% FFFD should not trigger binary detection");
+    }
+
+    #[test]
+    fn test_binary_detection_threshold_just_above() {
+        // 11% replacement chars — above the 10% threshold
+        let mut content = String::new();
+        for _ in 0..11 {
+            content.push('\u{FFFD}');
+        }
+        for _ in 0..89 {
+            content.push('x');
+        }
+
+        let lines = vec![Line::Complete(content)];
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert!(result.metrics.binary_detected, "11% FFFD should trigger binary detection");
+    }
+
+    #[test]
+    fn test_binary_detection_works_for_all_categories() {
+        // Binary detection should work across all category paths
+        let mut binary_content = String::new();
+        for _ in 0..200 {
+            binary_content.push('\u{FFFD}');
+        }
+
+        let categories = vec![
+            Category::Condense,
+            Category::Narrate,
+            Category::Structured,
+            Category::Passthrough,
+            Category::Interactive,
+            Category::Dangerous,
+        ];
+
+        for cat in categories {
+            let lines = vec![Line::Complete(binary_content.clone())];
+            let mut pipe = Pipeline::new(PipelineConfig::default());
+            let result = pipe.process(lines, cat);
+
+            assert!(
+                result.metrics.binary_detected,
+                "binary detection should work for {:?}",
+                cat
+            );
+            assert_eq!(
+                result.output.len(),
+                1,
+                "binary output should be single marker for {:?}",
+                cat
+            );
+            assert!(
+                result.output[0].contains("binary output"),
+                "should contain binary marker for {:?}, got: {}",
+                cat,
+                result.output[0]
+            );
         }
     }
 }
