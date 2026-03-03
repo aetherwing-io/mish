@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod mcp;
 pub mod process;
 pub mod router;
+pub mod policy;
 pub mod safety;
 pub mod session;
 pub mod shutdown;

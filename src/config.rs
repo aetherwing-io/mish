@@ -697,6 +697,11 @@ pub fn validate_config(path: &str) -> Result<(), Vec<String>> {
     }
 }
 
+/// Parse a TOML string into a validated `MishConfig`.
+pub fn load_config_from_str(content: &str) -> Result<MishConfig, ConfigError> {
+    parse_and_validate(content)
+}
+
 /// Internal: parse TOML string and validate.
 fn parse_and_validate(content: &str) -> Result<MishConfig, ConfigError> {
     warn_unknown_sections(content);
