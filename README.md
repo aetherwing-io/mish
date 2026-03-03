@@ -47,9 +47,31 @@ After:   LLM → mish("rm -rf node_modules") → "⚠ rm -rf: node_modules/ (47K
 | Interactive | vim, htop, psql, node REPL | Transparent passthrough |
 | Dangerous | rm -rf, force push, reset --hard | Warn before executing |
 
+## Quick start
+
+```bash
+# Build
+cargo build --release
+
+# Symlink onto PATH
+ln -sf "$(pwd)/target/release/mish" /usr/local/bin/mish
+
+# Add to Claude Code (~/.claude/.mcp.json)
+{
+  "mcpServers": {
+    "mish": {
+      "command": "mish",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Restart Claude Code (or `/mcp` to reconnect). Five tools appear: `sh_run`, `sh_spawn`, `sh_interact`, `sh_session`, `sh_help`.
+
 ## Status
 
-Active development. Core pipeline (squasher, classifier, category router, error enrichment) is implemented with 600+ tests. MCP server mode tools are wired. Not yet packaged for distribution.
+Active development. Core pipeline (squasher, classifier, category router, error enrichment) is implemented with 600+ tests. MCP server mode is live and working in Claude Code. Not yet packaged for distribution.
 
 ## License
 
