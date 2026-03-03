@@ -6,6 +6,8 @@
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::audit::logger::read_session_entries;
+use crate::config::AuditConfig;
 use crate::mcp::types::{
     self as mcp_types, SessionAction, ShSessionListResponse,
 };
@@ -20,12 +22,22 @@ use super::ToolError;
 /// Parameters for the sh_session tool.
 ///
 /// Extends the base `ShSessionParams` with `name` and `shell` fields needed
-/// for create and close actions.
+/// for create and close actions. `last` and `format` are for the audit action.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShSessionParams {
     pub action: SessionAction,
     pub name: Option<String>,
     pub shell: Option<String>,
+    /// For audit action: return only the last N command records.
+    pub last: Option<usize>,
+    /// For audit action: "summary" returns session-end-style aggregate.
+    pub format: Option<String>,
+}
+
+/// Context for reading audit logs.
+pub struct AuditContext<'a> {
+    pub config: &'a AuditConfig,
+    pub session_id: &'a str,
 }
 
 // ---------------------------------------------------------------------------
@@ -34,17 +46,19 @@ pub struct ShSessionParams {
 
 /// Handle an `sh_session` tool call.
 ///
-/// Dispatches to create, list, or close based on the `action` parameter.
+/// Dispatches to create, list, close, or audit based on the `action` parameter.
 /// Returns a JSON value containing the result plus a process digest.
 pub async fn handle(
     params: ShSessionParams,
     session_manager: &SessionManager,
     process_table: &ProcessTable,
+    audit_ctx: Option<&AuditContext<'_>>,
 ) -> Result<serde_json::Value, ToolError> {
     let result = match params.action {
         SessionAction::Create => handle_create(params, session_manager).await?,
         SessionAction::List => handle_list(session_manager, process_table).await?,
         SessionAction::Close => handle_close(params, session_manager).await?,
+        SessionAction::Audit => handle_audit(&params, audit_ctx).await?,
     };
 
     Ok(result)
@@ -130,6 +144,82 @@ async fn handle_list(
     Ok(serde_json::to_value(&resp).expect("ShSessionListResponse serialization"))
 }
 
+/// Handle `action: "audit"` — read audit entries for the current session.
+///
+/// Returns JSONL entries from the session audit log.
+/// - Default: all CommandRecord entries
+/// - `last=N`: last N CommandRecord entries
+/// - `format="summary"`: session-end-style aggregate of all CommandRecords
+async fn handle_audit(
+    params: &ShSessionParams,
+    audit_ctx: Option<&AuditContext<'_>>,
+) -> Result<serde_json::Value, ToolError> {
+    let ctx = audit_ctx.ok_or_else(|| {
+        ToolError::internal("audit context not available")
+    })?;
+
+    let all_entries = read_session_entries(ctx.config, ctx.session_id);
+
+    // Filter to CommandRecord entries only
+    let records: Vec<&serde_json::Value> = all_entries
+        .iter()
+        .filter(|e| e.get("event").and_then(|ev| ev.get("type")).and_then(|t| t.as_str()) == Some("CommandRecord"))
+        .collect();
+
+    match params.format.as_deref() {
+        Some("summary") => {
+            // Compute live aggregate (same shape as SessionEnd)
+            let total_commands = records.len() as u64;
+            let mut total_raw_bytes: u64 = 0;
+            let mut total_squashed_bytes: u64 = 0;
+            let mut grammars: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut total_wall_ms: u64 = 0;
+
+            for r in &records {
+                let ev = &r["event"];
+                total_raw_bytes += ev["raw_bytes"].as_u64().unwrap_or(0);
+                total_squashed_bytes += ev["squashed_bytes"].as_u64().unwrap_or(0);
+                total_wall_ms += ev["wall_ms"].as_u64().unwrap_or(0);
+                if let Some(g) = ev["grammar"].as_str() {
+                    grammars.insert(g.to_string());
+                }
+            }
+
+            let aggregate_ratio = if total_squashed_bytes == 0 {
+                0.0
+            } else {
+                total_raw_bytes as f64 / total_squashed_bytes as f64
+            };
+
+            let mut grammars_vec: Vec<String> = grammars.into_iter().collect();
+            grammars_vec.sort();
+
+            Ok(json!({
+                "total_commands": total_commands,
+                "total_raw_bytes": total_raw_bytes,
+                "total_squashed_bytes": total_squashed_bytes,
+                "aggregate_ratio": aggregate_ratio,
+                "grammars_used": grammars_vec,
+                "total_wall_ms": total_wall_ms,
+            }))
+        }
+        _ => {
+            // Return entries, optionally limited to last N
+            let to_return: Vec<&serde_json::Value> = if let Some(n) = params.last {
+                let skip = records.len().saturating_sub(n);
+                records.into_iter().skip(skip).collect()
+            } else {
+                records
+            };
+
+            Ok(json!({
+                "entries": to_return,
+                "count": to_return.len(),
+            }))
+        }
+    }
+}
+
 /// Handle `action: "close"` — close a named session and kill its processes.
 async fn handle_close(
     params: ShSessionParams,
@@ -203,9 +293,11 @@ mod tests {
             action: SessionAction::Create,
             name: Some("test-session".to_string()),
             shell: Some("/bin/bash".to_string()),
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_ok(), "create should succeed: {result:?}");
 
         let val = result.unwrap();
@@ -232,9 +324,11 @@ mod tests {
             action: SessionAction::List,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_ok(), "list should succeed: {result:?}");
 
         let val = result.unwrap();
@@ -262,9 +356,11 @@ mod tests {
             action: SessionAction::Close,
             name: Some("ephemeral".to_string()),
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_ok(), "close should succeed: {result:?}");
 
         let val = result.unwrap();
@@ -288,9 +384,11 @@ mod tests {
             action: SessionAction::Close,
             name: Some("ghost".to_string()),
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_err(), "close nonexistent should fail");
 
         let err = result.unwrap_err();
@@ -321,9 +419,11 @@ mod tests {
             action: SessionAction::Create,
             name: Some("second".to_string()),
             shell: Some("/bin/bash".to_string()),
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_err(), "create beyond limit should fail");
 
         let err = result.unwrap_err();
@@ -351,9 +451,11 @@ mod tests {
             action: SessionAction::Create,
             name: Some("dupe".to_string()),
             shell: Some("/bin/bash".to_string()),
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_err(), "duplicate name should fail");
 
         let err = result.unwrap_err();
@@ -397,9 +499,11 @@ mod tests {
             action: SessionAction::Create,
             name: None,
             shell: Some("/bin/bash".to_string()),
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_err(), "create without name should fail");
 
         let err = result.unwrap_err();
@@ -424,9 +528,11 @@ mod tests {
             action: SessionAction::Close,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_err(), "close without name should fail");
 
         let err = result.unwrap_err();
@@ -459,9 +565,11 @@ mod tests {
             action: SessionAction::List,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_ok(), "list should succeed: {result:?}");
 
         let val = result.unwrap();
@@ -488,9 +596,11 @@ mod tests {
             action: SessionAction::List,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
 
-        let result = handle(params, &mgr, &pt).await;
+        let result = handle(params, &mgr, &pt, None).await;
         assert!(result.is_ok(), "list should succeed: {result:?}");
 
         let val = result.unwrap();
@@ -584,8 +694,10 @@ mod tests {
             action: SessionAction::Create,
             name: Some("lifecycle".to_string()),
             shell: Some("/bin/bash".to_string()),
+            last: None,
+            format: None,
         };
-        let create_result = handle(create_params, &mgr, &pt).await;
+        let create_result = handle(create_params, &mgr, &pt, None).await;
         assert!(create_result.is_ok(), "create should succeed");
         assert_eq!(create_result.unwrap()["session"], "lifecycle");
 
@@ -594,8 +706,10 @@ mod tests {
             action: SessionAction::List,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
-        let list_result = handle(list_params, &mgr, &pt).await;
+        let list_result = handle(list_params, &mgr, &pt, None).await;
         assert!(list_result.is_ok(), "list should succeed");
         let list_val = list_result.unwrap();
         let sessions = list_val["sessions"]
@@ -609,8 +723,10 @@ mod tests {
             action: SessionAction::Close,
             name: Some("lifecycle".to_string()),
             shell: None,
+            last: None,
+            format: None,
         };
-        let close_result = handle(close_params, &mgr, &pt).await;
+        let close_result = handle(close_params, &mgr, &pt, None).await;
         assert!(close_result.is_ok(), "close should succeed");
         assert_eq!(close_result.unwrap()["closed"], true);
 
@@ -619,13 +735,242 @@ mod tests {
             action: SessionAction::List,
             name: None,
             shell: None,
+            last: None,
+            format: None,
         };
-        let list_result2 = handle(list_params2, &mgr, &pt).await;
+        let list_result2 = handle(list_params2, &mgr, &pt, None).await;
         assert!(list_result2.is_ok());
         let list_val2 = list_result2.unwrap();
         let sessions2 = list_val2["sessions"]
             .as_array()
             .expect("sessions array");
         assert!(sessions2.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Audit access tests
+    // ------------------------------------------------------------------
+
+    // Test 16: Audit action returns all JSONL entries
+    #[tokio::test]
+    async fn test_audit_returns_entries() {
+        use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
+        use crate::config::AuditConfig;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let session_id = "test-audit-sess";
+        let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
+
+        // Write some CommandRecord entries
+        logger.log(AuditEntry::new(
+            session_id.into(), "sh_run".into(), Some("ls".into()),
+            AuditEvent::CommandRecord {
+                category: "condense".into(),
+                grammar: Some("ls".into()),
+                exit_code: 0,
+                wall_ms: 50,
+                raw_bytes: 1000,
+                squashed_bytes: 200,
+                compression_ratio: 5.0,
+                safety_action: "allow".into(),
+            },
+        ));
+        logger.log(AuditEntry::new(
+            session_id.into(), "sh_run".into(), Some("make".into()),
+            AuditEvent::CommandRecord {
+                category: "condense".into(),
+                grammar: Some("make".into()),
+                exit_code: 0,
+                wall_ms: 3000,
+                raw_bytes: 5000,
+                squashed_bytes: 500,
+                compression_ratio: 10.0,
+                safety_action: "allow".into(),
+            },
+        ));
+        logger.flush();
+
+        let mgr = SessionManager::new(test_config());
+        let pt = test_process_table();
+        let audit_ctx = AuditContext {
+            config: &cfg,
+            session_id,
+        };
+
+        let params = ShSessionParams {
+            action: SessionAction::Audit,
+            name: None,
+            shell: None,
+            last: None,
+            format: None,
+        };
+
+        let result = handle(params, &mgr, &pt, Some(&audit_ctx)).await.unwrap();
+        let entries = result["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 2, "expected 2 CommandRecord entries, got: {entries:?}");
+    }
+
+    // Test 17: Audit action with last=1 returns only the last entry
+    #[tokio::test]
+    async fn test_audit_last_n() {
+        use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
+        use crate::config::AuditConfig;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let session_id = "test-audit-last";
+        let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
+
+        for i in 0..5 {
+            logger.log(AuditEntry::new(
+                session_id.into(), "sh_run".into(), Some(format!("cmd{i}")),
+                AuditEvent::CommandRecord {
+                    category: "condense".into(),
+                    grammar: None,
+                    exit_code: 0,
+                    wall_ms: 100 * (i + 1),
+                    raw_bytes: 1000,
+                    squashed_bytes: 200,
+                    compression_ratio: 5.0,
+                    safety_action: "allow".into(),
+                },
+            ));
+        }
+        logger.flush();
+
+        let mgr = SessionManager::new(test_config());
+        let pt = test_process_table();
+        let audit_ctx = AuditContext { config: &cfg, session_id };
+
+        let params = ShSessionParams {
+            action: SessionAction::Audit,
+            name: None, shell: None,
+            last: Some(2),
+            format: None,
+        };
+
+        let result = handle(params, &mgr, &pt, Some(&audit_ctx)).await.unwrap();
+        let entries = result["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 2, "expected last 2 entries");
+        // Should be the last two (cmd3, cmd4)
+        assert_eq!(entries[0]["command"], "cmd3");
+        assert_eq!(entries[1]["command"], "cmd4");
+    }
+
+    // Test 18: Audit format=summary returns aggregate
+    #[tokio::test]
+    async fn test_audit_format_summary() {
+        use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
+        use crate::config::AuditConfig;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let session_id = "test-audit-summary";
+        let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
+
+        logger.log(AuditEntry::new(
+            session_id.into(), "sh_run".into(), Some("ls".into()),
+            AuditEvent::CommandRecord {
+                category: "condense".into(),
+                grammar: Some("ls".into()),
+                exit_code: 0,
+                wall_ms: 50,
+                raw_bytes: 1000,
+                squashed_bytes: 200,
+                compression_ratio: 5.0,
+                safety_action: "allow".into(),
+            },
+        ));
+        logger.log(AuditEntry::new(
+            session_id.into(), "sh_run".into(), Some("make".into()),
+            AuditEvent::CommandRecord {
+                category: "condense".into(),
+                grammar: Some("make".into()),
+                exit_code: 0,
+                wall_ms: 3000,
+                raw_bytes: 5000,
+                squashed_bytes: 500,
+                compression_ratio: 10.0,
+                safety_action: "allow".into(),
+            },
+        ));
+        logger.flush();
+
+        let mgr = SessionManager::new(test_config());
+        let pt = test_process_table();
+        let audit_ctx = AuditContext { config: &cfg, session_id };
+
+        let params = ShSessionParams {
+            action: SessionAction::Audit,
+            name: None, shell: None,
+            last: None,
+            format: Some("summary".into()),
+        };
+
+        let result = handle(params, &mgr, &pt, Some(&audit_ctx)).await.unwrap();
+        assert_eq!(result["total_commands"], 2);
+        assert_eq!(result["total_raw_bytes"], 6000);
+        assert_eq!(result["total_squashed_bytes"], 700);
+        let grammars = result["grammars_used"].as_array().unwrap();
+        assert!(grammars.contains(&json!("ls")));
+        assert!(grammars.contains(&json!("make")));
+    }
+
+    // Test 19: Audit without audit context returns error
+    #[tokio::test]
+    async fn test_audit_no_context_error() {
+        let mgr = SessionManager::new(test_config());
+        let pt = test_process_table();
+
+        let params = ShSessionParams {
+            action: SessionAction::Audit,
+            name: None, shell: None,
+            last: None,
+            format: None,
+        };
+
+        let result = handle(params, &mgr, &pt, None).await;
+        assert!(result.is_err(), "audit without context should fail");
+    }
+
+    // Test 20: Audit params deserialization
+    #[test]
+    fn test_params_deserialize_audit() {
+        let json = r#"{"action": "audit", "last": 3}"#;
+        let params: ShSessionParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.action, SessionAction::Audit);
+        assert_eq!(params.last, Some(3));
+        assert!(params.format.is_none());
+    }
+
+    #[test]
+    fn test_params_deserialize_audit_summary() {
+        let json = r#"{"action": "audit", "format": "summary"}"#;
+        let params: ShSessionParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.action, SessionAction::Audit);
+        assert!(params.last.is_none());
+        assert_eq!(params.format, Some("summary".to_string()));
     }
 }

@@ -23,6 +23,7 @@ use crate::process::table::{DigestMode, ProcessTable};
 use crate::router::categories::{CategoriesConfig, DangerousPattern};
 use crate::session::manager::SessionManager;
 use crate::tools::{sh_help, sh_interact, sh_run, sh_session, sh_spawn};
+use crate::tools::sh_session::AuditContext;
 
 /// The MCP server dispatcher.
 pub struct McpDispatcher {
@@ -34,6 +35,7 @@ pub struct McpDispatcher {
     dangerous_patterns: Vec<DangerousPattern>,
     initialized: std::sync::atomic::AtomicBool,
     audit_logger: Arc<TokioMutex<AuditLogger>>,
+    session_id: String,
 }
 
 impl McpDispatcher {
@@ -57,6 +59,7 @@ impl McpDispatcher {
             dangerous_patterns,
             initialized: std::sync::atomic::AtomicBool::new(false),
             audit_logger: Arc::new(TokioMutex::new(audit_logger)),
+            session_id: dispatch_session_id,
         }
     }
 
@@ -332,8 +335,13 @@ impl McpDispatcher {
         let params: sh_session::ShSessionParams = serde_json::from_value(arguments)
             .map_err(|e| (ERR_INVALID_PARAMS, format!("Invalid sh_session params: {e}")))?;
 
+        let audit_ctx = AuditContext {
+            config: &self.config.audit,
+            session_id: &self.session_id,
+        };
+
         let mut pt = self.process_table.lock().await;
-        let result = sh_session::handle(params, &self.session_manager, &pt)
+        let result = sh_session::handle(params, &self.session_manager, &pt, Some(&audit_ctx))
             .await
             .map_err(|e| (e.code, e.message))?;
         let digest = pt.digest(DigestMode::Full);
@@ -401,13 +409,15 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sh_session".to_string(),
-            description: "Manage shell sessions: create, list, or close named sessions.".to_string(),
+            description: "Manage shell sessions: create, list, close, or read audit logs.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["create", "list", "close"], "description": "Action to perform" },
+                    "action": { "type": "string", "enum": ["create", "list", "close", "audit"], "description": "Action to perform" },
                     "name": { "type": "string", "description": "Session name (required for create and close)" },
-                    "shell": { "type": "string", "description": "Shell path for create (defaults to $SHELL or /bin/sh)" }
+                    "shell": { "type": "string", "description": "Shell path for create (defaults to $SHELL or /bin/sh)" },
+                    "last": { "type": "integer", "description": "For audit: return only the last N command records" },
+                    "format": { "type": "string", "enum": ["summary"], "description": "For audit: 'summary' returns session aggregate metrics" }
                 },
                 "required": ["action"]
             }),
@@ -799,7 +809,7 @@ mod tests {
             .collect();
 
         // These are the exact actions the handler accepts (sh_session::handle match arms).
-        let handler_actions = ["create", "list", "close"];
+        let handler_actions = ["create", "list", "close", "audit"];
 
         for action in &handler_actions {
             assert!(

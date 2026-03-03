@@ -12,7 +12,7 @@ use crate::config::AuditConfig;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[cfg(unix)]
@@ -378,6 +378,36 @@ impl AuditLogger {
         );
         self.log(entry);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Programmatic access — read session audit entries
+// ---------------------------------------------------------------------------
+
+/// Compute the session log file path from config + session_id.
+pub fn session_log_path(config: &AuditConfig, session_id: &str) -> PathBuf {
+    let expanded = expand_tilde(&config.log_path);
+    let base = Path::new(&expanded)
+        .parent()
+        .unwrap_or(Path::new("."));
+    base.join("audit").join(format!("{session_id}.jsonl"))
+}
+
+/// Read audit entries from a session log file.
+///
+/// Returns parsed JSONL entries as `Vec<serde_json::Value>`.
+/// Returns an empty vec if the file doesn't exist or can't be read.
+pub fn read_session_entries(config: &AuditConfig, session_id: &str) -> Vec<serde_json::Value> {
+    let path = session_log_path(config, session_id);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

@@ -128,6 +128,7 @@ pub enum SessionAction {
     Create,
     List,
     Close,
+    Audit,
 }
 
 #[derive(Debug, Clone, Deserialize)]
