@@ -168,6 +168,32 @@ pub fn parse_docker_json(output: &str) -> Vec<DockerContainer> {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline-callable formatting
+// ---------------------------------------------------------------------------
+
+/// Parse already-captured output into structured data — without executing
+/// the command. Used by the MCP pipeline path where the command has already
+/// run and we just need to parse the output.
+pub fn parse_structured(cmd: &str, args: &[String], output: &str, exit_code: i32) -> StructuredResult {
+    if is_git_status(cmd, args) {
+        StructuredResult {
+            parsed: StructuredData::GitStatus(parse_git_porcelain_v2(output)),
+            exit_code,
+        }
+    } else if is_docker_ps(cmd, args) {
+        StructuredResult {
+            parsed: StructuredData::DockerPs(parse_docker_json(output)),
+            exit_code,
+        }
+    } else {
+        StructuredResult {
+            parsed: StructuredData::Generic(output.to_string()),
+            exit_code,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
 
@@ -455,5 +481,99 @@ mod tests {
             &["docker".to_string(), "run".to_string()]
         ));
         assert!(!is_docker_ps("git", &["git".to_string()]));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_structured() — pipeline-callable function tests
+    // -----------------------------------------------------------------------
+
+    // Test: parse_structured detects git status and parses porcelain v2
+    #[test]
+    fn test_parse_structured_git_status() {
+        let args = vec!["git".to_string(), "status".to_string()];
+        let output = "\
+# branch.oid abc123
+# branch.head main
+1 .M N... 100644 100644 100644 abc123 def456 src/main.rs
+? untracked.txt
+";
+        let result = parse_structured("git", &args, output, 0);
+        assert_eq!(result.exit_code, 0);
+        match result.parsed {
+            StructuredData::GitStatus(info) => {
+                assert_eq!(info.branch, "main");
+                assert_eq!(info.modified, 1);
+                assert_eq!(info.untracked, 1);
+            }
+            other => panic!("expected GitStatus, got: {:?}", other),
+        }
+    }
+
+    // Test: parse_structured detects docker ps and parses JSON
+    #[test]
+    fn test_parse_structured_docker_ps() {
+        let args = vec!["docker".to_string(), "ps".to_string()];
+        let output = r#"{"ID":"abc","Names":"web","Status":"Up","Image":"nginx"}"#;
+        let result = parse_structured("docker", &args, output, 0);
+        assert_eq!(result.exit_code, 0);
+        match result.parsed {
+            StructuredData::DockerPs(containers) => {
+                assert_eq!(containers.len(), 1);
+                assert_eq!(containers[0].id, "abc");
+                assert_eq!(containers[0].name, "web");
+            }
+            other => panic!("expected DockerPs, got: {:?}", other),
+        }
+    }
+
+    // Test: parse_structured falls back to Generic for unknown commands
+    #[test]
+    fn test_parse_structured_generic_fallback() {
+        let args = vec!["unknown".to_string(), "cmd".to_string()];
+        let output = "some raw output";
+        let result = parse_structured("unknown", &args, output, 42);
+        assert_eq!(result.exit_code, 42);
+        match result.parsed {
+            StructuredData::Generic(s) => {
+                assert_eq!(s, "some raw output");
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
+    }
+
+    // Test: parse_structured with non-zero exit code
+    #[test]
+    fn test_parse_structured_nonzero_exit() {
+        let args = vec!["git".to_string(), "status".to_string()];
+        let result = parse_structured("git", &args, "", 128);
+        assert_eq!(result.exit_code, 128);
+    }
+
+    // Test: parse_structured with git path prefix
+    #[test]
+    fn test_parse_structured_git_path_prefix() {
+        let args = vec!["/usr/bin/git".to_string(), "status".to_string()];
+        let output = "# branch.head feature\n";
+        let result = parse_structured("/usr/bin/git", &args, output, 0);
+        match result.parsed {
+            StructuredData::GitStatus(info) => {
+                assert_eq!(info.branch, "feature");
+            }
+            other => panic!("expected GitStatus, got: {:?}", other),
+        }
+    }
+
+    // Test: parse_structured with empty output
+    #[test]
+    fn test_parse_structured_empty_output() {
+        let args = vec!["git".to_string(), "status".to_string()];
+        let result = parse_structured("git", &args, "", 0);
+        match result.parsed {
+            StructuredData::GitStatus(info) => {
+                assert_eq!(info.branch, "");
+                assert_eq!(info.modified, 0);
+            }
+            other => panic!("expected GitStatus, got: {:?}", other),
+        }
     }
 }

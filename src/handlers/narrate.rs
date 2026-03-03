@@ -47,8 +47,34 @@ pub fn handle(args: &[String]) -> Result<NarratedResult, Box<dyn std::error::Err
         _ => None,
     };
 
-    // Narrate
-    let message = match cmd.as_str() {
+    let message = narrate_dispatch(cmd, cmd_args, exit_code, &pre, &post);
+
+    Ok(NarratedResult {
+        success: exit_code == 0,
+        message,
+        exit_code,
+    })
+}
+
+/// Pipeline-callable narration: produces a narration message from command
+/// name, args, and exit code — without executing the command or gathering
+/// file stats. Used by the MCP pipeline path.
+pub fn narrate_output(cmd: &str, args: &[String], exit_code: i32) -> String {
+    narrate_dispatch(cmd, args, exit_code, &None, &None)
+}
+
+// ---------------------------------------------------------------------------
+// Internal dispatch
+// ---------------------------------------------------------------------------
+
+fn narrate_dispatch(
+    cmd: &str,
+    cmd_args: &[String],
+    exit_code: i32,
+    pre: &Option<PreFlightInfo>,
+    post: &Option<PostFlightInfo>,
+) -> String {
+    match cmd {
         "cp" => narrate_cp(
             cmd_args,
             exit_code,
@@ -67,13 +93,7 @@ pub fn handle(args: &[String]) -> Result<NarratedResult, Box<dyn std::error::Err
         "ln" => narrate_ln(cmd_args, exit_code),
         "touch" | "chown" | "rmdir" => narrate_generic(cmd, cmd_args, exit_code),
         _ => narrate_generic(cmd, cmd_args, exit_code),
-    };
-
-    Ok(NarratedResult {
-        success: exit_code == 0,
-        message,
-        exit_code,
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -689,5 +709,88 @@ mod tests {
         let args: Vec<String> = vec!["--help".to_string()];
         let result = narrate_generic("sync", &args, 0);
         assert_eq!(result, "\u{2192} sync: ok");
+    }
+
+    // -----------------------------------------------------------------------
+    // narrate_output() — pipeline-callable function tests
+    // -----------------------------------------------------------------------
+
+    // Test: narrate_output dispatches cp correctly
+    #[test]
+    fn test_narrate_output_cp() {
+        let args = vec!["src.txt".to_string(), "dst.txt".to_string()];
+        let result = narrate_output("cp", &args, 0);
+        assert!(result.starts_with("\u{2192} cp:"));
+        assert!(result.contains("src.txt"));
+        assert!(result.contains("dst.txt"));
+    }
+
+    // Test: narrate_output dispatches cp failure
+    #[test]
+    fn test_narrate_output_cp_failure() {
+        let args = vec!["src.txt".to_string(), "dst.txt".to_string()];
+        let result = narrate_output("cp", &args, 1);
+        assert!(result.starts_with("! cp:"));
+        assert!(result.contains("failed"));
+    }
+
+    // Test: narrate_output dispatches rm
+    #[test]
+    fn test_narrate_output_rm() {
+        let args = vec!["file.txt".to_string()];
+        let result = narrate_output("rm", &args, 0);
+        assert!(result.starts_with("\u{2192} rm:"));
+        assert!(result.contains("removed"));
+    }
+
+    // Test: narrate_output dispatches mkdir
+    #[test]
+    fn test_narrate_output_mkdir() {
+        let args = vec!["-p".to_string(), "a/b/c".to_string()];
+        let result = narrate_output("mkdir", &args, 0);
+        assert!(result.contains("nested"));
+        assert!(result.contains("created"));
+    }
+
+    // Test: narrate_output dispatches chmod
+    #[test]
+    fn test_narrate_output_chmod() {
+        let args = vec!["755".to_string(), "script.sh".to_string()];
+        let result = narrate_output("chmod", &args, 0);
+        assert!(result.contains("script.sh"));
+        assert!(result.contains("755"));
+    }
+
+    // Test: narrate_output dispatches ln
+    #[test]
+    fn test_narrate_output_ln() {
+        let args = vec!["-s".to_string(), "target".to_string(), "link".to_string()];
+        let result = narrate_output("ln", &args, 0);
+        assert!(result.contains("symlink"));
+    }
+
+    // Test: narrate_output dispatches mv
+    #[test]
+    fn test_narrate_output_mv() {
+        let args = vec!["old.txt".to_string(), "new.txt".to_string()];
+        let result = narrate_output("mv", &args, 0);
+        assert!(result.starts_with("\u{2192} mv:"));
+    }
+
+    // Test: narrate_output dispatches generic fallback
+    #[test]
+    fn test_narrate_output_generic() {
+        let args = vec!["target.txt".to_string()];
+        let result = narrate_output("touch", &args, 0);
+        assert!(result.starts_with("\u{2192} touch:"));
+        assert!(result.contains("ok"));
+    }
+
+    // Test: narrate_output with unknown command
+    #[test]
+    fn test_narrate_output_unknown_command() {
+        let args = vec!["some_arg".to_string()];
+        let result = narrate_output("xyzzy", &args, 0);
+        assert!(result.starts_with("\u{2192} xyzzy:"));
     }
 }
