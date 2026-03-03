@@ -182,6 +182,10 @@ pub fn handle(
                 // Classifier handles VTE stripping internally
                 let classification = classifier.classify(line);
                 emit_buffer.accept(classification);
+                // Drain deferred line from stack trace compression
+                while let Some(deferred) = classifier.drain_deferred() {
+                    emit_buffer.accept(deferred);
+                }
             }
         }
 
@@ -213,6 +217,9 @@ pub fn handle(
             raw_lines.push(partial.clone());
             let classification = classifier.classify(partial);
             emit_buffer.accept(classification);
+            while let Some(deferred) = classifier.drain_deferred() {
+                emit_buffer.accept(deferred);
+            }
         }
 
         // Timer-based flush triggers
@@ -241,6 +248,9 @@ pub fn handle(
         raw_lines.push(line.clone());
         let classification = classifier.classify(line);
         emit_buffer.accept(classification);
+        while let Some(deferred) = classifier.drain_deferred() {
+            emit_buffer.accept(deferred);
+        }
     }
 
     // 6. Determine exit code from captured status

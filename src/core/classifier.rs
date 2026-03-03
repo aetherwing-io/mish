@@ -218,6 +218,8 @@ pub struct Classifier {
 
     // Stack trace consuming state
     consuming_trace_lines: Vec<String>,
+    /// Deferred line from stack trace compression — caller must drain via drain_deferred()
+    deferred_line: Option<Line>,
 
     // Timing
     last_line_time: Instant,
@@ -261,6 +263,7 @@ impl Classifier {
             current_hazard_captures: HashMap::new(),
             current_hazard_attached: Vec::new(),
             consuming_trace_lines: Vec::new(),
+            deferred_line: None,
             last_line_time: Instant::now(),
             temporal_noise_bypass: false,
         }
@@ -314,6 +317,16 @@ impl Classifier {
         } else {
             ClassifierState::DoneFailure
         };
+    }
+
+    /// Drain a deferred line produced by stack trace compression.
+    ///
+    /// At trace end, the compressed summary is returned from `classify()` and
+    /// the terminating line is deferred. Call this after each `classify()` to
+    /// retrieve it. Returns `None` if no line is deferred.
+    pub fn drain_deferred(&mut self) -> Option<Classification> {
+        let deferred = self.deferred_line.take()?;
+        Some(self.classify(deferred))
     }
 
     /// Classify a line from the line buffer.
@@ -416,6 +429,18 @@ impl Classifier {
             } else {
                 // End of stack trace — transition back to Running
                 self.state = ClassifierState::Running;
+
+                if let Some(compressed) = self.compress_trace() {
+                    // Defer the terminating line for caller to drain
+                    self.deferred_line = Some(Line::Complete(raw.to_string()));
+                    self.consuming_trace_lines.clear();
+                    return Classification::Hazard {
+                        severity: Severity::Error,
+                        text: compressed,
+                        captures: HashMap::new(),
+                    };
+                }
+
                 self.consuming_trace_lines.clear();
                 // Fall through to classify this line normally
             }
@@ -729,6 +754,26 @@ impl Classifier {
         }
 
         None
+    }
+
+    /// Compress collected stack trace frames into a summary.
+    ///
+    /// Returns `None` if too few frames to compress (≤1).
+    /// For 2 frames: returns just the last frame.
+    /// For 3+ frames: returns `... N frames ...\n{last_frame}`.
+    fn compress_trace(&self) -> Option<String> {
+        let total = self.consuming_trace_lines.len();
+        if total < 2 {
+            return None;
+        }
+        let last_frame = &self.consuming_trace_lines[total - 1];
+        if total == 2 {
+            Some(last_frame.clone())
+        } else {
+            let middle_count = total - 2;
+            let word = if middle_count == 1 { "frame" } else { "frames" };
+            Some(format!("    ... {} {} ...\n{}", middle_count, word, last_frame))
+        }
     }
 
     /// Check whether a line is a stack trace start (for entering CONSUMING_TRACE).
@@ -1773,11 +1818,18 @@ success = "ok"
             }
         ));
 
-        // Non-indented, non-stack line → ends trace, classified normally
+        // Non-indented, non-stack line → ends trace, returns compressed last frame
         let r3 = c.classify(Line::Complete("Process exited with code 1".into()));
         assert_eq!(c.state(), ClassifierState::Running);
-        // This line doesn't match any patterns → Unknown
-        assert!(matches!(r3, Classification::Unknown { .. }));
+        // With 2 frames, compression emits the last frame as Hazard
+        assert!(matches!(r3, Classification::Hazard { .. }));
+        if let Classification::Hazard { ref text, .. } = r3 {
+            assert!(text.contains("Router.dispatch"), "expected last frame in: {}", text);
+        }
+        // Terminating line deferred
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_some());
+        assert!(matches!(deferred.unwrap(), Classification::Unknown { .. }));
     }
 
     // Test 53: Python stack trace enters CONSUMING_TRACE
@@ -2456,5 +2508,161 @@ success = "ok"
         // Non-matching line → should fall through to Unknown (or Tier 2/3)
         let r3 = c.classify(Line::Complete("Finished release target in 45.2s".into()));
         assert!(matches!(r3, Classification::Unknown { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Stack trace compression (d1)
+    // -----------------------------------------------------------------------
+
+    // Test 87: Long stack trace (50 frames) compresses to summary + last frame
+    #[test]
+    fn test_stack_trace_compression_long() {
+        let mut c = Classifier::new(None, None);
+
+        // First frame — enters ConsumingTrace, emitted as Hazard
+        let r1 = c.classify(Line::Complete(
+            "    at func1 (app.js:1:1)".into(),
+        ));
+        assert!(matches!(r1, Classification::Hazard { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // 48 continuation frames (frames 2–49)
+        for i in 2..=49 {
+            let r = c.classify(Line::Complete(
+                format!("    at func{} (app.js:{}:1)", i, i),
+            ));
+            assert!(matches!(r, Classification::Noise { action: NoiseAction::Strip, .. }));
+        }
+
+        // Terminating line ends the trace
+        let r_end = c.classify(Line::Complete("Process exited with code 1".into()));
+
+        // Should return compressed Hazard (not the terminating line)
+        assert!(matches!(r_end, Classification::Hazard { .. }));
+        if let Classification::Hazard { ref text, .. } = r_end {
+            // Should mention frame count: 49 total - first - last = 47 middle frames
+            assert!(text.contains("47 frames"), "expected '47 frames' in: {}", text);
+            // Should include the last frame
+            assert!(text.contains("func49"), "expected last frame 'func49' in: {}", text);
+        }
+
+        // Drain deferred: should return classification for "Process exited with code 1"
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_some(), "expected deferred classification");
+        assert!(matches!(deferred.unwrap(), Classification::Unknown { .. }));
+    }
+
+    // Test 88: Two-frame trace emits last frame (no "N frames" marker)
+    #[test]
+    fn test_stack_trace_compression_two_frames() {
+        let mut c = Classifier::new(None, None);
+
+        let r1 = c.classify(Line::Complete(
+            "    at func1 (app.js:1:1)".into(),
+        ));
+        assert!(matches!(r1, Classification::Hazard { .. }));
+
+        let r2 = c.classify(Line::Complete(
+            "    at func2 (app.js:2:1)".into(),
+        ));
+        assert!(matches!(r2, Classification::Noise { action: NoiseAction::Strip, .. }));
+
+        // Terminating line
+        let r_end = c.classify(Line::Complete("Done.".into()));
+
+        // Should return Hazard with last frame text (no "frames" marker)
+        assert!(matches!(r_end, Classification::Hazard { .. }));
+        if let Classification::Hazard { ref text, .. } = r_end {
+            assert!(text.contains("func2"), "expected last frame in: {}", text);
+            assert!(!text.contains("frames"), "should not have frames marker for 2-frame trace: {}", text);
+        }
+
+        // Drain deferred: "Done." → Unknown
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_some());
+        assert!(matches!(deferred.unwrap(), Classification::Unknown { .. }));
+    }
+
+    // Test 89: Single frame — no compression, no deferral
+    #[test]
+    fn test_stack_trace_no_compression_single_frame() {
+        let mut c = Classifier::new(None, None);
+
+        let r1 = c.classify(Line::Complete(
+            "    at func1 (app.js:1:1)".into(),
+        ));
+        assert!(matches!(r1, Classification::Hazard { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Terminating line immediately (only 1 frame collected)
+        let r_end = c.classify(Line::Complete("Done.".into()));
+
+        // Should fall through to normal classification (no compression)
+        assert!(matches!(r_end, Classification::Unknown { .. }));
+        assert_eq!(c.state(), ClassifierState::Running);
+
+        // No deferred line
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_none());
+    }
+
+    // Test 90: drain_deferred returns None when no trace ended
+    #[test]
+    fn test_drain_deferred_empty() {
+        let mut c = Classifier::new(None, None);
+
+        c.classify(Line::Complete("hello world".into()));
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_none());
+    }
+
+    // Test 91: Python traceback with File+code interleaving compresses correctly
+    #[test]
+    fn test_stack_trace_compression_python_interleaved() {
+        let mut c = Classifier::new(None, None);
+
+        // "Traceback" header — Hazard from error_start, NOT ConsumingTrace
+        let r0 = c.classify(Line::Complete(
+            "Traceback (most recent call last):".into(),
+        ));
+        assert!(matches!(r0, Classification::Hazard { .. }));
+        assert_ne!(c.state(), ClassifierState::ConsumingTrace);
+
+        // First File frame — enters ConsumingTrace
+        let r1 = c.classify(Line::Complete(
+            "  File \"/app/main.py\", line 42".into(),
+        ));
+        assert!(matches!(r1, Classification::Hazard { .. }));
+        assert_eq!(c.state(), ClassifierState::ConsumingTrace);
+
+        // Code line (indented — continuation)
+        c.classify(Line::Complete("    result = process(data)".into()));
+
+        // 10 more File+code pairs
+        for i in 0..10 {
+            c.classify(Line::Complete(
+                format!("  File \"/app/mod{}.py\", line {}", i, i * 10),
+            ));
+            c.classify(Line::Complete(
+                format!("    code_line_{}", i),
+            ));
+        }
+
+        // consuming_trace_lines: 1 (first) + 1 (code) + 20 (10 pairs) = 22
+
+        // Terminating error line
+        let r_end = c.classify(Line::Complete("ValueError: bad input".into()));
+
+        // Should return compressed Hazard
+        assert!(matches!(r_end, Classification::Hazard { .. }));
+        if let Classification::Hazard { ref text, .. } = r_end {
+            // 22 total - 2 (first + last) = 20 middle frames
+            assert!(text.contains("20 frames"), "expected '20 frames' in: {}", text);
+        }
+
+        // Drain deferred: "ValueError: bad input" → Unknown (no universal pattern matches)
+        let deferred = c.drain_deferred();
+        assert!(deferred.is_some());
+        assert!(matches!(deferred.unwrap(), Classification::Unknown { .. }));
     }
 }
