@@ -4,6 +4,7 @@ pub mod enrich;
 pub mod format;
 pub mod grammar;
 pub mod line_buffer;
+pub mod metrics;
 pub mod preflight;
 pub mod pty;
 pub mod stat;
