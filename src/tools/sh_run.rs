@@ -16,7 +16,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::config::MishConfig;
 use crate::core::grammar::Grammar;
 use crate::mcp::types::{
-    LineCount, ProcessDigestEntry, ShRunParams, ShRunResponse,
+    LineCount, ProcessDigestEntry, ShRunMetrics, ShRunParams, ShRunResponse,
     ERR_COMMAND_BLOCKED,
 };
 use crate::router::categories::{CategoriesConfig, Category, DangerousPattern};
@@ -104,18 +104,36 @@ pub async fn handle(
     let raw_output = &result.output;
     let total_lines = raw_output.lines().count() as u64;
 
-    let (processed_output, shown_lines) = match category {
+    let (processed_output, shown_lines, run_metrics) = match category {
         Category::Condense => {
             // Full squasher pipeline: VTE strip, progress removal, dedup, truncation.
-            let squashed = squash_output(raw_output, config);
+            let squash_start = std::time::Instant::now();
+            let (squashed, pipeline_metrics) = squash_output(raw_output, config);
+            let squash_ms = squash_start.elapsed().as_millis() as u64;
             let shown = squashed.lines().count() as u64;
-            (squashed, shown)
+            let raw_bytes = raw_output.len() as u64;
+            let squashed_bytes = squashed.len() as u64;
+            let compression_ratio = if raw_bytes == 0 {
+                1.0
+            } else {
+                squashed_bytes as f64 / raw_bytes as f64
+            };
+            let metrics = Some(ShRunMetrics {
+                compression_ratio,
+                raw_bytes,
+                squashed_bytes,
+                lines_in: pipeline_metrics.lines_in,
+                lines_out: pipeline_metrics.lines_out,
+                wall_ms: result.duration.as_millis() as u64,
+                squash_ms,
+            });
+            (squashed, shown, metrics)
         }
         _ => {
             // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
             let stripped = strip_ansi(raw_output);
             let shown = stripped.lines().count() as u64;
-            (stripped, shown)
+            (stripped, shown, None)
         }
     };
 
@@ -145,6 +163,7 @@ pub async fn handle(
                 shown_lines
             },
         },
+        metrics: run_metrics,
     };
 
     let response_json = serde_json::to_value(&response)
@@ -186,8 +205,8 @@ fn resolve_timeout(params: &ShRunParams, cmd: &str, config: &MishConfig) -> Dura
 }
 
 /// Run output through the squasher pipeline (VTE strip, progress removal,
-/// dedup, truncation).
-fn squash_output(raw: &str, config: &MishConfig) -> String {
+/// dedup, truncation). Returns the squashed output and pipeline metrics.
+fn squash_output(raw: &str, config: &MishConfig) -> (String, crate::squasher::pipeline::PipelineMetrics) {
     let pipeline_config = PipelineConfig {
         truncate: TruncateConfig {
             head: config.squasher.oreo_head,
@@ -202,8 +221,8 @@ fn squash_output(raw: &str, config: &MishConfig) -> String {
         pipeline.feed(Line::Complete(line.to_string()));
     }
 
-    let lines = pipeline.finalize();
-    lines.join("\n")
+    let (lines, metrics) = pipeline.finalize_with_metrics();
+    (lines.join("\n"), metrics)
 }
 
 /// Resolve a watch pattern string to a compiled PatternMatcher.
@@ -418,7 +437,7 @@ mod tests {
     fn test_squash_output_passthrough() {
         let config = default_config();
         let output = "hello\nworld";
-        let squashed = squash_output(output, &config);
+        let (squashed, _metrics) = squash_output(output, &config);
         assert!(squashed.contains("hello"));
         assert!(squashed.contains("world"));
     }
@@ -427,7 +446,7 @@ mod tests {
     fn test_squash_output_strips_ansi() {
         let config = default_config();
         let output = "\x1b[31merror: something\x1b[0m";
-        let squashed = squash_output(output, &config);
+        let (squashed, _metrics) = squash_output(output, &config);
         assert!(squashed.contains("error: something"));
         assert!(!squashed.contains("\x1b"));
     }
@@ -435,8 +454,18 @@ mod tests {
     #[test]
     fn test_squash_output_empty() {
         let config = default_config();
-        let squashed = squash_output("", &config);
+        let (squashed, _metrics) = squash_output("", &config);
         assert!(squashed.is_empty());
+    }
+
+    #[test]
+    fn test_squash_output_returns_metrics() {
+        let config = default_config();
+        let output = "line1\nline2\nline3";
+        let (squashed, metrics) = squash_output(output, &config);
+        assert!(!squashed.is_empty());
+        assert_eq!(metrics.lines_in, 3);
+        assert!(metrics.lines_out > 0);
     }
 
     // -- watch pattern filtering --------------------------------------------
