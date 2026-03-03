@@ -25,7 +25,7 @@ use crate::router::categories::{categorize, CategoriesConfig, Category, Dangerou
 // Public types
 // ---------------------------------------------------------------------------
 
-/// A diagnostic line from error enrichment (stub — will be connected when enrich is ready).
+/// A diagnostic line from error enrichment.
 #[derive(Debug, Clone)]
 pub struct DiagnosticLine {
     pub kind: String,
@@ -91,10 +91,17 @@ pub fn route(
     let (output, exit_code) = dispatch(category, &cmd, grammar, action, dangerous_patterns, exec_mode)?;
 
     // 5. Error enrichment on non-zero exit code
-    //    (enrich module is a stub; will be connected when ready)
     let enrichment = if exit_code != 0 {
-        // Placeholder: return None until enrich module is implemented
-        None
+        let result = crate::core::enrich::enrich(&cmd, exit_code, "", grammar);
+        let diags: Vec<DiagnosticLine> = result
+            .diagnostics
+            .into_iter()
+            .map(|d| DiagnosticLine {
+                kind: d.key,
+                message: d.value,
+            })
+            .collect();
+        if diags.is_empty() { None } else { Some(diags) }
     } else {
         None
     };
@@ -365,19 +372,18 @@ success = "+ installed"
     }
 
     // -----------------------------------------------------------------------
-    // Test 9: Enrichment on failure — exit_code != 0 triggers enrichment path
+    // Test 9: Enrichment on failure — exit_code != 0 triggers enrichment
     // -----------------------------------------------------------------------
-    // Since the enrich module is a stub, enrichment will be None, but we
-    // verify the logic path: route() with a failing command should set
-    // exit_code != 0. We use `echo` through passthrough with exit 1 via
-    // a full route() call.
+    // Verify that route() with a failing command calls the enrich module.
+    // Use exit code 127 (command not found) which always produces diagnostics.
     #[test]
     fn test_enrichment_on_failure() {
         let config = CategoriesConfig {
             categories: HashMap::from([("sh".to_string(), Category::Passthrough)]),
         };
 
-        let command = cmd(&["/bin/sh", "-c", "echo fail && exit 1"]);
+        // exit 127 triggers command-not-found diagnostics in enrich module
+        let command = cmd(&["/bin/sh", "-c", "exit 127"]);
         let result = route(
             &command,
             &empty_grammars(),
@@ -387,19 +393,17 @@ success = "+ installed"
             ExecutionMode::Cli,
         );
 
-        // /bin/sh might not match "sh" in categories since the command
-        // is "/bin/sh" not "sh". Falls back to Condense. Test differently:
-        // Use the passthrough handler directly to verify enrichment path.
-        // Instead, test through route with echo (which we know works).
-        // The key assertion is that enrichment is None (stub) even on failure.
         match result {
             Ok(r) => {
                 assert_ne!(r.exit_code, 0, "expected non-zero exit code");
-                // Enrichment should be None since the module is a stub
+                // Enrichment should be Some now that enrich is wired in.
+                // Exit code 127 maps to "command not found" diagnostic.
                 assert!(
-                    r.enrichment.is_none(),
-                    "enrichment should be None (stub module)"
+                    r.enrichment.is_some(),
+                    "enrichment should be Some for exit code 127"
                 );
+                let diags = r.enrichment.unwrap();
+                assert!(!diags.is_empty(), "expected at least one diagnostic line");
             }
             Err(_) => {
                 // Command execution may fail in some test environments;
@@ -661,6 +665,115 @@ category = "interactive"
                 );
             }
             _ => panic!("expected Dangerous handler output variant"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: cp nonexistent file returns enrichment diagnostics
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_enrichment_cp_nonexistent_file() {
+        let config = CategoriesConfig {
+            categories: HashMap::from([("cp".to_string(), Category::Narrate)]),
+        };
+
+        let command = cmd(&["cp", "nonexistent_file_that_does_not_exist.txt", "/tmp/"]);
+        let result = route(
+            &command,
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+            OutputMode::Human,
+            ExecutionMode::Cli,
+        )
+        .expect("route should succeed even if cp fails");
+
+        assert_ne!(result.exit_code, 0, "cp of nonexistent file should fail");
+        assert!(
+            result.enrichment.is_some(),
+            "enrichment should be Some for failed cp"
+        );
+        let diags = result.enrichment.unwrap();
+        assert!(!diags.is_empty(), "expected at least one diagnostic for failed cp");
+        // Verify diagnostics have non-empty kind/message
+        for d in &diags {
+            assert!(!d.kind.is_empty(), "diagnostic kind should not be empty");
+            assert!(!d.message.is_empty(), "diagnostic message should not be empty");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: enrichment is None on success (exit_code == 0)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_enrichment_none_on_success() {
+        let config = CategoriesConfig {
+            categories: HashMap::from([("echo".to_string(), Category::Passthrough)]),
+        };
+
+        let command = cmd(&["echo", "hello"]);
+        let result = route(
+            &command,
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+            OutputMode::Human,
+            ExecutionMode::Cli,
+        )
+        .expect("route should succeed for echo");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.enrichment.is_none(),
+            "enrichment should be None when exit_code == 0"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: enrichment diagnostics have non-empty kind and message
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_enrichment_diagnostics_non_empty_fields() {
+        let config = CategoriesConfig {
+            categories: HashMap::from([("sh".to_string(), Category::Passthrough)]),
+        };
+
+        // Use exit code 127 (command not found) which always produces diagnostics
+        let command = cmd(&["/bin/sh", "-c", "exit 127"]);
+        let result = route(
+            &command,
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+            OutputMode::Human,
+            ExecutionMode::Cli,
+        );
+
+        match result {
+            Ok(r) => {
+                assert_ne!(r.exit_code, 0, "expected non-zero exit code");
+                assert!(
+                    r.enrichment.is_some(),
+                    "enrichment should be Some for exit code 127"
+                );
+                let diags = r.enrichment.unwrap();
+                assert!(!diags.is_empty(), "expected diagnostics for exit 127");
+                for d in &diags {
+                    assert!(
+                        !d.kind.is_empty(),
+                        "diagnostic kind should not be empty, got: {:?}",
+                        d
+                    );
+                    assert!(
+                        !d.message.is_empty(),
+                        "diagnostic message should not be empty, got: {:?}",
+                        d
+                    );
+                }
+            }
+            Err(_) => {
+                // Acceptable in constrained test environments
+            }
         }
     }
 }
