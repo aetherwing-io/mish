@@ -3,6 +3,8 @@
 /// Handles CR/LF/CRLF, progress bar overwrites, and partial line timeouts.
 use std::time::{Duration, Instant};
 
+use crate::squasher::utf8::Utf8Decoder;
+
 /// A logical line from the byte stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -16,6 +18,7 @@ pub enum Line {
 
 pub struct LineBuffer {
     partial: Vec<u8>,
+    decoder: Utf8Decoder,
     overwrite_mode: bool,
     last_byte_time: Instant,
     partial_timeout: Duration,
@@ -25,6 +28,7 @@ impl LineBuffer {
     pub fn new() -> Self {
         Self {
             partial: Vec::new(),
+            decoder: Utf8Decoder::new(),
             overwrite_mode: false,
             last_byte_time: Instant::now(),
             partial_timeout: Duration::from_millis(500),
@@ -41,7 +45,7 @@ impl LineBuffer {
             if let Some(skip) = is_erase_sequence(bytes, i) {
                 // CSI erase acts like an overwrite — emit current partial as Overwrite
                 if !self.partial.is_empty() {
-                    let text = String::from_utf8_lossy(&self.partial).into_owned();
+                    let text = self.decoder.decode(&self.partial);
                     lines.push(Line::Overwrite(text));
                     self.partial.clear();
                 }
@@ -58,7 +62,7 @@ impl LineBuffer {
                     if self.partial.last() == Some(&b'\r') {
                         self.partial.pop();
                     }
-                    let text = String::from_utf8_lossy(&self.partial).into_owned();
+                    let text = self.decoder.decode(&self.partial);
                     lines.push(Line::Complete(text));
                     self.partial.clear();
                     self.overwrite_mode = false;
@@ -75,7 +79,7 @@ impl LineBuffer {
 
                     // Bare CR: overwrite mode
                     if !self.partial.is_empty() {
-                        let text = String::from_utf8_lossy(&self.partial).into_owned();
+                        let text = self.decoder.decode(&self.partial);
                         lines.push(Line::Overwrite(text));
                     }
                     self.partial.clear();
@@ -98,7 +102,7 @@ impl LineBuffer {
         if !self.partial.is_empty()
             && self.last_byte_time.elapsed() >= self.partial_timeout
         {
-            let text = String::from_utf8_lossy(&self.partial).into_owned();
+            let text = self.decoder.decode(&self.partial);
             self.partial.clear();
             self.overwrite_mode = false;
             Some(Line::Partial(text))
@@ -113,7 +117,9 @@ impl LineBuffer {
         let mut lines = self.ingest(remaining);
 
         if !self.partial.is_empty() {
-            let text = String::from_utf8_lossy(&self.partial).into_owned();
+            let mut text = self.decoder.decode(&self.partial);
+            // Flush any incomplete multi-byte sequence as replacement char
+            text.push_str(&self.decoder.flush());
             if self.overwrite_mode {
                 lines.push(Line::Overwrite(text));
             } else {
@@ -121,6 +127,17 @@ impl LineBuffer {
             }
             self.partial.clear();
             self.overwrite_mode = false;
+        } else {
+            // Even if partial is empty, decoder may have carryover from a previous decode
+            let flushed = self.decoder.flush();
+            if !flushed.is_empty() {
+                if self.overwrite_mode {
+                    lines.push(Line::Overwrite(flushed));
+                } else {
+                    lines.push(Line::Partial(flushed));
+                }
+                self.overwrite_mode = false;
+            }
         }
 
         lines
@@ -411,5 +428,84 @@ mod tests {
         buf.ingest(b"start ");
         let lines = buf.finalize(b"end");
         assert_eq!(lines, vec![Line::Partial("start end".to_string())]);
+    }
+
+    // Test: 3-byte UTF-8 char split across two ingest() calls — no U+FFFD
+    #[test]
+    fn test_split_3byte_utf8_across_ingests() {
+        let mut buf = LineBuffer::new();
+        // "→" is U+2192: 3 bytes: 0xE2 0x86 0x92
+        // First ingest: "hello" + first byte of →
+        let lines1 = buf.ingest(&[b'h', b'e', b'l', b'l', b'o', 0xE2]);
+        assert!(lines1.is_empty()); // no newline yet
+
+        // Second ingest: remaining 2 bytes of → + newline
+        let lines2 = buf.ingest(&[0x86, 0x92, b'\n']);
+        assert_eq!(lines2, vec![Line::Complete("hello\u{2192}".to_string())]);
+    }
+
+    // Test: 2-byte UTF-8 char split across two ingest() calls — no U+FFFD
+    #[test]
+    fn test_split_2byte_utf8_across_ingests() {
+        let mut buf = LineBuffer::new();
+        // "é" is U+00E9: 2 bytes: 0xC3 0xA9
+        // First ingest: "caf" + first byte of é
+        let lines1 = buf.ingest(&[b'c', b'a', b'f', 0xC3]);
+        assert!(lines1.is_empty());
+
+        // Second ingest: second byte of é + newline
+        let lines2 = buf.ingest(&[0xA9, b'\n']);
+        assert_eq!(lines2, vec![Line::Complete("caf\u{00E9}".to_string())]);
+    }
+
+    // Test: normal ASCII passthrough still works with decoder
+    #[test]
+    fn test_ascii_passthrough_with_decoder() {
+        let mut buf = LineBuffer::new();
+        let lines = buf.ingest(b"plain ascii\n");
+        assert_eq!(lines, vec![Line::Complete("plain ascii".to_string())]);
+    }
+
+    // Test: finalize flushes incomplete multi-byte as replacement char
+    #[test]
+    fn test_finalize_flushes_incomplete_multibyte() {
+        let mut buf = LineBuffer::new();
+        // Ingest first byte of a 3-byte sequence without completing it
+        let lines = buf.ingest(&[b'x', 0xE2]);
+        assert!(lines.is_empty());
+
+        // Finalize — the incomplete 0xE2 should become U+FFFD
+        let lines = buf.finalize(b"");
+        assert_eq!(lines, vec![Line::Partial("x\u{FFFD}".to_string())]);
+    }
+
+    // Test: 4-byte UTF-8 char split across two ingest() calls
+    #[test]
+    fn test_split_4byte_utf8_across_ingests() {
+        let mut buf = LineBuffer::new();
+        // U+1F389 (party popper): 4 bytes: 0xF0 0x9F 0x8E 0x89
+        // First ingest: first 2 bytes
+        let lines1 = buf.ingest(&[0xF0, 0x9F]);
+        assert!(lines1.is_empty());
+
+        // Second ingest: remaining 2 bytes + newline
+        let lines2 = buf.ingest(&[0x8E, 0x89, b'\n']);
+        assert_eq!(lines2, vec![Line::Complete("\u{1F389}".to_string())]);
+    }
+
+    // Test: split multi-byte at CR boundary (overwrite)
+    #[test]
+    fn test_split_multibyte_at_cr_boundary() {
+        let mut buf = LineBuffer::new();
+        // "→" split: first byte in first ingest, rest in second with CR
+        let lines1 = buf.ingest(&[b'a', 0xE2]);
+        assert!(lines1.is_empty());
+
+        // Second ingest completes → then has CR for overwrite
+        let lines2 = buf.ingest(&[0x86, 0x92, b'\r']);
+        assert_eq!(
+            lines2,
+            vec![Line::Overwrite("a\u{2192}".to_string())]
+        );
     }
 }
