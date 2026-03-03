@@ -1,6 +1,10 @@
 //! Append-only audit log for tool calls, policy decisions, and process lifecycle events.
 //!
-//! Writes JSON Lines to `~/.local/share/mish/audit.log` (configurable).
+//! Each mish session writes to its own JSONL file under an `audit/`
+//! subdirectory derived from the configured `log_path`.  For example, if
+//! `log_path` is `~/.local/share/mish/audit.log`, session files are
+//! created at `~/.local/share/mish/audit/{session_id}.jsonl`.
+//!
 //! The log file descriptor is opened with O_CLOEXEC so child processes
 //! cannot inherit it.
 
@@ -183,36 +187,43 @@ pub struct AuditLogger {
 }
 
 impl AuditLogger {
-    /// Create a new audit logger.
+    /// Create a new audit logger for a specific session.
     ///
-    /// Creates parent directories if they don't exist. If the log file
-    /// cannot be opened, a warning is printed to stderr but the logger is
-    /// still returned (with logging disabled).
-    pub fn new(config: &AuditConfig) -> Result<Self, std::io::Error> {
+    /// Derives the audit directory from `config.log_path`: the parent
+    /// directory of `log_path` gets an `audit/` subdirectory, and the
+    /// session file is `{audit_dir}/{session_id}.jsonl`.
+    ///
+    /// Creates directories if they don't exist. If the log file cannot be
+    /// opened, a warning is printed to stderr but the logger is still
+    /// returned (with logging disabled).
+    pub fn new(config: &AuditConfig, session_id: &str) -> Result<Self, std::io::Error> {
         let expanded = expand_tilde(&config.log_path);
-        let path = Path::new(&expanded);
+        let base = Path::new(&expanded)
+            .parent()
+            .unwrap_or(Path::new("."));
+        let audit_dir = base.join("audit");
 
-        // Create parent directories if needed. If this fails, we still
+        // Create audit directory if needed. If this fails, we still
         // attempt to open the file (which will also fail), and gracefully
         // degrade to a disabled logger.
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!(
-                        "mish: warning: cannot create audit log directory {}: {e}",
-                        parent.display()
-                    );
-                }
+        if !audit_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&audit_dir) {
+                eprintln!(
+                    "mish: warning: cannot create audit directory {}: {e}",
+                    audit_dir.display()
+                );
             }
         }
 
+        let session_file = audit_dir.join(format!("{session_id}.jsonl"));
+
         // Open with O_APPEND + O_CLOEXEC.
-        let file = match Self::open_log_file(path) {
+        let file = match Self::open_log_file(&session_file) {
             Ok(f) => Some(f),
             Err(e) => {
                 eprintln!(
                     "mish: warning: cannot open audit log at {}: {e}",
-                    expanded
+                    session_file.display()
                 );
                 None
             }
@@ -332,6 +343,9 @@ mod tests {
     use std::io::Read;
     use tempfile::TempDir;
 
+    /// Default test session ID.
+    const TEST_SESSION: &str = "test-session";
+
     /// Helper: create AuditConfig pointing at a temp directory.
     fn config_in(dir: &TempDir) -> AuditConfig {
         AuditConfig {
@@ -343,26 +357,31 @@ mod tests {
         }
     }
 
-    /// Read the entire log file contents.
+    /// Read the entire session log file contents.
     fn read_log(dir: &TempDir) -> String {
+        read_session_log(dir, TEST_SESSION)
+    }
+
+    /// Read the log file for a specific session.
+    fn read_session_log(dir: &TempDir, session_id: &str) -> String {
         let mut s = String::new();
-        let path = dir.path().join("audit.log");
+        let path = dir.path().join("audit").join(format!("{session_id}.jsonl"));
         if path.exists() {
             File::open(path).unwrap().read_to_string(&mut s).unwrap();
         }
         s
     }
 
-    // 1. Logger creates file at specified path
+    // 1. Logger creates session file at the correct path
     #[test]
     fn creates_file_at_specified_path() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let _logger = AuditLogger::new(&cfg).unwrap();
-        assert!(dir.path().join("audit.log").exists());
+        let _logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
+        assert!(dir.path().join("audit").join(format!("{TEST_SESSION}.jsonl")).exists());
     }
 
-    // 2. Logger creates parent directories
+    // 2. Logger creates parent directories (including audit subdirectory)
     #[test]
     fn creates_parent_directories() {
         let dir = TempDir::new().unwrap();
@@ -374,8 +393,8 @@ mod tests {
             log_policy_decisions: true,
             log_handoff_events: true,
         };
-        let _logger = AuditLogger::new(&cfg).unwrap();
-        assert!(nested.join("audit.log").exists());
+        let _logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
+        assert!(nested.join("audit").join(format!("{TEST_SESSION}.jsonl")).exists());
     }
 
     // 3. Entries are written in JSON Lines format
@@ -383,7 +402,7 @@ mod tests {
     fn writes_json_lines() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -406,7 +425,7 @@ mod tests {
     fn multiple_entries_on_separate_lines() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -437,7 +456,7 @@ mod tests {
     fn flush_writes_data() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -472,7 +491,7 @@ mod tests {
         };
 
         // new() should succeed even though the file can't be opened.
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
         assert!(logger.file.is_none());
 
         // Logging should not panic.
@@ -616,7 +635,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let logger = AuditLogger::new(&cfg).unwrap();
+        let logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
         let file = logger.file.as_ref().unwrap();
         let fd = file.as_raw_fd();
 
@@ -638,7 +657,7 @@ mod tests {
             log_policy_decisions: true,
             log_handoff_events: true,
         };
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         // info-level event (ServerStarted) should be filtered out
         logger.log(AuditEntry::new(
@@ -695,7 +714,7 @@ mod tests {
             log_policy_decisions: false, // suppress policy events
             log_handoff_events: false,   // suppress handoff events
         };
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         // Command event — suppressed
         logger.log(AuditEntry::new(
@@ -857,7 +876,7 @@ mod tests {
     fn command_record_respects_log_commands_enabled() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir); // log_commands = true
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -886,7 +905,7 @@ mod tests {
             log_policy_decisions: true,
             log_handoff_events: true,
         };
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -908,7 +927,7 @@ mod tests {
     fn command_record_full_entry_in_log() {
         let dir = TempDir::new().unwrap();
         let cfg = config_in(&dir);
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "session-42".into(),
@@ -960,7 +979,7 @@ mod tests {
             log_policy_decisions: true,
             log_handoff_events: true,
         };
-        let mut logger = AuditLogger::new(&cfg).unwrap();
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
         logger.log(AuditEntry::new(
             "s1".into(),
@@ -975,5 +994,119 @@ mod tests {
             content.is_empty(),
             "CommandRecord (info level) should be filtered out at warn threshold"
         );
+    }
+
+    // --- Session-based JSONL file tests ---
+
+    // 22. Session file is created at {dir}/audit/{session_id}.jsonl
+    #[test]
+    fn session_file_created_at_correct_path() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let sid = "my-session-123";
+        let _logger = AuditLogger::new(&cfg, sid).unwrap();
+
+        let expected = dir.path().join("audit").join("my-session-123.jsonl");
+        assert!(
+            expected.exists(),
+            "session file should exist at {}",
+            expected.display()
+        );
+    }
+
+    // 23. Two loggers with different session IDs create separate files
+    #[test]
+    fn separate_session_files() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+
+        let mut logger_a = AuditLogger::new(&cfg, "session-a").unwrap();
+        let mut logger_b = AuditLogger::new(&cfg, "session-b").unwrap();
+
+        logger_a.log(AuditEntry::new(
+            "session-a".into(),
+            "sh_run".into(),
+            Some("ls".into()),
+            AuditEvent::ServerStarted,
+        ));
+        logger_b.log(AuditEntry::new(
+            "session-b".into(),
+            "sh_run".into(),
+            Some("pwd".into()),
+            AuditEvent::ServerShutdown,
+        ));
+        logger_a.flush();
+        logger_b.flush();
+
+        let content_a = read_session_log(&dir, "session-a");
+        let content_b = read_session_log(&dir, "session-b");
+
+        assert!(!content_a.is_empty(), "session-a log should not be empty");
+        assert!(!content_b.is_empty(), "session-b log should not be empty");
+
+        // Each file should contain exactly one entry
+        assert_eq!(content_a.lines().count(), 1);
+        assert_eq!(content_b.lines().count(), 1);
+
+        // Verify entries are in the correct files
+        let parsed_a: serde_json::Value = serde_json::from_str(content_a.trim()).unwrap();
+        assert_eq!(parsed_a["session"], "session-a");
+        assert_eq!(parsed_a["command"], "ls");
+
+        let parsed_b: serde_json::Value = serde_json::from_str(content_b.trim()).unwrap();
+        assert_eq!(parsed_b["session"], "session-b");
+        assert_eq!(parsed_b["command"], "pwd");
+    }
+
+    // 24. Entries are written to the correct session file (not to old audit.log)
+    #[test]
+    fn entries_written_to_session_file_not_old_path() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let sid = "correct-path-test";
+        let mut logger = AuditLogger::new(&cfg, sid).unwrap();
+
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "sh_run".into(),
+            None,
+            AuditEvent::ServerStarted,
+        ));
+        logger.flush();
+
+        // The old audit.log should NOT exist
+        assert!(
+            !dir.path().join("audit.log").exists(),
+            "old audit.log should not be created"
+        );
+
+        // The session file should have the entry
+        let content = read_session_log(&dir, sid);
+        assert!(!content.is_empty(), "session file should have entries");
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["event"]["type"], "ServerStarted");
+    }
+
+    // 25. Audit directory is an `audit/` subdirectory of log_path's parent
+    #[test]
+    fn audit_dir_is_subdirectory_of_log_path_parent() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("custom").join("data");
+        let cfg = AuditConfig {
+            log_path: nested.join("my.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let sid = "subdir-test";
+        let _logger = AuditLogger::new(&cfg, sid).unwrap();
+
+        // The audit directory should be {nested}/audit/
+        let expected_dir = nested.join("audit");
+        assert!(expected_dir.is_dir(), "audit/ subdirectory should exist");
+
+        let expected_file = expected_dir.join("subdir-test.jsonl");
+        assert!(expected_file.exists(), "session file should exist");
     }
 }

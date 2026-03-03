@@ -12,6 +12,8 @@ use tokio::sync::watch;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinSet;
 
+use uuid::Uuid;
+
 use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
 use crate::config::{load_config, MishConfig};
 use crate::config_loader::default_runtime_config;
@@ -214,7 +216,8 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     });
 
     // 5. Audit log: ServerStarted
-    let mut audit_logger = AuditLogger::new(&config.audit)?;
+    let session_id = Uuid::new_v4().to_string();
+    let mut audit_logger = AuditLogger::new(&config.audit, &session_id)?;
     audit_logger.log(AuditEntry::new(
         "server".into(),
         "".into(),

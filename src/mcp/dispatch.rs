@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
+use uuid::Uuid;
 
 use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
 use crate::config::MishConfig;
@@ -44,7 +45,8 @@ impl McpDispatcher {
         categories_config: CategoriesConfig,
         dangerous_patterns: Vec<DangerousPattern>,
     ) -> Self {
-        let audit_logger = AuditLogger::new(&config.audit)
+        let dispatch_session_id = Uuid::new_v4().to_string();
+        let audit_logger = AuditLogger::new(&config.audit, &dispatch_session_id)
             .expect("AuditLogger::new should not fail (gracefully degrades to disabled)");
         Self {
             session_manager,
