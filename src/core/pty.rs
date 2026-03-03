@@ -234,14 +234,21 @@ impl PtyCapture {
     }
 
     /// Drain remaining bytes from the PTY master after child exits.
+    ///
+    /// Uses a brief poll timeout on the first iteration to let the kernel
+    /// propagate the child's final writes from the PTY slave to master.
+    /// Subsequent iterations use ZERO (non-blocking) since data is flowing.
     pub fn drain(&self) -> Result<Vec<u8>, PtyError> {
         use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 
         let mut all = Vec::new();
         let mut buf = [0u8; 4096];
+        let mut first = true;
         loop {
+            let timeout = if first { PollTimeout::from(50u16) } else { PollTimeout::ZERO };
+            first = false;
             let mut pfd = [PollFd::new(self.master_fd.as_fd(), PollFlags::POLLIN)];
-            match poll(&mut pfd, PollTimeout::ZERO) {
+            match poll(&mut pfd, timeout) {
                 Ok(0) => break,                     // no more data
                 Err(nix::Error::EINTR) => continue,
                 Err(e) => return Err(PtyError::Nix(e)),
@@ -334,7 +341,9 @@ impl Drop for PtyCapture {
                     Ok(WaitStatus::StillAlive) => {
                         // Still alive after SIGTERM — escalate to SIGKILL.
                         let _ = kill(self.child_pid, Signal::SIGKILL);
-                        let _ = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG));
+                        // Block until reaped. SIGKILL is guaranteed to terminate,
+                        // so this won't hang. WNOHANG here would race and leave zombies.
+                        let _ = waitpid(self.child_pid, None);
                     }
                     _ => {} // Reaped or error — done.
                 }
