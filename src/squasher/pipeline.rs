@@ -3,6 +3,7 @@
 /// VTE strip -> progress removal -> dedup -> truncation -> output
 
 use crate::core::line_buffer::Line;
+use crate::router::categories::Category;
 use crate::squasher::dedup::DedupEngine;
 use crate::squasher::progress::{ProgressFilter, ProgressResult};
 use crate::squasher::truncate::{TruncateConfig, Truncator};
@@ -35,6 +36,14 @@ impl Default for PipelineConfig {
             dedup_all: true,
         }
     }
+}
+
+/// Result from category-aware pipeline processing.
+#[derive(Debug, Clone)]
+pub struct PipelineResult {
+    pub output: Vec<String>,
+    pub metrics: PipelineMetrics,
+    pub category: Category,
 }
 
 /// The squasher pipeline: processes raw lines into condensed output.
@@ -152,6 +161,96 @@ impl Pipeline {
         self.flush_remaining();
         let output = std::mem::take(&mut self.output);
         self.truncator.truncate(&output)
+    }
+
+    /// Process raw lines through category-aware dispatch.
+    ///
+    /// Dispatches based on category:
+    /// - **Condense** — full pipeline: VTE strip -> progress removal -> dedup -> truncation
+    /// - **Narrate** — VTE strip only (no dedup, no progress removal, no truncation)
+    /// - **Structured** — VTE strip only
+    /// - **Passthrough** — VTE strip only
+    /// - **Interactive** — passthrough (no processing at all)
+    /// - **Dangerous** — passthrough (no processing at all)
+    pub fn process(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
+        match category {
+            Category::Condense => self.process_condense(raw_lines, category),
+            Category::Narrate | Category::Structured | Category::Passthrough => {
+                self.process_vte_strip_only(raw_lines, category)
+            }
+            Category::Interactive | Category::Dangerous => {
+                self.process_raw_passthrough(raw_lines, category)
+            }
+        }
+    }
+
+    /// Full condense pipeline: VTE strip -> progress -> dedup -> truncation.
+    fn process_condense(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
+        for line in raw_lines {
+            self.feed(line);
+        }
+        let (output, metrics) = self.finalize_with_metrics();
+        PipelineResult {
+            output,
+            metrics,
+            category,
+        }
+    }
+
+    /// VTE strip only: strip ANSI codes but skip progress removal, dedup, and truncation.
+    fn process_vte_strip_only(
+        &mut self,
+        raw_lines: Vec<Line>,
+        category: Category,
+    ) -> PipelineResult {
+        let mut metrics = PipelineMetrics::default();
+        let mut output = Vec::new();
+
+        for line in raw_lines {
+            metrics.lines_in += 1;
+            let text = match line {
+                Line::Complete(s) | Line::Partial(s) | Line::Overwrite(s) => s,
+            };
+            let meta = VteStripper::strip(text.as_bytes());
+            if meta.clean_text != text {
+                metrics.vte_stripped += 1;
+            }
+            output.push(meta.clean_text);
+        }
+
+        metrics.lines_out = output.len() as u64;
+
+        PipelineResult {
+            output,
+            metrics,
+            category,
+        }
+    }
+
+    /// Raw passthrough: return lines unchanged, no processing at all.
+    fn process_raw_passthrough(
+        &mut self,
+        raw_lines: Vec<Line>,
+        category: Category,
+    ) -> PipelineResult {
+        let mut metrics = PipelineMetrics::default();
+        let mut output = Vec::new();
+
+        for line in raw_lines {
+            metrics.lines_in += 1;
+            let text = match line {
+                Line::Complete(s) | Line::Partial(s) | Line::Overwrite(s) => s,
+            };
+            output.push(text);
+        }
+
+        metrics.lines_out = output.len() as u64;
+
+        PipelineResult {
+            output,
+            metrics,
+            category,
+        }
     }
 }
 
@@ -338,5 +437,280 @@ mod tests {
         assert!(result.iter().any(|l| l == "warning: unused variable"));
         // Progress lines should be gone
         assert!(!result.iter().any(|l| l.contains("compiling")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Category-aware process() tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_process_condense_matches_existing_pipeline() {
+        // process() with Condense should produce the same output as feed+finalize_with_metrics
+        let lines = vec![
+            Line::Complete("Starting build...".into()),
+            Line::Overwrite("compiling 1/10".into()),
+            Line::Overwrite("compiling 5/10".into()),
+            Line::Overwrite("compiling 10/10".into()),
+            Line::Complete("Build complete".into()),
+            Line::Complete("\x1b[33mwarning: unused variable\x1b[0m".into()),
+        ];
+
+        // Existing pipeline path
+        let mut pipe_old = Pipeline::new(PipelineConfig::default());
+        for line in lines.clone() {
+            pipe_old.feed(line);
+        }
+        let (old_output, old_metrics) = pipe_old.finalize_with_metrics();
+
+        // New process() path
+        let mut pipe_new = Pipeline::new(PipelineConfig::default());
+        let result = pipe_new.process(lines, Category::Condense);
+
+        assert_eq!(result.output, old_output);
+        assert_eq!(result.metrics, old_metrics);
+        assert_eq!(result.category, Category::Condense);
+    }
+
+    #[test]
+    fn test_process_condense_with_dedup() {
+        let mut lines = Vec::new();
+        for i in 0..10 {
+            lines.push(Line::Complete(format!(
+                "Downloading https://registry.npmjs.org/pkg{}",
+                i
+            )));
+        }
+        lines.push(Line::Complete("unique line".into()));
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        // Dedup should have kicked in — fewer output lines than input
+        assert!(
+            result.output.len() < 11,
+            "expected dedup to reduce output, got {} lines",
+            result.output.len()
+        );
+        assert!(result.output.iter().any(|l| l.contains("(x")));
+        assert_eq!(result.category, Category::Condense);
+        assert_eq!(result.metrics.lines_in, 11);
+    }
+
+    #[test]
+    fn test_process_narrate_vte_strip_only() {
+        let lines = vec![
+            Line::Complete("\x1b[31merror: something\x1b[0m".into()),
+            Line::Complete("plain text".into()),
+            Line::Overwrite("progress 50%".into()),
+            Line::Overwrite("progress 100%".into()),
+            Line::Complete("done".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Narrate);
+
+        // VTE strip should clean ANSI codes
+        assert!(result.output.iter().any(|l| l == "error: something"));
+        // No ANSI codes in output
+        assert!(result
+            .output
+            .iter()
+            .all(|l| !l.contains("\x1b")));
+        // All lines kept (no dedup, no progress removal, no truncation)
+        assert_eq!(result.output.len(), 5);
+        assert_eq!(result.metrics.lines_in, 5);
+        assert_eq!(result.metrics.lines_out, 5);
+        assert_eq!(result.metrics.vte_stripped, 1); // only the ANSI line
+        // No dedup, progress, or truncation metrics
+        assert_eq!(result.metrics.dedup_groups, 0);
+        assert_eq!(result.metrics.dedup_absorbed, 0);
+        assert_eq!(result.metrics.progress_stripped, 0);
+        assert_eq!(result.metrics.oreo_suppressed, 0);
+        assert_eq!(result.category, Category::Narrate);
+    }
+
+    #[test]
+    fn test_process_narrate_no_dedup() {
+        // Narrate should NOT dedup, even with repetitive lines
+        let mut lines = Vec::new();
+        for i in 0..10 {
+            lines.push(Line::Complete(format!(
+                "Downloading https://registry.npmjs.org/pkg{}",
+                i
+            )));
+        }
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Narrate);
+
+        // All 10 lines should be preserved (no dedup)
+        assert_eq!(result.output.len(), 10);
+        assert_eq!(result.metrics.lines_out, 10);
+        // No dedup marker
+        assert!(!result.output.iter().any(|l| l.contains("(x")));
+    }
+
+    #[test]
+    fn test_process_narrate_no_truncation() {
+        // Narrate should NOT truncate, even with many lines
+        let config = PipelineConfig {
+            truncate: TruncateConfig { head: 2, tail: 2 },
+            dedup_all: false,
+        };
+        let mut lines = Vec::new();
+        for i in 1..=20 {
+            lines.push(Line::Complete(format!("unique line {}", i)));
+        }
+
+        let mut pipe = Pipeline::new(config);
+        let result = pipe.process(lines, Category::Narrate);
+
+        // All 20 lines should be preserved (no truncation)
+        assert_eq!(result.output.len(), 20);
+        assert_eq!(result.output[0], "unique line 1");
+        assert_eq!(result.output[19], "unique line 20");
+    }
+
+    #[test]
+    fn test_process_structured_vte_strip_only() {
+        let lines = vec![
+            Line::Complete("\x1b[32mM  src/main.rs\x1b[0m".into()),
+            Line::Complete("?? new_file.txt".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Structured);
+
+        assert_eq!(result.output.len(), 2);
+        assert_eq!(result.output[0], "M  src/main.rs"); // ANSI stripped
+        assert_eq!(result.output[1], "?? new_file.txt"); // plain preserved
+        assert_eq!(result.metrics.vte_stripped, 1);
+        assert_eq!(result.category, Category::Structured);
+    }
+
+    #[test]
+    fn test_process_passthrough_vte_strip_only() {
+        let lines = vec![
+            Line::Complete("\x1b[1;34mheader\x1b[0m".into()),
+            Line::Complete("content line 1".into()),
+            Line::Complete("content line 2".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Passthrough);
+
+        assert_eq!(result.output.len(), 3);
+        assert_eq!(result.output[0], "header"); // ANSI stripped
+        assert_eq!(result.output[1], "content line 1");
+        assert_eq!(result.output[2], "content line 2");
+        assert_eq!(result.metrics.vte_stripped, 1);
+        assert_eq!(result.category, Category::Passthrough);
+    }
+
+    #[test]
+    fn test_process_interactive_raw_passthrough() {
+        // Interactive should return raw lines unchanged — no VTE strip
+        let ansi_line = "\x1b[31merror: something\x1b[0m";
+        let lines = vec![
+            Line::Complete(ansi_line.into()),
+            Line::Complete("plain text".into()),
+            Line::Overwrite("progress".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Interactive);
+
+        assert_eq!(result.output.len(), 3);
+        // ANSI codes preserved — no stripping
+        assert_eq!(result.output[0], ansi_line);
+        assert_eq!(result.output[1], "plain text");
+        assert_eq!(result.output[2], "progress");
+        // No VTE strip metrics
+        assert_eq!(result.metrics.vte_stripped, 0);
+        assert_eq!(result.metrics.lines_in, 3);
+        assert_eq!(result.metrics.lines_out, 3);
+        assert_eq!(result.category, Category::Interactive);
+    }
+
+    #[test]
+    fn test_process_dangerous_raw_passthrough() {
+        // Dangerous should return raw lines unchanged — no VTE strip
+        let ansi_line = "\x1b[33mwarning: destructive\x1b[0m";
+        let lines = vec![
+            Line::Complete(ansi_line.into()),
+            Line::Complete("removing files...".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Dangerous);
+
+        assert_eq!(result.output.len(), 2);
+        // ANSI codes preserved
+        assert_eq!(result.output[0], ansi_line);
+        assert_eq!(result.output[1], "removing files...");
+        assert_eq!(result.metrics.vte_stripped, 0);
+        assert_eq!(result.category, Category::Dangerous);
+    }
+
+    #[test]
+    fn test_process_metrics_populated_for_all_categories() {
+        let lines = vec![
+            Line::Complete("line 1".into()),
+            Line::Complete("line 2".into()),
+            Line::Complete("line 3".into()),
+        ];
+
+        let categories = vec![
+            Category::Condense,
+            Category::Narrate,
+            Category::Structured,
+            Category::Passthrough,
+            Category::Interactive,
+            Category::Dangerous,
+        ];
+
+        for cat in categories {
+            let mut pipe = Pipeline::new(PipelineConfig::default());
+            let result = pipe.process(lines.clone(), cat);
+
+            assert_eq!(
+                result.metrics.lines_in, 3,
+                "lines_in should be 3 for {:?}",
+                cat
+            );
+            assert!(
+                result.metrics.lines_out > 0,
+                "lines_out should be > 0 for {:?}",
+                cat
+            );
+            assert_eq!(
+                result.category, cat,
+                "category should match for {:?}",
+                cat
+            );
+        }
+    }
+
+    #[test]
+    fn test_process_empty_input() {
+        let categories = vec![
+            Category::Condense,
+            Category::Narrate,
+            Category::Passthrough,
+            Category::Interactive,
+        ];
+
+        for cat in categories {
+            let mut pipe = Pipeline::new(PipelineConfig::default());
+            let result = pipe.process(vec![], cat);
+
+            assert!(
+                result.output.is_empty(),
+                "empty input should produce empty output for {:?}",
+                cat
+            );
+            assert_eq!(result.metrics.lines_in, 0);
+            assert_eq!(result.metrics.lines_out, 0);
+        }
     }
 }
