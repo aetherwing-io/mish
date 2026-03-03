@@ -659,6 +659,7 @@ fn test_graceful_eof() {
 // =========================================================================
 
 #[test]
+#[serial(pty)]
 fn test_eof_no_requests() {
     let server = MishServer::start();
 
@@ -671,6 +672,7 @@ fn test_eof_no_requests() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_init_response() {
     let mut server = MishServer::start();
 
@@ -692,6 +694,7 @@ fn test_init_response() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_request_ids() {
     let mut server = MishServer::start();
     server.init();
@@ -712,6 +715,7 @@ fn test_request_ids() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_tools_list_schema() {
     let mut server = MishServer::start();
     server.init();
@@ -735,6 +739,7 @@ fn test_tools_list_schema() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_invalid_json() {
     let mut server = MishServer::start();
 
@@ -749,6 +754,7 @@ fn test_invalid_json() {
 }
 
 #[test]
+#[serial(pty)]
 fn test_before_init_error() {
     let mut server = MishServer::start();
 
