@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::fmt;
+use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::mcp::types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, ERR_INVALID_REQUEST, ERR_PARSE_ERROR};
 
@@ -213,6 +215,184 @@ where
         self.writer.write_all(b"\n").await?;
         self.writer.flush().await?;
         Ok(())
+    }
+}
+
+// ----- SharedWriter -----
+
+/// Clone-able writer wrapping `Arc<TokioMutex<W>>`.
+///
+/// Ensures no interleaved bytes on the underlying writer when multiple
+/// tasks write concurrently — each write acquires the mutex, serializes,
+/// writes, and flushes before releasing.
+pub struct SharedWriter<W> {
+    inner: Arc<TokioMutex<W>>,
+}
+
+impl<W> Clone for SharedWriter<W> {
+    fn clone(&self) -> Self {
+        SharedWriter {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<W> SharedWriter<W>
+where
+    W: AsyncWrite + Unpin,
+{
+    /// Create a new SharedWriter wrapping the given writer.
+    pub fn new(writer: W) -> Self {
+        SharedWriter {
+            inner: Arc::new(TokioMutex::new(writer)),
+        }
+    }
+
+    /// Write a JSON-RPC response. Acquires lock, serializes, writes, flushes.
+    pub async fn write_response(&self, response: JsonRpcResponse) -> Result<(), TransportError> {
+        let json = serde_json::to_string(&response)
+            .map_err(|e| TransportError::ParseError(format!("Failed to serialize response: {}", e)))?;
+        let mut w = self.inner.lock().await;
+        w.write_all(json.as_bytes()).await?;
+        w.write_all(b"\n").await?;
+        w.flush().await?;
+        Ok(())
+    }
+
+    /// Write a JSON-RPC notification. Acquires lock, serializes, writes, flushes.
+    pub async fn write_notification(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(), TransportError> {
+        let notification = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params: if params.is_null() { None } else { Some(params) },
+        };
+        let json = serde_json::to_string(&notification)
+            .map_err(|e| TransportError::ParseError(format!("Failed to serialize notification: {}", e)))?;
+        let mut w = self.inner.lock().await;
+        w.write_all(json.as_bytes()).await?;
+        w.write_all(b"\n").await?;
+        w.flush().await?;
+        Ok(())
+    }
+}
+
+// ----- TransportReader -----
+
+/// Reader half of a split transport. Owns the reader + a SharedWriter clone
+/// for writing inline error responses (parse errors, invalid requests).
+pub struct TransportReader<R, W> {
+    reader: R,
+    writer: SharedWriter<W>,
+}
+
+impl<R, W> TransportReader<R, W>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    /// Read the next JSON-RPC request from the input.
+    ///
+    /// Same logic as `StdioTransport::read_request()` — writes inline error
+    /// responses for parse errors and invalid requests via the SharedWriter.
+    pub async fn read_request(&mut self) -> Result<Option<JsonRpcRequest>, TransportError> {
+        loop {
+            let mut line = String::new();
+            let bytes_read = self.reader.read_line(&mut line).await?;
+
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let raw_value: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(e) => {
+                    let error_resp = JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: serde_json::Value::Null,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: ERR_PARSE_ERROR,
+                            message: format!("Parse error: {}", e),
+                            data: None,
+                        }),
+                    };
+                    self.writer.write_response(error_resp).await?;
+                    continue;
+                }
+            };
+
+            let jsonrpc_field = raw_value.get("jsonrpc");
+            let id_value = raw_value
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
+            match jsonrpc_field {
+                Some(v) if v == "2.0" => {}
+                _ => {
+                    let error_resp = JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: id_value,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: ERR_INVALID_REQUEST,
+                            message: "Invalid Request: jsonrpc field must be \"2.0\"".to_string(),
+                            data: None,
+                        }),
+                    };
+                    self.writer.write_response(error_resp).await?;
+                    continue;
+                }
+            }
+
+            match serde_json::from_value::<JsonRpcRequest>(raw_value) {
+                Ok(req) => return Ok(Some(req)),
+                Err(e) => {
+                    let error_resp = JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: id_value,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: ERR_INVALID_REQUEST,
+                            message: format!("Invalid Request: {}", e),
+                            data: None,
+                        }),
+                    };
+                    self.writer.write_response(error_resp).await?;
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+// ----- into_split -----
+
+impl<R, W> StdioTransport<R, W>
+where
+    W: AsyncWrite + Unpin,
+{
+    /// Consume the transport and return a `(TransportReader, SharedWriter)` pair.
+    ///
+    /// The `SharedWriter` is `Clone`-able so it can be shared across concurrent
+    /// tasks. The `TransportReader` owns the reader half and a writer clone for
+    /// inline error responses.
+    pub fn into_split(self) -> (TransportReader<R, W>, SharedWriter<W>) {
+        let shared = SharedWriter::new(self.writer);
+        let reader = TransportReader {
+            reader: self.reader,
+            writer: shared.clone(),
+        };
+        (reader, shared)
     }
 }
 
@@ -547,5 +727,80 @@ mod tests {
             TransportError::IoError(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset),
             _ => panic!("Expected IoError variant"),
         }
+    }
+
+    // ---- Test 17: SharedWriter concurrent writes produce valid JSON lines ----
+
+    #[tokio::test]
+    async fn shared_writer_concurrent_writes() {
+        let buf: Vec<u8> = Vec::new();
+        let writer = SharedWriter::new(buf);
+
+        let mut handles = Vec::new();
+        for i in 0..10u32 {
+            let w = writer.clone();
+            handles.push(tokio::spawn(async move {
+                let resp = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: json!(i),
+                    result: Some(json!({"task": i})),
+                    error: None,
+                };
+                w.write_response(resp).await.unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Read back all written data
+        let data = writer.inner.lock().await;
+        let text = String::from_utf8(data.clone()).unwrap();
+        let lines: Vec<&str> = text.trim().lines().collect();
+        assert_eq!(lines.len(), 10, "Expected 10 JSON lines, got {}", lines.len());
+
+        // Each line must be valid JSON with correct structure
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(parsed["jsonrpc"], "2.0");
+            assert!(parsed["result"]["task"].is_number());
+        }
+    }
+
+    // ---- Test 18: into_split reader works ----
+
+    #[tokio::test]
+    async fn into_split_reader_works() {
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+        let input_with_newline = format!("{}\n", input);
+        let transport = make_transport(&input_with_newline);
+        let (mut reader, _writer) = transport.into_split();
+
+        let req = reader.read_request().await.unwrap().unwrap();
+        assert_eq!(req.id, json!(1));
+        assert_eq!(req.method, "test");
+    }
+
+    // ---- Test 19: into_split writer works ----
+
+    #[tokio::test]
+    async fn into_split_writer_works() {
+        let transport = make_transport("");
+        let (_reader, writer) = transport.into_split();
+
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: json!(42),
+            result: Some(json!({"ok": true})),
+            error: None,
+        };
+        writer.write_response(resp).await.unwrap();
+
+        let data = writer.inner.lock().await;
+        let text = String::from_utf8(data.clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(parsed["id"], 42);
+        assert_eq!(parsed["result"]["ok"], true);
     }
 }

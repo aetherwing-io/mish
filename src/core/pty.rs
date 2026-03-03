@@ -104,6 +104,12 @@ impl PtyCapture {
                     libc::setenv(b"COLUMNS\0".as_ptr().cast(), col.as_ptr(), 1);
                     libc::setenv(b"LINES\0".as_ptr().cast(), row.as_ptr(), 1);
                     libc::setenv(b"TERM\0".as_ptr().cast(), term.as_ptr(), 1);
+
+                    // Suppress pagers — mish PTYs are non-interactive.
+                    let cat = CString::new("cat").unwrap();
+                    libc::setenv(b"PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
+                    libc::setenv(b"GIT_PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
+                    libc::setenv(b"MANPAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
                 }
 
                 let program =
@@ -758,5 +764,57 @@ mod tests {
 
         let status = pty.wait_async().await.expect("wait_async failed");
         assert_eq!(status.code, Some(7));
+    }
+
+    // Test pager env vars are suppressed in child
+    #[test]
+    #[serial(pty)]
+    fn test_pager_env_suppressed() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo PAGER=$PAGER GIT_PAGER=$GIT_PAGER MANPAGER=$MANPAGER".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let all_bytes = read_all(&pty, Duration::from_secs(5));
+        let output = String::from_utf8_lossy(&all_bytes);
+
+        assert!(
+            output.contains("PAGER=cat"),
+            "expected PAGER=cat in output, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("GIT_PAGER=cat"),
+            "expected GIT_PAGER=cat in output, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("MANPAGER=cat"),
+            "expected MANPAGER=cat in output, got: {:?}",
+            output
+        );
+    }
+
+    // Test git log completes (doesn't hang on pager)
+    #[test]
+    #[serial(pty)]
+    fn test_git_log_no_pager_hang() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "git log --oneline -5 2>/dev/null || echo no-git-repo".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let all_bytes = read_all(&pty, Duration::from_secs(5));
+        let output = String::from_utf8_lossy(&all_bytes);
+
+        // Should complete without hanging — either git output or fallback
+        assert!(
+            !output.is_empty(),
+            "git log should produce output without hanging on pager"
+        );
     }
 }

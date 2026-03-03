@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::sync::watch;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::task::JoinSet;
 
 use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
 use crate::config::{load_config, MishConfig};
@@ -64,7 +65,7 @@ impl From<std::io::Error> for ServerError {
 pub struct McpServer {
     session_manager: Arc<SessionManager>,
     process_table: Arc<TokioMutex<ProcessTable>>,
-    dispatcher: McpDispatcher,
+    dispatcher: Arc<McpDispatcher>,
     config: Arc<MishConfig>,
 }
 
@@ -85,7 +86,7 @@ impl McpServer {
         Ok(Self {
             session_manager,
             process_table,
-            dispatcher,
+            dispatcher: Arc::new(dispatcher),
             config,
         })
     }
@@ -259,13 +260,16 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
         }
     });
 
-    let mut transport = StdioTransport::new();
+    let transport = StdioTransport::new();
+    let (mut reader, writer) = transport.into_split();
     let mut shutdown_rx_loop = shutdown_rx;
     let mut session_handle = Some(session_handle);
+    let mut inflight: JoinSet<()> = JoinSet::new();
+    let dispatcher = server.dispatcher.clone();
     let run_result: Result<(), ServerError> = async {
         loop {
             tokio::select! {
-                result = transport.read_request() => {
+                result = reader.read_request() => {
                     match result {
                         Ok(Some(request)) => {
                             // Before the first tools/call, ensure the main
@@ -277,18 +281,23 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
                                     let _ = handle.await;
                                 }
                             }
-                            if let Some(response) = server.dispatcher.dispatch(request).await {
-                                transport
-                                    .write_response(response)
-                                    .await
-                                    .map_err(|e| ServerError::Transport(e.to_string()))?;
-                            }
+                            let d = dispatcher.clone();
+                            let w = writer.clone();
+                            inflight.spawn(async move {
+                                if let Some(response) = d.dispatch(request).await {
+                                    if let Err(e) = w.write_response(response).await {
+                                        tracing::error!("write_response error: {e}");
+                                    }
+                                }
+                            });
                         }
                         Ok(None) => break,
                         Err(TransportError::Eof) => break,
                         Err(e) => return Err(ServerError::Transport(e.to_string())),
                     }
                 }
+                // Reap completed tasks (ignore results — errors logged inside)
+                Some(_) = inflight.join_next(), if !inflight.is_empty() => {}
                 _ = shutdown_rx_loop.changed() => {
                     if *shutdown_rx_loop.borrow() {
                         break;
@@ -296,6 +305,16 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
                 }
             }
         }
+
+        // Drain in-flight tasks with a 5s timeout
+        if !inflight.is_empty() {
+            let drain = async {
+                while inflight.join_next().await.is_some() {}
+            };
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), drain).await;
+            inflight.abort_all();
+        }
+
         Ok(())
     }.await;
 
