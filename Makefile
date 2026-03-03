@@ -1,4 +1,4 @@
-.PHONY: test test-lib test-integration clean-zombies build release
+.PHONY: test test-claude test-all clean-zombies build release
 
 # Kill orphaned test runners from previous aborted runs.
 # These hold PTY file descriptors and cargo locks, blocking new test runs.
@@ -6,17 +6,18 @@ clean-zombies:
 	@pkill -f 'target/debug/deps/mish-' 2>/dev/null || true
 	@pkill -f 'target/release/deps/mish-' 2>/dev/null || true
 
-# Run all tests (cleans zombies first)
+# Inner loop: lib + grammar + MCP + CLI integration (~20s)
 test: clean-zombies
+	cargo test --lib --test grammar_tests --test fixture_pipeline_tests \
+	  --test mcp_integration --test cli_integration
+
+# Pre-release: Claude Code compat + stdout contamination (~35s)
+test-claude: clean-zombies
+	cargo test --test claude_code_compat --test stdout_contamination
+
+# Everything
+test-all: clean-zombies
 	cargo test
-
-# Run only lib + grammar tests (fast, no integration)
-test-lib: clean-zombies
-	cargo test --lib
-
-# Run integration tests only
-test-integration: clean-zombies
-	cargo test --test grammar_tests --test fixture_pipeline_tests
 
 # Build debug
 build:
