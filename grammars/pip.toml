@@ -1,0 +1,90 @@
+[tool]
+name = "pip"
+detect = ["pip", "pip3"]
+inherit = ["ansi-progress", "python-traceback"]
+
+[[global_noise]]
+# Downloading/Using cached progress lines
+pattern = '^\s+(Downloading|Using cached)\s+'
+action = "dedup"
+
+[[global_noise]]
+# Progress bar lines (pip uses ━ characters)
+pattern = '^\s+[━\-]+\s+'
+action = "strip"
+
+# ---- install action ----
+
+[actions.install]
+detect = ["install", "i"]
+
+[[actions.install.noise]]
+# Collecting lines (dependency resolution)
+pattern = '^Collecting\s+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Requirement already satisfied
+pattern = '^Requirement already satisfied'
+action = "dedup"
+
+[[actions.install.noise]]
+# Installing collected packages list
+pattern = '^Installing collected packages:'
+action = "strip"
+
+[[actions.install.hazard]]
+pattern = 'ERROR:\s+'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+pattern = 'Could not (find|install|build)'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+# Dependency resolution failures
+pattern = 'ResolutionImpossible|conflicting'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+# Deprecation warnings from pip itself
+pattern = 'DEPRECATION:'
+severity = "warning"
+action = "keep"
+
+[[actions.install.outcome]]
+pattern = '^Successfully installed\s+(?P<packages>.+)'
+action = "promote"
+captures = ["packages"]
+
+[[actions.install.outcome]]
+pattern = '^Successfully uninstalled'
+action = "promote"
+
+[actions.install.summary]
+success = "+ installed {packages}"
+failure = "! pip install failed (exit {exit_code})"
+partial = "... installing ({lines} lines)"
+
+# ---- uninstall action ----
+
+[actions.uninstall]
+detect = ["uninstall"]
+
+[[actions.uninstall.outcome]]
+pattern = '^Successfully uninstalled'
+action = "promote"
+
+[actions.uninstall.summary]
+success = "+ uninstalled"
+failure = "! pip uninstall failed (exit {exit_code})"
+partial = "... uninstalling ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["-q"]
+recommend = ["-qq"]

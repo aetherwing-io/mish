@@ -1,0 +1,17 @@
+Collecting flask>=2.0
+  Downloading flask-3.0.2-py3-none-any.whl (101 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 101.3/101.3 kB 2.1 MB/s eta 0:00:00
+Collecting click>=8.1.3 (from flask>=2.0)
+  Downloading click-8.1.7-py3-none-any.whl (97 kB)
+Collecting itsdangerous>=2.1.2 (from flask>=2.0)
+  Using cached itsdangerous-2.1.2-py3-none-any.whl (15 kB)
+Collecting Jinja2>=3.1.2 (from flask>=2.0)
+  Using cached Jinja2-3.1.3-py3-none-any.whl (133 kB)
+Collecting Werkzeug>=3.0.0 (from flask>=2.0)
+  Downloading Werkzeug-3.0.1-py3-none-any.whl (226 kB)
+Collecting blinker>=1.6.2 (from flask>=2.0)
+  Using cached blinker-1.7.0-py3-none-any.whl (13 kB)
+Collecting MarkupSafe>=2.0 (from Jinja2>=3.1.2->flask>=2.0)
+  Using cached MarkupSafe-2.1.5-cp312-cp312-manylinux_2_17_x86_64.whl (23 kB)
+Installing collected packages: MarkupSafe, itsdangerous, click, blinker, Werkzeug, Jinja2, flask
+Successfully installed Jinja2-3.1.3 MarkupSafe-2.1.5 Werkzeug-3.0.1 blinker-1.7.0 click-8.1.7 flask-3.0.2 itsdangerous-2.1.2

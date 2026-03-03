@@ -432,37 +432,23 @@ fn test_19_cargo_build_summary_failure() {
 }
 
 // ===========================================================================
-// Test 20: load_all_grammars loads all 5 grammars from the directory
+// Test 20: load_all_grammars loads all grammars from the directory
 // ===========================================================================
 
 #[test]
-fn test_20_load_all_grammars_loads_all_five() {
+fn test_20_load_all_grammars_loads_all() {
     let grammars = build_grammars_map();
 
-    assert!(
-        grammars.contains_key("npm"),
-        "load_all_grammars should load npm"
-    );
-    assert!(
-        grammars.contains_key("cargo"),
-        "load_all_grammars should load cargo"
-    );
-    assert!(
-        grammars.contains_key("git"),
-        "load_all_grammars should load git"
-    );
-    assert!(
-        grammars.contains_key("docker"),
-        "load_all_grammars should load docker"
-    );
-    assert!(
-        grammars.contains_key("make"),
-        "load_all_grammars should load make"
-    );
+    for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest"] {
+        assert!(
+            grammars.contains_key(*name),
+            "load_all_grammars should load {name}"
+        );
+    }
 
     // Verify all grammars have had inheritance resolved
     let npm = grammars.get("npm").unwrap();
-    // npm inherits ansi-progress (2 rules) + node-stacktrace (2 rules) + own 2 global_noise = 6
+    // npm inherits ansi-progress (4 rules) + node-stacktrace (1 rule) + own 2 global_noise
     assert!(
         npm.global_noise.len() >= 4,
         "npm global_noise should include inherited + own rules, got {}",
@@ -845,4 +831,205 @@ fn test_docker_up_hazard_error() {
     let result = evaluate_line(grammar, Some(up), line);
     assert!(matches!(result, RuleMatch::Hazard { .. }),
         "exited with code 1 should be Hazard, got {:?}", result);
+}
+
+// ===========================================================================
+// pip + pytest grammar tests (e1)
+// ===========================================================================
+
+#[test]
+fn test_pip_grammar_parses() {
+    let grammar = load_tool_grammar("pip");
+    assert_eq!(grammar.tool.name, "pip");
+    assert_eq!(grammar.detect, vec!["pip", "pip3"]);
+    assert_eq!(grammar.inherit, vec!["ansi-progress", "python-traceback"]);
+    assert!(grammar.actions.contains_key("install"));
+    assert!(grammar.actions.contains_key("uninstall"));
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_pytest_grammar_parses() {
+    let grammar = load_tool_grammar("pytest");
+    assert_eq!(grammar.tool.name, "pytest");
+    assert_eq!(grammar.detect, vec!["pytest", "py.test"]);
+    assert_eq!(grammar.inherit, vec!["python-traceback"]);
+    assert!(grammar.fallback.is_some());
+}
+
+#[test]
+fn test_detect_tool_pip() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["pip", "install", "flask"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "pip should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "pip");
+    assert!(a.is_some(), "install action should be resolved");
+}
+
+#[test]
+fn test_detect_tool_pip3() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["pip3", "install", "requests"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "pip3 should be detected as pip");
+    assert_eq!(result.unwrap().0.tool.name, "pip");
+}
+
+#[test]
+fn test_detect_tool_pytest() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["pytest", "-v"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "pytest should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "pytest");
+    assert!(a.is_some(), "fallback action should be resolved for pytest");
+}
+
+#[test]
+fn test_pip_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("pip").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    // Outcome: Successfully installed line
+    let outcome_line = "Successfully installed Jinja2-3.1.3 MarkupSafe-2.1.5 flask-3.0.2";
+    let matched = install.outcome.iter().any(|r| r.pattern.is_match(outcome_line));
+    assert!(matched, "pip install outcome should match 'Successfully installed'");
+
+    // Noise: Collecting lines
+    let collect_line = "Collecting flask>=2.0";
+    let noise_matched = install.noise.iter().any(|r| r.pattern.is_match(collect_line));
+    assert!(noise_matched, "pip install noise should match 'Collecting'");
+
+    // Noise: Requirement already satisfied
+    let req_line = "Requirement already satisfied: setuptools in /usr/lib/python3/dist-packages";
+    let req_matched = install.noise.iter().any(|r| r.pattern.is_match(req_line));
+    assert!(req_matched, "pip install noise should match 'Requirement already satisfied'");
+
+    // Hazard: ERROR
+    let error_line = "ERROR: Could not install packages due to an OSError";
+    let error_matched = install.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(error_matched, "pip install hazard should match 'ERROR:'");
+
+    // Hazard: Could not find
+    let find_line = "Could not find a version that satisfies the requirement";
+    let find_matched = install.hazard.iter().any(|r| r.pattern.is_match(find_line));
+    assert!(find_matched, "pip install hazard should match 'Could not find'");
+
+    // Global noise: Downloading lines
+    let dl_line = "  Downloading flask-3.0.2-py3-none-any.whl (101 kB)";
+    let dl_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(dl_line));
+    assert!(dl_matched, "pip global_noise should match 'Downloading' line");
+}
+
+#[test]
+fn test_pytest_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("pytest").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: passing test lines
+    let pass_line = "tests/test_auth.py::test_login_success PASSED";
+    let pass_matched = fallback.noise.iter().any(|r| r.pattern.is_match(pass_line));
+    assert!(pass_matched, "pytest noise should match PASSED test line");
+
+    // Hazard: FAILED test line
+    let fail_line = "tests/test_api.py::test_delete_user FAILED";
+    let fail_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(fail_line));
+    assert!(fail_matched, "pytest hazard should match FAILED test line");
+
+    // Hazard: FAILED in short summary
+    let summary_fail = "FAILED tests/test_api.py::test_delete_user - AssertionError";
+    let sf_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(summary_fail));
+    assert!(sf_matched, "pytest hazard should match FAILED summary line");
+
+    // Outcome: combined result with failed/passed/time
+    let result_line = "2 failed, 5 passed in 1.23s";
+    let outcome_matched = fallback.outcome.iter().any(|r| r.pattern.is_match(result_line));
+    assert!(outcome_matched, "pytest outcome should match combined result line");
+
+    // Global noise: separator lines
+    let sep_line = "============================== test session starts ==============================";
+    let sep_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(sep_line));
+    assert!(sep_matched, "pytest global_noise should match separator line with text");
+
+    // Global noise: platform info
+    let platform_line = "platform linux -- Python 3.12.1, pytest-8.0.2, pluggy-1.4.0";
+    let plat_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(platform_line));
+    assert!(plat_matched, "pytest global_noise should match platform info line");
+
+    // Global noise: collected items
+    let collected_line = "collected 12 items";
+    let coll_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(collected_line));
+    assert!(coll_matched, "pytest global_noise should match 'collected N items'");
+}
+
+#[test]
+fn test_pip_outcome_captures_from_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("pip").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    let fixture = load_fixture("pip_install.txt");
+    let mut captured = HashMap::new();
+
+    for line in fixture.lines() {
+        for rule in &install.outcome {
+            if let Some(caps) = rule.pattern.captures(line) {
+                for name in &rule.captures {
+                    if let Some(m) = caps.name(name) {
+                        captured.insert(name.clone(), m.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(captured.contains_key("packages"),
+        "pip install fixture should capture packages");
+    let packages = captured.get("packages").unwrap();
+    assert!(packages.contains("flask"),
+        "captured packages should contain flask, got: {}", packages);
+}
+
+#[test]
+fn test_pip_inherits_python_traceback() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("pip").unwrap();
+
+    // Inherited python-traceback: File "..." line N
+    let frame_line = "  File \"/usr/lib/python3/site.py\", line 42";
+    let matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(frame_line));
+    assert!(matched,
+        "pip should inherit python-traceback matching File frame");
+}
+
+#[test]
+fn test_pytest_summary_format() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("pytest").unwrap();
+    let action = grammar.fallback.as_ref().unwrap();
+
+    let outcomes = vec![CapturedOutcome {
+        captures: HashMap::from([
+            ("failed".to_string(), "2".to_string()),
+            ("passed".to_string(), "5".to_string()),
+            ("time".to_string(), "1.23s".to_string()),
+        ]),
+    }];
+
+    let result = format_summary(grammar, Some(action), &outcomes, 1);
+    assert_eq!(result, vec!["! 2 failed, 5 passed (1.23s)"]);
 }

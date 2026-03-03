@@ -1823,12 +1823,10 @@ action = "strip"
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
         let grammars = load_all_grammars(&dir).unwrap();
 
-        // All 5 grammars should be loaded
-        assert!(grammars.contains_key("npm"), "should load npm");
-        assert!(grammars.contains_key("cargo"), "should load cargo");
-        assert!(grammars.contains_key("git"), "should load git");
-        assert!(grammars.contains_key("docker"), "should load docker");
-        assert!(grammars.contains_key("make"), "should load make");
+        // All grammars should be loaded
+        for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest"] {
+            assert!(grammars.contains_key(*name), "should load {name}");
+        }
 
         // npm should have inherited rules appended to global_noise
         let npm = grammars.get("npm").unwrap();

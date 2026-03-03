@@ -1,0 +1,96 @@
+[tool]
+name = "pytest"
+detect = ["pytest", "py.test"]
+inherit = ["python-traceback"]
+
+[[global_noise]]
+# Separator lines (=== and ___)
+pattern = '^[=_\-]{10,}$'
+action = "strip"
+
+[[global_noise]]
+# Separator lines with text (=== FAILURES === etc.)
+pattern = '^[=_\-]{3,}\s+.+\s+[=_\-]{3,}$'
+action = "strip"
+
+[[global_noise]]
+# Platform/plugin info lines
+pattern = '^(platform|plugins|rootdir|configfile|cachedir)[\s:]'
+action = "strip"
+
+[[global_noise]]
+# Collected count
+pattern = '^collected \d+ items?'
+action = "strip"
+
+# ---- default (test) action via fallback ----
+
+[fallback]
+
+[[fallback.noise]]
+# Individual passing test lines
+pattern = '^\S+::\S+\s+PASSED'
+action = "dedup"
+
+[[fallback.noise]]
+# Verbose dots/letters progress
+pattern = '^[.sFxX]+$'
+action = "strip"
+
+[[fallback.noise]]
+# Coverage report lines
+pattern = '^\s*\S+\.py\s+\d+\s+\d+\s+\d+%'
+action = "dedup"
+
+[[fallback.hazard]]
+# Failed test line
+pattern = '^\S+::\S+\s+FAILED'
+severity = "error"
+action = "keep"
+multiline = 10
+
+[[fallback.hazard]]
+# FAILED in short summary
+pattern = '^FAILED\s+'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Error during collection
+pattern = '^(ERROR|E)\s+'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Assertion line in traceback
+pattern = '^\s*>\s+'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# AssertionError details
+pattern = '^E\s+'
+severity = "error"
+action = "keep"
+
+[[fallback.outcome]]
+pattern = '^(?P<passed>\d+) passed'
+action = "promote"
+captures = ["passed"]
+
+[[fallback.outcome]]
+# Combined result: "2 failed, 5 passed in 1.23s"
+pattern = '(?P<failed>\d+) failed.+(?P<passed>\d+) passed.+in (?P<time>.+)$'
+action = "promote"
+captures = ["failed", "passed", "time"]
+
+[[fallback.outcome]]
+# All passed: "12 passed in 0.45s"
+pattern = '(?P<passed>\d+) passed in (?P<time>.+)$'
+action = "promote"
+captures = ["passed", "time"]
+
+[fallback.summary]
+success = "+ {passed} tests passed ({time})"
+failure = "! {failed} failed, {passed} passed ({time})"
+partial = "... testing ({lines} lines)"
