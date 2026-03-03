@@ -427,6 +427,7 @@ detect = ["good"]
     // Test: RuntimeConfig integrates correctly with router::route()
     // -----------------------------------------------------------------------
     #[test]
+    #[serial_test::serial(pty)]
     fn test_runtime_config_with_router() {
         let rc = default_runtime_config();
 

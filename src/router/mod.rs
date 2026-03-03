@@ -158,7 +158,7 @@ fn dispatch(
             Ok((HandlerOutput::Interactive(result), exit_code))
         }
         Category::Dangerous => {
-            let result = crate::handlers::dangerous::handle(cmd, dangerous_patterns, exec_mode)?;
+            let result = crate::handlers::dangerous::handle(cmd, dangerous_patterns, exec_mode, None)?;
             let exit_code = result.exit_code.unwrap_or(0);
             Ok((HandlerOutput::Dangerous(result), exit_code))
         }

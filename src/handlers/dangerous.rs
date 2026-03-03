@@ -3,13 +3,33 @@
 /// CLI: warn on terminal -> prompt human -> maybe execute.
 /// MCP: return structured warning -> policy engine -> LLM decides or escalates.
 
+use crate::policy::config::CompiledPolicy;
+use crate::policy::matcher::{check_forbidden, PolicyDecision};
 use crate::router::categories::{DangerousPattern, ExecutionMode};
+
+/// What action was taken for a dangerous command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyAction {
+    /// Command was blocked by policy forbidden rule.
+    Blocked,
+    /// Warning returned to LLM for decision (MCP mode).
+    Warning,
+    /// User confirmed execution (CLI mode).
+    Confirmed,
+    /// User denied execution (CLI mode).
+    Denied,
+    /// Command was not dangerous, executed normally.
+    Normal,
+}
 
 /// Result of handling a dangerous command.
 pub struct DangerousResult {
     pub executed: bool,
     pub exit_code: Option<i32>,
     pub warning: String,
+    pub action: PolicyAction,
+    /// Optional policy message when blocked.
+    pub policy_message: Option<String>,
 }
 
 /// Check if a command matches any dangerous pattern.
@@ -60,17 +80,15 @@ fn prompt_confirmation(warning: &str) -> bool {
 
 /// Handle a dangerous command: check patterns, warn, prompt, maybe execute.
 ///
-/// If the command matches a dangerous pattern, display a warning and prompt
-/// the user for confirmation. If confirmed (or if the command is not dangerous),
-/// execute it. Otherwise, abort.
-/// Handle a dangerous command with mode-aware behavior.
+/// In CLI mode: display a warning and prompt the user for confirmation.
+/// In MCP mode: check policy forbidden rules first, then return structured warning.
 ///
-/// CLI mode: warn on terminal, prompt human, maybe execute.
-/// MCP mode: return structured warning without prompting (LLM decides via policy engine).
+/// If the command is not dangerous, execute it normally regardless of mode.
 pub fn handle(
     args: &[String],
     dangerous_patterns: &[DangerousPattern],
     mode: ExecutionMode,
+    policy: Option<&CompiledPolicy>,
 ) -> Result<DangerousResult, Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("No command provided".into());
@@ -78,22 +96,42 @@ pub fn handle(
 
     // Check if the command matches any dangerous pattern
     if let Some((warning, _reason)) = check_dangerous(args, dangerous_patterns) {
+        let full_command = args.join(" ");
+
         match mode {
             ExecutionMode::Mcp => {
-                // MCP mode: return structured warning, never prompt on terminal
+                // Check policy forbidden rules first
+                if let Some(pol) = policy {
+                    if let Some(PolicyDecision::Forbidden { message }) =
+                        check_forbidden(&full_command, pol)
+                    {
+                        return Ok(DangerousResult {
+                            executed: false,
+                            exit_code: None,
+                            warning: format!("\u{26a0} BLOCKED by policy: {}", message),
+                            action: PolicyAction::Blocked,
+                            policy_message: Some(message),
+                        });
+                    }
+                }
+                // Not forbidden -> return warning for LLM to decide
                 Ok(DangerousResult {
                     executed: false,
                     exit_code: None,
                     warning,
+                    action: PolicyAction::Warning,
+                    policy_message: None,
                 })
             }
             ExecutionMode::Cli => {
-                // CLI mode: prompt user for confirmation
+                // Prompt user for confirmation
                 if !prompt_confirmation(&warning) {
                     return Ok(DangerousResult {
                         executed: false,
                         exit_code: None,
                         warning,
+                        action: PolicyAction::Denied,
+                        policy_message: None,
                     });
                 }
 
@@ -111,6 +149,8 @@ pub fn handle(
                     executed: true,
                     exit_code: Some(exit_code),
                     warning,
+                    action: PolicyAction::Confirmed,
+                    policy_message: None,
                 })
             }
         }
@@ -129,6 +169,8 @@ pub fn handle(
             executed: true,
             exit_code: Some(exit_code),
             warning: String::new(),
+            action: PolicyAction::Normal,
+            policy_message: None,
         })
     }
 }
@@ -140,6 +182,8 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::policy::config::CompiledPolicy;
     use regex::Regex;
 
     /// Helper: load the 9 dangerous patterns from the spec.
@@ -182,6 +226,12 @@ mod tests {
                 reason: "Create filesystem (overwrites partition)".to_string(),
             },
         ]
+    }
+
+    /// Helper: compile a policy from a TOML string.
+    fn compile_policy(toml_str: &str) -> CompiledPolicy {
+        let cfg = config::load_config_from_str(toml_str).expect("test TOML should parse");
+        CompiledPolicy::compile(&cfg).expect("should compile")
     }
 
     // Test 5: Dangerous pattern matching — all 9 patterns detected
@@ -294,5 +344,158 @@ mod tests {
         // Empty args
         let empty: Vec<String> = vec![];
         assert!(check_dangerous(&empty, &patterns).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Policy integration tests
+    // -----------------------------------------------------------------------
+
+    // Test: MCP forbidden -> blocked, never executed
+    #[test]
+    fn test_mcp_forbidden_blocked() {
+        let patterns = test_patterns();
+        let policy = compile_policy(
+            r#"
+[[policy.forbidden]]
+pattern = 'rm\s+-rf'
+action = "block"
+message = "Recursive force delete is forbidden"
+"#,
+        );
+
+        let args = vec!["rm".to_string(), "-rf".to_string(), "/tmp/foo".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, Some(&policy)).unwrap();
+
+        assert!(!result.executed);
+        assert!(result.exit_code.is_none());
+        assert_eq!(result.action, PolicyAction::Blocked);
+        assert!(result.warning.contains("BLOCKED by policy"));
+        assert!(result.policy_message.is_some());
+        assert_eq!(
+            result.policy_message.unwrap(),
+            "Recursive force delete is forbidden"
+        );
+    }
+
+    // Test: MCP dangerous but not forbidden -> warning
+    #[test]
+    fn test_mcp_dangerous_not_forbidden_warning() {
+        let patterns = test_patterns();
+        // Policy has a forbidden rule, but it doesn't match this command
+        let policy = compile_policy(
+            r#"
+[[policy.forbidden]]
+pattern = 'docker\s+system\s+prune'
+action = "block"
+message = "Docker prune forbidden"
+"#,
+        );
+
+        let args = vec!["rm".to_string(), "-rf".to_string(), "/tmp/foo".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, Some(&policy)).unwrap();
+
+        assert!(!result.executed);
+        assert!(result.exit_code.is_none());
+        assert_eq!(result.action, PolicyAction::Warning);
+        assert!(result.warning.contains("\u{26a0}"));
+        assert!(result.warning.contains("proceed? [y/N]"));
+        assert!(result.policy_message.is_none());
+    }
+
+    // Test: MCP dangerous, no policy -> warning
+    #[test]
+    fn test_mcp_dangerous_no_policy_warning() {
+        let patterns = test_patterns();
+
+        let args = vec!["rm".to_string(), "-rf".to_string(), "/tmp/foo".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, None).unwrap();
+
+        assert!(!result.executed);
+        assert!(result.exit_code.is_none());
+        assert_eq!(result.action, PolicyAction::Warning);
+        assert!(result.warning.contains("\u{26a0}"));
+        assert!(result.policy_message.is_none());
+    }
+
+    // Test: Forbidden policy message included
+    #[test]
+    fn test_forbidden_policy_message_included() {
+        let patterns = test_patterns();
+        let policy = compile_policy(
+            r#"
+[[policy.forbidden]]
+pattern = 'git\s+push\s+.*--force'
+action = "block"
+message = "Force push to remote is not allowed"
+"#,
+        );
+
+        let args = vec![
+            "git".to_string(),
+            "push".to_string(),
+            "origin".to_string(),
+            "main".to_string(),
+            "--force".to_string(),
+        ];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, Some(&policy)).unwrap();
+
+        assert_eq!(result.action, PolicyAction::Blocked);
+        assert_eq!(
+            result.policy_message,
+            Some("Force push to remote is not allowed".to_string())
+        );
+        assert!(result
+            .warning
+            .contains("Force push to remote is not allowed"));
+    }
+
+    // Test: Non-dangerous with policy -> normal execution
+    #[test]
+    fn test_non_dangerous_with_policy_normal() {
+        let patterns = test_patterns();
+        let policy = compile_policy(
+            r#"
+[[policy.forbidden]]
+pattern = 'rm\s+-rf'
+action = "block"
+message = "Blocked"
+"#,
+        );
+
+        // echo is not dangerous
+        let args = vec!["echo".to_string(), "hello".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, Some(&policy)).unwrap();
+
+        assert!(result.executed);
+        assert_eq!(result.action, PolicyAction::Normal);
+        assert!(result.warning.is_empty());
+        assert!(result.policy_message.is_none());
+    }
+
+    // Test: Action enum on CLI confirmed
+    // We can't easily test the interactive prompt, so we test through
+    // the non-dangerous path which always executes in CLI mode.
+    #[test]
+    fn test_action_enum_cli_normal() {
+        let patterns = test_patterns();
+
+        // Non-dangerous command in CLI mode -> Normal (executed)
+        let args = vec!["echo".to_string(), "hello".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Cli, None).unwrap();
+
+        assert!(result.executed);
+        assert_eq!(result.action, PolicyAction::Normal);
+    }
+
+    // Test: MCP mode non-dangerous -> Normal action
+    #[test]
+    fn test_action_enum_mcp_normal() {
+        let patterns = test_patterns();
+
+        let args = vec!["echo".to_string(), "hello".to_string()];
+        let result = handle(&args, &patterns, ExecutionMode::Mcp, None).unwrap();
+
+        assert!(result.executed);
+        assert_eq!(result.action, PolicyAction::Normal);
     }
 }

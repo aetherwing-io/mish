@@ -568,3 +568,123 @@ fn test_35_rapid_exit() {
         .assert()
         .success();
 }
+
+// =========================================================================
+// 13. Unknown flags passed through to command (not consumed by mish)
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_36_unknown_flags_passed_to_command() {
+    // `mish echo --foo bar` should run `echo --foo bar` — the --foo flag
+    // should be passed through to echo, not consumed by mish.
+    let output = mish()
+        .args(&["echo", "--foo", "bar"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // echo prints its args literally, so --foo should appear in the output
+    assert!(
+        stdout.contains("--foo"),
+        "unknown flag --foo should be passed through to echo, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("bar"),
+        "arg after unknown flag should be present, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_37_double_dash_flags_passed_through() {
+    // Flags with values like --loglevel=warn should pass through
+    let output = mish()
+        .args(&["echo", "--loglevel=warn", "hello"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--loglevel=warn"),
+        "flag with value should pass through, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_38_json_flag_after_command_not_consumed() {
+    // `mish echo --json hello` — the --json appears AFTER the command,
+    // so it should be part of the command args, not consumed as mish's --json flag.
+    // The output should be in human mode (not JSON), with --json in the echoed text.
+    let output = mish()
+        .args(&["echo", "--json", "hello"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // If --json were consumed by mish, the output would be JSON. Since it's
+    // after the command, it should be passed through and appear in echo's output.
+    assert!(
+        stdout.contains("--json"),
+        "--json after command name should be part of echo's output, got: {}",
+        stdout
+    );
+}
+
+// =========================================================================
+// 14. Simple command parsing (bead spec examples)
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_39_npm_install_parsing() {
+    // Bead spec: "mish npm install lodash" → command=["npm","install","lodash"]
+    // Verify the command string appears correctly in JSON output
+    let output = mish()
+        .args(&["--json", "/bin/sh", "-c", "exit 0"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("should be valid JSON");
+
+    // The command field should contain the full command string
+    assert_eq!(
+        parsed["command"], "/bin/sh -c exit 0",
+        "command field should contain full command"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_40_json_flag_extraction() {
+    // Bead spec: "mish --json npm test" → output_mode=JSON, command=["npm","test"]
+    // Since npm may not be available, use echo as proxy
+    let output = mish()
+        .args(&["--json", "echo", "test"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("should be valid JSON");
+
+    // Verify it's JSON output (the --json flag was consumed by mish)
+    assert_eq!(parsed["command"], "echo test");
+    assert_eq!(parsed["exit_code"], 0);
+}

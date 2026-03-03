@@ -198,15 +198,27 @@ impl McpDispatcher {
         }
 
         match tool_result {
-            Ok((result_value, digest)) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id,
-                result: Some(json!({
+            Ok((result_value, digest)) => {
+                // MCP tools/call responses use the content[] array format.
+                // We serialize our structured result + process digest as a
+                // single text content block so Claude Code can display it.
+                let payload = json!({
                     "result": result_value,
                     "processes": digest,
-                })),
-                error: None,
-            },
+                });
+                let text = serde_json::to_string_pretty(&payload)
+                    .unwrap_or_else(|_| payload.to_string());
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(json!({
+                        "content": [
+                            { "type": "text", "text": text }
+                        ]
+                    })),
+                    error: None,
+                }
+            }
             Err((code, message)) => {
                 self.error_with_digest(id, code, message).await
             }
@@ -429,6 +441,14 @@ mod tests {
         d
     }
 
+    /// Extract the tool payload from a content-wrapped MCP tools/call response.
+    /// The response has: result.content[0].text = JSON string with {result, processes}.
+    fn extract_tool_payload(result: &serde_json::Value) -> serde_json::Value {
+        let text = result["content"][0]["text"].as_str()
+            .expect("tools/call response should have content[0].text");
+        serde_json::from_str(text).expect("content text should be valid JSON")
+    }
+
     fn make_request(id: serde_json::Value, method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
         JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -447,9 +467,9 @@ mod tests {
             json!(1),
             "initialize",
             Some(json!({
-                "protocol_version": "2024-11-05",
+                "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "client_info": { "name": "test-client" }
+                "clientInfo": { "name": "test-client" }
             })),
         );
 
@@ -459,10 +479,10 @@ mod tests {
         assert!(resp.error.is_none());
 
         let result = resp.result.unwrap();
-        assert_eq!(result["protocol_version"], "2024-11-05");
-        assert_eq!(result["server_info"]["name"], "mish");
-        assert!(result["server_info"]["version"].is_string());
-        assert_eq!(result["capabilities"]["tools"]["list_changed"], false);
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["serverInfo"]["name"], "mish");
+        assert!(result["serverInfo"]["version"].is_string());
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
     }
 
     // ── Test 2: notifications/initialized returns None ──
@@ -596,10 +616,11 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
+        let payload = extract_tool_payload(&result);
         // sh_help returns tools, watch_presets, etc.
-        assert!(result["result"]["tools"].is_array());
+        assert!(payload["result"]["tools"].is_array());
         // Every tools/call response has a processes field
-        assert!(result["processes"].is_array());
+        assert!(payload["processes"].is_array());
     }
 
     // ── Test 8: tools/call with missing name returns invalid-params ──
@@ -661,8 +682,9 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
-        assert!(result["processes"].is_array());
-        let inner = &result["result"];
+        let payload = extract_tool_payload(&result);
+        assert!(payload["processes"].is_array());
+        let inner = &payload["result"];
         assert_eq!(inner["exit_code"], 0);
         assert!(inner["output"].as_str().unwrap().contains("hello_dispatch"));
 
@@ -694,7 +716,8 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
-        let sessions = &result["result"]["sessions"];
+        let payload = extract_tool_payload(&result);
+        let sessions = &payload["result"]["sessions"];
         assert!(sessions.is_array());
         assert!(sessions.as_array().unwrap().len() >= 1);
 
@@ -871,7 +894,8 @@ mod tests {
 
         // Wait for spawn to finish (timeout after 2s).
         let spawn_resp = spawn_handle.await.unwrap().unwrap();
-        assert_eq!(spawn_resp.result.unwrap()["result"]["wait_matched"], false);
+        let spawn_payload = extract_tool_payload(&spawn_resp.result.unwrap());
+        assert_eq!(spawn_payload["result"]["wait_matched"], false);
 
         sm.close_all().await;
     }

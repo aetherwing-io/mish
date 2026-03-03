@@ -117,14 +117,60 @@ fn format_human(input: &FormatInput) -> String {
 
     let mut lines = Vec::new();
 
+    let has_metadata = input.total_lines.is_some() || input.elapsed_secs.is_some();
+
     match input.category.as_str() {
         "passthrough" => {
             // Passthrough: raw output + footer (no symbol prefix)
             lines.push(input.body.clone());
         }
         _ => {
-            lines.push(format!("{} {}", symbol, input.body));
+            if has_metadata {
+                // Structured header: {symbol} {command}: {total_lines} lines → exit {code} ({elapsed}s)
+                let mut meta_parts = Vec::new();
+                if let Some(total) = input.total_lines {
+                    meta_parts.push(format!("{} lines", total));
+                }
+                let exit_part = format!("exit {}", input.exit_code);
+                let elapsed_part = if let Some(elapsed) = input.elapsed_secs {
+                    format!(" ({}s)", elapsed)
+                } else {
+                    String::new()
+                };
+
+                let meta_str = if meta_parts.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} \u{2192} ", meta_parts.join(", "))
+                };
+
+                lines.push(format!(
+                    "{} {}: {}{}{}",
+                    symbol, input.command, meta_str, exit_part, elapsed_part
+                ));
+
+                // Body lines indented with 2 spaces
+                if !input.body.is_empty() {
+                    for body_line in input.body.lines() {
+                        lines.push(format!("  {}", body_line));
+                    }
+                }
+            } else {
+                // Simple format: {symbol} {body}
+                lines.push(format!("{} {}", symbol, input.body));
+            }
         }
+    }
+
+    // Outcome lines
+    for outcome in &input.outcomes {
+        lines.push(format!("  + {}", outcome));
+    }
+
+    // Hazard lines
+    for hazard in &input.hazards {
+        let prefix = if hazard.severity == "error" { "!" } else { "~" };
+        lines.push(format!("  {} {}", prefix, hazard.text));
     }
 
     // Enrichment lines (indented under the main output)
@@ -137,6 +183,12 @@ fn format_human(input: &FormatInput) -> String {
 
 fn format_json(input: &FormatInput) -> String {
     #[derive(Serialize)]
+    struct JsonEnrichment<'a> {
+        kind: &'a str,
+        message: &'a str,
+    }
+
+    #[derive(Serialize)]
     struct JsonOutput<'a> {
         command: &'a str,
         exit_code: i32,
@@ -145,9 +197,22 @@ fn format_json(input: &FormatInput) -> String {
         elapsed_seconds: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         total_lines: Option<u64>,
+        #[serde(skip_serializing_if = "str::is_empty")]
+        body: &'a str,
         outcomes: &'a [String],
         hazards: &'a [HazardEntry],
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        enrichment: Vec<JsonEnrichment<'a>>,
     }
+
+    let enrichment: Vec<JsonEnrichment> = input
+        .enrichment
+        .iter()
+        .map(|e| JsonEnrichment {
+            kind: &e.kind,
+            message: &e.message,
+        })
+        .collect();
 
     let out = JsonOutput {
         command: &input.command,
@@ -155,8 +220,10 @@ fn format_json(input: &FormatInput) -> String {
         category: &input.category,
         elapsed_seconds: input.elapsed_secs,
         total_lines: input.total_lines,
+        body: &input.body,
         outcomes: &input.outcomes,
         hazards: &input.hazards,
+        enrichment,
     };
 
     serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
@@ -172,9 +239,18 @@ fn format_passthrough(input: &FormatInput) -> String {
         format!("{} {}: exit {}", symbol, input.command, input.exit_code)
     };
 
+    let mut summary_lines = vec![summary_line];
+
+    // Hazard lines in summary section
+    for hazard in &input.hazards {
+        let prefix = if hazard.severity == "error" { "!" } else { "~" };
+        summary_lines.push(format!("  {} {}", prefix, hazard.text));
+    }
+
     format!(
         "{}\n\u{2500}\u{2500} mish summary \u{2500}\u{2500}\n{}",
-        raw, summary_line
+        raw,
+        summary_lines.join("\n")
     )
 }
 
@@ -187,13 +263,34 @@ fn format_context(input: &FormatInput) -> String {
         String::new()
     };
 
+    let elapsed_str = if let Some(elapsed) = input.elapsed_secs {
+        format!(" {}s", elapsed)
+    } else {
+        String::new()
+    };
+
     let hazard_str = if !input.hazards.is_empty() {
-        let h: Vec<String> = input
-            .hazards
+        // Compress identical hazards: count occurrences, show (xN) for N > 1
+        let mut counts: Vec<(String, String, usize)> = Vec::new(); // (prefix, text, count)
+        for h in &input.hazards {
+            let prefix = if h.severity == "error" { "!" } else { "~" };
+            if let Some(entry) = counts
+                .iter_mut()
+                .find(|(p, t, _)| p == prefix && t == &h.text)
+            {
+                entry.2 += 1;
+            } else {
+                counts.push((prefix.to_string(), h.text.clone(), 1));
+            }
+        }
+        let h: Vec<String> = counts
             .iter()
-            .map(|h| {
-                let prefix = if h.severity == "error" { "!" } else { "~" };
-                format!("{}{}", prefix, h.text)
+            .map(|(prefix, text, count)| {
+                if *count > 1 {
+                    format!("{}{}(x{})", prefix, text, count)
+                } else {
+                    format!("{}{}", prefix, text)
+                }
             })
             .collect();
         format!(" {}", h.join(" "))
@@ -201,7 +298,10 @@ fn format_context(input: &FormatInput) -> String {
         String::new()
     };
 
-    format!("{}: {}{}{}", input.command, status, outcome_str, hazard_str)
+    format!(
+        "{}: {}{}{}{}",
+        input.command, status, outcome_str, elapsed_str, hazard_str
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -487,5 +587,327 @@ mod tests {
         assert!(parsed["hazards"].is_array());
         assert_eq!(parsed["hazards"][0]["severity"], "warning");
         assert_eq!(parsed["hazards"][0]["text"], "deprecated package");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: Human with metadata header
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_with_metadata_header() {
+        let mut input = make_input(
+            "npm install",
+            0,
+            "condense",
+            "last: npm warn deprecated inflight@1.0.6",
+        );
+        input.total_lines = Some(1400);
+        input.elapsed_secs = Some(12.3);
+
+        let output = format_result(&input, OutputMode::Human);
+        let first_line = output.lines().next().unwrap();
+
+        // Header: + npm install: 1400 lines → exit 0 (12.3s)
+        assert!(
+            first_line.starts_with("+ npm install:"),
+            "header should start with symbol and command: {}",
+            first_line
+        );
+        assert!(
+            first_line.contains("1400 lines"),
+            "header should contain line count: {}",
+            first_line
+        );
+        assert!(
+            first_line.contains("exit 0"),
+            "header should contain exit code: {}",
+            first_line
+        );
+        assert!(
+            first_line.contains("(12.3s)"),
+            "header should contain elapsed time: {}",
+            first_line
+        );
+
+        // Body should be indented on subsequent lines
+        let second_line = output.lines().nth(1).unwrap();
+        assert!(
+            second_line.starts_with("  "),
+            "body should be indented: {}",
+            second_line
+        );
+        assert!(
+            second_line.contains("npm warn deprecated"),
+            "body should contain original text: {}",
+            second_line
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13: Human with outcomes
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_with_outcomes() {
+        let mut input = make_input("npm install", 0, "condense", "install complete");
+        input.outcomes = vec![
+            "147 packages installed".to_string(),
+            "0 vulnerabilities".to_string(),
+        ];
+
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            output.contains("  + 147 packages installed"),
+            "should show outcome with + prefix: {}",
+            output
+        );
+        assert!(
+            output.contains("  + 0 vulnerabilities"),
+            "should show second outcome: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 14: Human with hazards (error + warning)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_with_hazards() {
+        let mut input = make_input("npm install", 1, "condense", "install failed");
+        input.hazards = vec![
+            HazardEntry {
+                severity: "error".to_string(),
+                text: "2 vulnerabilities found".to_string(),
+            },
+            HazardEntry {
+                severity: "warning".to_string(),
+                text: "npm warn deprecated".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            output.contains("  ! 2 vulnerabilities found"),
+            "should show error hazard with ! prefix: {}",
+            output
+        );
+        assert!(
+            output.contains("  ~ npm warn deprecated"),
+            "should show warning hazard with ~ prefix: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 15: Human with no metadata — simple format preserved
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_no_metadata_simple_format() {
+        let input = make_input("echo hello", 0, "condense", "hello");
+
+        let output = format_result(&input, OutputMode::Human);
+        assert_eq!(
+            output, "+ hello",
+            "no metadata should use simple format: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 16: JSON includes body field
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_json_includes_body() {
+        let input = make_input("npm install", 0, "condense", "147 packages installed");
+
+        let output = format_result(&input, OutputMode::Json);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("should be valid JSON");
+
+        assert_eq!(
+            parsed["body"], "147 packages installed",
+            "JSON should include body field: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 17: JSON includes enrichment
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_json_includes_enrichment() {
+        let mut input = make_input("cp foo bar", 1, "narrate", "cp: no such file");
+        input.enrichment = vec![
+            EnrichmentLine {
+                kind: "source".to_string(),
+                message: "foo \u{2717}".to_string(),
+            },
+            EnrichmentLine {
+                kind: "dest".to_string(),
+                message: "bar/ \u{2713}".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Json);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("should be valid JSON");
+
+        assert!(
+            parsed["enrichment"].is_array(),
+            "should have enrichment array: {}",
+            output
+        );
+        let enrichment = &parsed["enrichment"];
+        assert_eq!(enrichment.as_array().unwrap().len(), 2);
+        assert_eq!(enrichment[0]["kind"], "source");
+        assert_eq!(enrichment[0]["message"], "foo \u{2717}");
+        assert_eq!(enrichment[1]["kind"], "dest");
+        assert_eq!(enrichment[1]["message"], "bar/ \u{2713}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 18: Context with elapsed time
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_context_with_elapsed() {
+        let mut input = make_input("npm install", 0, "condense", "147 packages");
+        input.outcomes = vec!["147pkg".to_string()];
+        input.elapsed_secs = Some(12.3);
+
+        let output = format_result(&input, OutputMode::Context);
+        assert!(
+            output.contains("12.3s"),
+            "context should include elapsed time: {}",
+            output
+        );
+        assert!(
+            !output.contains('\n'),
+            "context should be single line: {}",
+            output
+        );
+        // Verify ordering: ok, outcomes, elapsed, hazards
+        let ok_pos = output.find("ok").unwrap();
+        let elapsed_pos = output.find("12.3s").unwrap();
+        assert!(
+            elapsed_pos > ok_pos,
+            "elapsed should come after ok: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 19: Context hazard compression
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_context_hazard_compression() {
+        let mut input = make_input("npm install", 0, "condense", "147 packages");
+        input.outcomes = vec!["147pkg".to_string()];
+        input.hazards = vec![
+            HazardEntry {
+                severity: "warning".to_string(),
+                text: "deprecated".to_string(),
+            },
+            HazardEntry {
+                severity: "warning".to_string(),
+                text: "deprecated".to_string(),
+            },
+            HazardEntry {
+                severity: "warning".to_string(),
+                text: "deprecated".to_string(),
+            },
+            HazardEntry {
+                severity: "error".to_string(),
+                text: "2vuln".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Context);
+        assert!(
+            output.contains("~deprecated(x3)"),
+            "should compress 3 identical hazards: {}",
+            output
+        );
+        assert!(
+            output.contains("!2vuln"),
+            "should show single error hazard without count: {}",
+            output
+        );
+        assert!(
+            !output.contains('\n'),
+            "context should be single line: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 20: Passthrough with hazards in summary
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_passthrough_with_hazards() {
+        let mut input = make_input("npm install", 0, "condense", "raw output here");
+        input.raw_output = Some("raw output here\n".to_string());
+        input.hazards = vec![
+            HazardEntry {
+                severity: "warning".to_string(),
+                text: "deprecated package".to_string(),
+            },
+            HazardEntry {
+                severity: "error".to_string(),
+                text: "critical vulnerability".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Passthrough);
+        assert!(
+            output.contains("\u{2500}\u{2500} mish summary \u{2500}\u{2500}"),
+            "should contain summary separator: {}",
+            output
+        );
+        assert!(
+            output.contains("  ~ deprecated package"),
+            "should show warning hazard in summary: {}",
+            output
+        );
+        assert!(
+            output.contains("  ! critical vulnerability"),
+            "should show error hazard in summary: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 21: Human compound results with metadata
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_compound_results() {
+        let mut input1 = make_input("npm install", 0, "condense", "147 packages installed");
+        input1.total_lines = Some(1400);
+        input1.elapsed_secs = Some(12.3);
+        input1.outcomes = vec!["147 packages installed".to_string()];
+
+        let mut input2 = make_input("npm test", 1, "condense", "3 tests failed");
+        input2.hazards = vec![HazardEntry {
+            severity: "error".to_string(),
+            text: "test suite failure".to_string(),
+        }];
+
+        let output = format_results(&[input1, input2], OutputMode::Human);
+
+        // First result: metadata header
+        assert!(
+            output.contains("+ npm install: 1400 lines"),
+            "first result should have metadata header: {}",
+            output
+        );
+        // Second result: error symbol
+        assert!(
+            output.contains("! 3 tests failed"),
+            "second result should show error: {}",
+            output
+        );
+        // Second result: hazard
+        assert!(
+            output.contains("  ! test suite failure"),
+            "second result should show hazard: {}",
+            output
+        );
     }
 }

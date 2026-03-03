@@ -197,13 +197,20 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     let pid_path = ShutdownManager::current_pid_file_path();
     ShutdownManager::write_pid_file(&pid_path)?;
 
-    // 4. Create server + main session
+    // 4. Create server (session created lazily below)
     let server = McpServer::new(config.clone())?;
-    server
-        .session_manager
-        .create_session("main", None)
-        .await
-        .map_err(|e| ServerError::Session(e.to_string()))?;
+
+    // Spawn "main" session creation in the background so the MCP transport
+    // loop can start immediately.  The initialize handshake completes in
+    // <50 ms; the shell/PTY spawn takes ~5-6 s.  The event loop below
+    // awaits this handle before dispatching the first tools/call, so the
+    // session is guaranteed ready before any command runs.
+    let bg_sm = server.session_manager.clone();
+    let session_handle = tokio::spawn(async move {
+        if let Err(e) = bg_sm.create_session("main", None).await {
+            tracing::error!("failed to create main session: {e}");
+        }
+    });
 
     // 5. Audit log: ServerStarted
     let mut audit_logger = AuditLogger::new(&config.audit)?;
@@ -253,16 +260,61 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     });
 
     let mut transport = StdioTransport::new();
-    let run_result = server
-        .run_with_shutdown(&mut transport, shutdown_rx)
-        .await;
+    let mut shutdown_rx_loop = shutdown_rx;
+    let mut session_handle = Some(session_handle);
+    let run_result: Result<(), ServerError> = async {
+        loop {
+            tokio::select! {
+                result = transport.read_request() => {
+                    match result {
+                        Ok(Some(request)) => {
+                            // Before the first tools/call, ensure the main
+                            // session has finished spawning.  The handshake
+                            // (initialize, tools/list) flows through instantly;
+                            // only actual tool invocations block here.
+                            if request.method == "tools/call" {
+                                if let Some(handle) = session_handle.take() {
+                                    let _ = handle.await;
+                                }
+                            }
+                            if let Some(response) = server.dispatcher.dispatch(request).await {
+                                transport
+                                    .write_response(response)
+                                    .await
+                                    .map_err(|e| ServerError::Transport(e.to_string()))?;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(TransportError::Eof) => break,
+                        Err(e) => return Err(ServerError::Transport(e.to_string())),
+                    }
+                }
+                _ = shutdown_rx_loop.changed() => {
+                    if *shutdown_rx_loop.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }.await;
 
-    // Cancel cleanup task and await shutdown task.
+    // Shut down cleanly based on how we exited the transport loop.
     cleanup_handle.abort();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        shutdown_handle,
-    ).await;
+    if *shutdown_rx_loop.borrow() {
+        // Signal-triggered exit: wait for the graceful shutdown sequence
+        // (SIGTERM → drain → SIGKILL) that's already in progress.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            shutdown_handle,
+        ).await;
+    } else {
+        // Stdin EOF: no more requests possible. Abort the shutdown task
+        // (it was waiting for signals that will never arrive) and close
+        // sessions directly. PtyCapture's Drop handles SIGTERM → SIGKILL.
+        shutdown_handle.abort();
+        server.session_manager.close_all().await;
+    }
 
     // Propagate any error from the run loop.
     run_result?;
@@ -292,6 +344,13 @@ mod tests {
 
     fn test_config() -> Arc<MishConfig> {
         Arc::new(default_config())
+    }
+
+    /// Extract the tool payload from a content-wrapped MCP tools/call response.
+    fn extract_tool_payload(parsed: &serde_json::Value) -> serde_json::Value {
+        let text = parsed["result"]["content"][0]["text"].as_str()
+            .expect("tools/call response should have result.content[0].text");
+        serde_json::from_str(text).expect("content text should be valid JSON")
     }
 
     fn make_transport(
@@ -327,7 +386,7 @@ mod tests {
     async fn test_server_initialize() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#,
             "\n",
         );
         let mut transport = make_transport(input);
@@ -338,8 +397,8 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         assert_eq!(parsed["jsonrpc"], "2.0");
         assert_eq!(parsed["id"], 1);
-        assert_eq!(parsed["result"]["server_info"]["name"], "mish");
-        assert_eq!(parsed["result"]["protocol_version"], "2024-11-05");
+        assert_eq!(parsed["result"]["serverInfo"]["name"], "mish");
+        assert_eq!(parsed["result"]["protocolVersion"], "2024-11-05");
     }
 
     // ── Test 3: Server exits cleanly on empty input (EOF) ──
@@ -399,7 +458,7 @@ mod tests {
     async fn test_server_multiple_requests() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#, "\n",
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, "\n",
         );
         let mut transport = make_transport(input);
@@ -412,7 +471,7 @@ mod tests {
 
         let resp1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(resp1["id"], 1);
-        assert_eq!(resp1["result"]["server_info"]["name"], "mish");
+        assert_eq!(resp1["result"]["serverInfo"]["name"], "mish");
 
         let resp2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(resp2["id"], 2);
@@ -425,7 +484,7 @@ mod tests {
     async fn test_server_tools_call_sh_help() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#, "\n",
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
             r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#, "\n",
         );
@@ -439,8 +498,9 @@ mod tests {
         assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
         let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(parsed["error"].is_null());
-        assert!(parsed["result"]["result"]["tools"].is_array());
-        assert!(parsed["result"]["processes"].is_array());
+        let payload = extract_tool_payload(&parsed);
+        assert!(payload["result"]["tools"].is_array());
+        assert!(payload["processes"].is_array());
     }
 
     // ── Test 8: Unknown tool returns error with process digest ──
@@ -449,7 +509,7 @@ mod tests {
     async fn test_server_unknown_tool_error() {
         let server = McpServer::new(test_config()).unwrap();
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#, "\n",
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
             r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"bogus","arguments":{}}}"#, "\n",
         );
@@ -515,7 +575,7 @@ mod tests {
             .expect("should create main session");
 
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#, "\n",
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
             r#"{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo mcp_server_test","timeout":5}}}"#, "\n",
         );
@@ -531,14 +591,15 @@ mod tests {
             parsed["error"].is_null(),
             "Expected success, got: {parsed}"
         );
-        assert_eq!(parsed["result"]["result"]["exit_code"], 0);
+        let payload = extract_tool_payload(&parsed);
+        assert_eq!(payload["result"]["exit_code"], 0);
         assert!(
-            parsed["result"]["result"]["output"]
+            payload["result"]["output"]
                 .as_str()
                 .unwrap()
                 .contains("mcp_server_test")
         );
-        assert!(parsed["result"]["processes"].is_array());
+        assert!(payload["processes"].is_array());
 
         server.session_manager.close_all().await;
     }
@@ -558,7 +619,7 @@ mod tests {
             .expect("should create main session");
 
         let input = concat!(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol_version":"2024-11-05","capabilities":{},"client_info":{"name":"test"}}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#, "\n",
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#, "\n",
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, "\n",
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#, "\n",
@@ -578,7 +639,7 @@ mod tests {
 
         let resp1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(resp1["id"], 1);
-        assert_eq!(resp1["result"]["server_info"]["name"], "mish");
+        assert_eq!(resp1["result"]["serverInfo"]["name"], "mish");
 
         let resp2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(resp2["id"], 2);
@@ -586,7 +647,8 @@ mod tests {
 
         let resp3: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(resp3["id"], 3);
-        assert!(resp3["result"]["result"]["tools"].is_array());
+        let payload3 = extract_tool_payload(&resp3);
+        assert!(payload3["result"]["tools"].is_array());
 
         server.session_manager.close_all().await;
     }

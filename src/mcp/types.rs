@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
+    #[serde(default)]
     pub id: serde_json::Value,
     pub method: String,
     pub params: Option<serde_json::Value>,
@@ -32,6 +33,7 @@ pub struct JsonRpcError {
 // ----- MCP Protocol Messages -----
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     pub protocol_version: String,
     pub capabilities: ClientCapabilities,
@@ -42,12 +44,14 @@ pub struct InitializeParams {
 pub struct ClientCapabilities {}
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
     pub name: String,
     pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
@@ -60,6 +64,7 @@ pub struct ServerCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
     pub list_changed: bool,
 }
@@ -978,9 +983,9 @@ mod tests {
     #[test]
     fn initialize_params_deserialize() {
         let json_str = r#"{
-            "protocol_version": "2024-11-05",
+            "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "client_info": {
+            "clientInfo": {
                 "name": "claude-desktop",
                 "version": "1.0.0"
             }
@@ -995,9 +1000,9 @@ mod tests {
     #[test]
     fn initialize_params_deserialize_without_client_version() {
         let json_str = r#"{
-            "protocol_version": "2024-11-05",
+            "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "client_info": {
+            "clientInfo": {
                 "name": "test-client"
             }
         }"#;
@@ -1022,10 +1027,10 @@ mod tests {
         };
 
         let json = serde_json::to_value(&result).unwrap();
-        assert_eq!(json["protocol_version"], "2024-11-05");
-        assert_eq!(json["capabilities"]["tools"]["list_changed"], false);
-        assert_eq!(json["server_info"]["name"], "mish");
-        assert_eq!(json["server_info"]["version"], "0.1.0");
+        assert_eq!(json["protocolVersion"], "2024-11-05");
+        assert_eq!(json["capabilities"]["tools"]["listChanged"], false);
+        assert_eq!(json["serverInfo"]["name"], "mish");
+        assert_eq!(json["serverInfo"]["version"], "0.1.0");
     }
 
     #[test]

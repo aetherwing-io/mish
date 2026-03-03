@@ -383,6 +383,7 @@ mod tests {
     // Test 16: exit code propagation through run()
     // -----------------------------------------------------------------------
     #[test]
+    #[serial_test::serial(pty)]
     fn test_exit_code_propagation() {
         let exit_code = run(&args(&["/bin/sh", "-c", "exit 1"])).unwrap();
         assert_ne!(exit_code, 0, "/bin/sh -c 'exit 1' should return non-zero");
@@ -405,5 +406,124 @@ mod tests {
         assert_eq!(segments[1].operator, Some(CompoundOp::Seq));
         assert_eq!(segments[2].command, args(&["echo", "c"]));
         assert_eq!(segments[2].operator, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 18: Unknown flags are NOT consumed by parse_mode — passed through
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_parse_mode_unknown_flags_passed_through() {
+        // Flags that look like they could be mish flags but aren't should
+        // be passed through as part of the command, not consumed.
+        let (mode, cmd) = parse_mode(&args(&["--verbose", "echo", "hello"]));
+        assert_eq!(mode, OutputMode::Human, "unknown flag should not set a mode");
+        assert_eq!(
+            cmd,
+            args(&["--verbose", "echo", "hello"]),
+            "unknown flag should remain in command args"
+        );
+
+        let (mode, cmd) = parse_mode(&args(&["--loglevel=warn", "npm", "install"]));
+        assert_eq!(mode, OutputMode::Human);
+        assert_eq!(
+            cmd,
+            args(&["--loglevel=warn", "npm", "install"]),
+            "tool-specific flags should remain in command args"
+        );
+
+        // A flag appearing after the command name should also pass through
+        let (mode, cmd) = parse_mode(&args(&["npm", "--json", "install"]));
+        assert_eq!(
+            mode,
+            OutputMode::Human,
+            "--json after command should not be consumed by mish"
+        );
+        assert_eq!(
+            cmd,
+            args(&["npm", "--json", "install"]),
+            "--json after command should stay in args"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 19: Unknown flags pass through the full run_with_mode pipeline
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_unknown_flags_passed_through_to_command() {
+        // `echo --verbose hello` should execute `echo --verbose hello`,
+        // not consume --verbose as a mish flag.
+        let exit_code = run_with_mode(
+            &args(&["echo", "--verbose", "hello"]),
+            OutputMode::Human,
+        )
+        .unwrap();
+        assert_eq!(exit_code, 0, "echo with unknown flags should succeed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 20: split_compound with single command (no operators)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_split_compound_single_command() {
+        let input = args(&["npm", "install", "lodash"]);
+        let segments = split_compound(&input);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].command, args(&["npm", "install", "lodash"]));
+        assert_eq!(segments[0].operator, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 21: split_compound with empty input
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_split_compound_empty() {
+        let segments = split_compound(&[]);
+        assert!(segments.is_empty(), "empty input should produce no segments");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 22: run_with_mode full pipeline — simple echo
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_run_with_mode_simple_echo() {
+        let exit_code = run_with_mode(
+            &args(&["echo", "hello"]),
+            OutputMode::Human,
+        )
+        .unwrap();
+        assert_eq!(exit_code, 0, "echo hello should exit 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 23: run_with_mode with JSON output mode
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_run_with_mode_json() {
+        // Verify JSON mode doesn't crash and returns correct exit code
+        let exit_code = run_with_mode(
+            &args(&["echo", "hello"]),
+            OutputMode::Json,
+        )
+        .unwrap();
+        assert_eq!(exit_code, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 24: run_with_mode empty args returns error
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_run_with_mode_empty_args_error() {
+        let result = run_with_mode(&[], OutputMode::Human);
+        assert!(result.is_err(), "empty args should return error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 25: parse_mode with empty args
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_parse_mode_empty_args() {
+        let (mode, cmd) = parse_mode(&[]);
+        assert_eq!(mode, OutputMode::Human, "empty args should default to Human");
+        assert!(cmd.is_empty(), "empty args should produce empty command");
     }
 }

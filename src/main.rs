@@ -76,9 +76,20 @@ enum ConfigCommands {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
+
+    // In MCP serve mode, stdout is the JSON-RPC transport — tracing must
+    // not write there.  Disable tracing entirely so nothing leaks to
+    // stdout or stderr.  Other subcommands keep the default subscriber.
+    match &cli.command {
+        Commands::Serve { .. } => {
+            // No tracing subscriber installed — all tracing macros become
+            // no-ops.  This guarantees zero output on both stdout and stderr.
+        }
+        _ => {
+            tracing_subscriber::fmt::init();
+        }
+    }
 
     match cli.command {
         Commands::Serve { config } => {
