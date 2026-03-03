@@ -47,6 +47,7 @@ fn event_log_level(event: &AuditEvent) -> &'static str {
         AuditEvent::SessionCreated { .. } => "info",
         AuditEvent::SessionClosed { .. } => "info",
         AuditEvent::Error { .. } => "error",
+        AuditEvent::CommandRecord { .. } => "info",
     }
 }
 
@@ -154,6 +155,16 @@ pub enum AuditEvent {
     },
     Error {
         message: String,
+    },
+    CommandRecord {
+        category: String,
+        grammar: Option<String>,
+        exit_code: i32,
+        wall_ms: u64,
+        raw_bytes: u64,
+        squashed_bytes: u64,
+        compression_ratio: f64,
+        safety_action: String,
     },
 }
 
@@ -269,7 +280,8 @@ impl AuditLogger {
             AuditEvent::CommandStarted { .. }
             | AuditEvent::CommandCompleted { .. }
             | AuditEvent::CommandKilled { .. }
-            | AuditEvent::CommandTimedOut { .. } => self.config.log_commands,
+            | AuditEvent::CommandTimedOut { .. }
+            | AuditEvent::CommandRecord { .. } => self.config.log_commands,
             AuditEvent::PolicyDecision { .. } => self.config.log_policy_decisions,
             AuditEvent::HandoffInitiated { .. }
             | AuditEvent::HandoffAttached { .. }
@@ -778,5 +790,190 @@ mod tests {
         assert_eq!(&ts[10..11], "T");
         assert_eq!(&ts[13..14], ":");
         assert_eq!(&ts[16..17], ":");
+    }
+
+    // --- CommandRecord tests ---
+
+    /// Helper: build a CommandRecord event with typical values.
+    fn sample_command_record() -> AuditEvent {
+        AuditEvent::CommandRecord {
+            category: "condense".into(),
+            grammar: Some("cargo".into()),
+            exit_code: 0,
+            wall_ms: 1234,
+            raw_bytes: 50000,
+            squashed_bytes: 5000,
+            compression_ratio: 0.10,
+            safety_action: "allow".into(),
+        }
+    }
+
+    // 15. CommandRecord serializes to JSON with correct type tag
+    #[test]
+    fn command_record_serializes_with_type_tag() {
+        let event = sample_command_record();
+        let j = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(j["type"], "CommandRecord");
+        assert_eq!(j["category"], "condense");
+        assert_eq!(j["grammar"], "cargo");
+        assert_eq!(j["exit_code"], 0);
+        assert_eq!(j["wall_ms"], 1234);
+        assert_eq!(j["raw_bytes"], 50000);
+        assert_eq!(j["squashed_bytes"], 5000);
+        assert_eq!(j["compression_ratio"], 0.10);
+        assert_eq!(j["safety_action"], "allow");
+    }
+
+    // 16. CommandRecord with grammar = None serializes correctly
+    #[test]
+    fn command_record_null_grammar() {
+        let event = AuditEvent::CommandRecord {
+            category: "passthrough".into(),
+            grammar: None,
+            exit_code: 1,
+            wall_ms: 42,
+            raw_bytes: 100,
+            squashed_bytes: 100,
+            compression_ratio: 1.0,
+            safety_action: "allow".into(),
+        };
+        let j = serde_json::to_value(&event).unwrap();
+        assert_eq!(j["type"], "CommandRecord");
+        assert!(j["grammar"].is_null(), "grammar should be null when None");
+        assert_eq!(j["category"], "passthrough");
+        assert_eq!(j["exit_code"], 1);
+    }
+
+    // 17. CommandRecord is logged at info level
+    #[test]
+    fn command_record_log_level_is_info() {
+        let event = sample_command_record();
+        assert_eq!(event_log_level(&event), "info");
+    }
+
+    // 18. CommandRecord respects log_commands flag (enabled)
+    #[test]
+    fn command_record_respects_log_commands_enabled() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir); // log_commands = true
+        let mut logger = AuditLogger::new(&cfg).unwrap();
+
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "sh_run".into(),
+            Some("cargo build".into()),
+            sample_command_record(),
+        ));
+        logger.flush();
+
+        let content = read_log(&dir);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1, "CommandRecord should be logged when log_commands=true");
+
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["event"]["type"], "CommandRecord");
+    }
+
+    // 19. CommandRecord respects log_commands flag (disabled)
+    #[test]
+    fn command_record_respects_log_commands_disabled() {
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: false, // suppress command events
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let mut logger = AuditLogger::new(&cfg).unwrap();
+
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "sh_run".into(),
+            Some("cargo build".into()),
+            sample_command_record(),
+        ));
+        logger.flush();
+
+        let content = read_log(&dir);
+        assert!(
+            content.is_empty(),
+            "CommandRecord should be suppressed when log_commands=false"
+        );
+    }
+
+    // 20. CommandRecord appears in log file with all fields
+    #[test]
+    fn command_record_full_entry_in_log() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let mut logger = AuditLogger::new(&cfg).unwrap();
+
+        logger.log(AuditEntry::new(
+            "session-42".into(),
+            "sh_run".into(),
+            Some("cargo test".into()),
+            AuditEvent::CommandRecord {
+                category: "condense".into(),
+                grammar: Some("cargo".into()),
+                exit_code: 0,
+                wall_ms: 5678,
+                raw_bytes: 100_000,
+                squashed_bytes: 8_000,
+                compression_ratio: 0.08,
+                safety_action: "allow".into(),
+            },
+        ));
+        logger.flush();
+
+        let content = read_log(&dir);
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+
+        // Top-level fields
+        assert_eq!(parsed["session"], "session-42");
+        assert_eq!(parsed["tool"], "sh_run");
+        assert_eq!(parsed["command"], "cargo test");
+        assert!(parsed["timestamp"].as_str().unwrap().ends_with('Z'));
+
+        // Event fields
+        let ev = &parsed["event"];
+        assert_eq!(ev["type"], "CommandRecord");
+        assert_eq!(ev["category"], "condense");
+        assert_eq!(ev["grammar"], "cargo");
+        assert_eq!(ev["exit_code"], 0);
+        assert_eq!(ev["wall_ms"], 5678);
+        assert_eq!(ev["raw_bytes"], 100_000);
+        assert_eq!(ev["squashed_bytes"], 8_000);
+        assert_eq!(ev["compression_ratio"], 0.08);
+        assert_eq!(ev["safety_action"], "allow");
+    }
+
+    // 21. CommandRecord filtered by log level (warn threshold)
+    #[test]
+    fn command_record_filtered_by_log_level() {
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "warn".into(), // only warn and error
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let mut logger = AuditLogger::new(&cfg).unwrap();
+
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "sh_run".into(),
+            Some("ls".into()),
+            sample_command_record(),
+        ));
+        logger.flush();
+
+        let content = read_log(&dir);
+        assert!(
+            content.is_empty(),
+            "CommandRecord (info level) should be filtered out at warn threshold"
+        );
     }
 }
