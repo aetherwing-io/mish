@@ -92,14 +92,18 @@ impl PtyCapture {
 
         match fork_result {
             ForkptyResult::Child => {
-                // In child process: exec the command
-                // Set COLUMNS and LINES environment variables
-                // Note: set_var is not technically async-signal-safe, but we're
-                // about to exec immediately so this is acceptable in practice.
+                // In child process: exec the command.
+                // MUST use libc::setenv, NOT std::env::set_var.
+                // Rust's set_var acquires an RwLock. After fork, if any
+                // parent thread held that lock, the child inherits it as
+                // "locked" but the holding thread doesn't exist → deadlock.
                 unsafe {
-                    std::env::set_var("COLUMNS", winsize.ws_col.to_string());
-                    std::env::set_var("LINES", winsize.ws_row.to_string());
-                    std::env::set_var("TERM", "xterm-256color");
+                    let col = CString::new(winsize.ws_col.to_string()).unwrap();
+                    let row = CString::new(winsize.ws_row.to_string()).unwrap();
+                    let term = CString::new("xterm-256color").unwrap();
+                    libc::setenv(b"COLUMNS\0".as_ptr().cast(), col.as_ptr(), 1);
+                    libc::setenv(b"LINES\0".as_ptr().cast(), row.as_ptr(), 1);
+                    libc::setenv(b"TERM\0".as_ptr().cast(), term.as_ptr(), 1);
                 }
 
                 let program =
