@@ -48,10 +48,50 @@ impl DedupGroup {
             if token_count <= 1 {
                 format!("{} (x{})", self.first_instance, self.count)
             } else {
-                format!("{} (x{})", self.first_instance, self.count)
+                format!("{} (x{})", simplify_template(&self.template), self.count)
             }
         }
     }
+}
+
+/// Convert a template skeleton into a human-readable summary.
+///
+/// Replaces `{token}` placeholders with `...` for a generalized display form.
+///
+/// # Examples
+/// ```
+/// assert_eq!(simplify_template("Fetching {url}"), "Fetching ...");
+/// assert_eq!(simplify_template("Downloading {pkg}@ to {path}"), "Downloading ... to ...");
+/// ```
+pub fn simplify_template(template: &str) -> String {
+    let mut result = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            // Collect chars until closing brace (or end of string)
+            let mut inner_buf = String::new();
+            let mut found_close = false;
+            for inner in chars.by_ref() {
+                if inner == '}' {
+                    found_close = true;
+                    break;
+                }
+                inner_buf.push(inner);
+            }
+            if found_close {
+                result.push_str("...");
+            } else {
+                // Unclosed brace — restore the original '{' and consumed chars
+                result.push('{');
+                result.push_str(&inner_buf);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 /// Statistics from dedup processing.
@@ -586,5 +626,98 @@ mod tests {
         let flushed = engine.flush_all();
         assert!(!flushed.is_empty());
         assert!(engine.groups.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // simplify_template tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_simplify_template_single_token() {
+        assert_eq!(simplify_template("Fetching {url}"), "Fetching ...");
+    }
+
+    #[test]
+    fn test_simplify_template_multiple_tokens() {
+        assert_eq!(
+            simplify_template("Downloading {pkg}@ to {path}"),
+            "Downloading ...@ to ..."
+        );
+    }
+
+    #[test]
+    fn test_simplify_template_no_tokens() {
+        assert_eq!(simplify_template("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_simplify_template_adjacent_tokens() {
+        assert_eq!(simplify_template("{a}{b}"), "......");
+    }
+
+    #[test]
+    fn test_simplify_template_unclosed_brace() {
+        assert_eq!(simplify_template("broken {template"), "broken {template");
+    }
+
+    // -----------------------------------------------------------------------
+    // DedupGroup::format() branch coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_count_one_returns_first_instance() {
+        let group = DedupGroup {
+            template: "Fetching {url}".into(),
+            count: 1,
+            first_instance: "Fetching https://example.com".into(),
+            last_instance: "Fetching https://example.com".into(),
+            first_seen: Instant::now(),
+            last_seen: Instant::now(),
+        };
+        assert_eq!(group.format(), "Fetching https://example.com");
+    }
+
+    #[test]
+    fn test_format_count_gt1_single_token_uses_first_instance() {
+        let group = DedupGroup {
+            template: "Fetching {url}".into(),
+            count: 5,
+            first_instance: "Fetching https://example.com/a".into(),
+            last_instance: "Fetching https://example.com/e".into(),
+            first_seen: Instant::now(),
+            last_seen: Instant::now(),
+        };
+        assert_eq!(group.format(), "Fetching https://example.com/a (x5)");
+    }
+
+    #[test]
+    fn test_format_count_gt1_multi_token_uses_simplified_template() {
+        let group = DedupGroup {
+            template: "Downloading {pkg}@ from {url}".into(),
+            count: 100,
+            first_instance: "Downloading lodash@ from https://registry.npmjs.org".into(),
+            last_instance: "Downloading express@ from https://registry.npmjs.org".into(),
+            first_seen: Instant::now(),
+            last_seen: Instant::now(),
+        };
+        let formatted = group.format();
+        assert_eq!(formatted, "Downloading ...@ from ... (x100)");
+        // Must NOT contain the first_instance
+        assert!(!formatted.contains("lodash"));
+    }
+
+    #[test]
+    fn test_format_multi_token_does_not_use_first_instance() {
+        let group = DedupGroup {
+            template: "Compiling {word} v{ver} ({url})".into(),
+            count: 89,
+            first_instance: "Compiling serde v1.0.195 (registry+https://github.com)".into(),
+            last_instance: "Compiling tokio v1.35.0 (registry+https://github.com)".into(),
+            first_seen: Instant::now(),
+            last_seen: Instant::now(),
+        };
+        let formatted = group.format();
+        assert_eq!(formatted, "Compiling ... v... (...) (x89)");
+        assert!(!formatted.contains("serde"));
     }
 }
