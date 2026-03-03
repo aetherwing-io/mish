@@ -50,6 +50,8 @@ fn event_log_level(event: &AuditEvent) -> &'static str {
         AuditEvent::ServerShutdown => "info",
         AuditEvent::SessionCreated { .. } => "info",
         AuditEvent::SessionClosed { .. } => "info",
+        AuditEvent::SessionStart { .. } => "info",
+        AuditEvent::SessionEnd { .. } => "info",
         AuditEvent::Error { .. } => "error",
         AuditEvent::CommandRecord { .. } => "info",
     }
@@ -157,6 +159,19 @@ pub enum AuditEvent {
     SessionClosed {
         session: String,
     },
+    SessionStart {
+        session_id: String,
+        server_version: String,
+    },
+    SessionEnd {
+        session_id: String,
+        total_commands: u64,
+        total_raw_bytes: u64,
+        total_squashed_bytes: u64,
+        aggregate_ratio: f64,
+        grammars_used: Vec<String>,
+        duration_ms: u64,
+    },
     Error {
         message: String,
     },
@@ -170,6 +185,21 @@ pub enum AuditEvent {
         compression_ratio: f64,
         safety_action: String,
     },
+}
+
+// ---------------------------------------------------------------------------
+// SessionEndStats
+// ---------------------------------------------------------------------------
+
+/// Aggregated metrics for a session, used to emit `SessionEnd` audit records.
+#[derive(Debug, Clone)]
+pub struct SessionEndStats {
+    pub total_commands: u64,
+    pub total_raw_bytes: u64,
+    pub total_squashed_bytes: u64,
+    pub aggregate_ratio: f64,
+    pub grammars_used: Vec<String>,
+    pub duration_ms: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +327,8 @@ impl AuditLogger {
             AuditEvent::HandoffInitiated { .. }
             | AuditEvent::HandoffAttached { .. }
             | AuditEvent::HandoffResolved { .. } => self.config.log_handoff_events,
-            // Everything else (ToolCall, Server*, Session*, Error) is always logged.
+            // Everything else (ToolCall, Server*, Session*, SessionStart/End, Error)
+            // is always logged.
             _ => true,
         }
     }
@@ -313,6 +344,39 @@ impl AuditLogger {
     pub fn close(self) {
         // `self.file` is dropped, closing the fd.
         drop(self);
+    }
+
+    /// Log a `SessionStart` event.
+    pub fn log_session_start(&mut self, session_id: &str) {
+        let entry = AuditEntry::new(
+            session_id.to_string(),
+            String::new(),
+            None,
+            AuditEvent::SessionStart {
+                session_id: session_id.to_string(),
+                server_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        );
+        self.log(entry);
+    }
+
+    /// Log a `SessionEnd` event with aggregated metrics.
+    pub fn log_session_end(&mut self, session_id: &str, stats: SessionEndStats) {
+        let entry = AuditEntry::new(
+            session_id.to_string(),
+            String::new(),
+            None,
+            AuditEvent::SessionEnd {
+                session_id: session_id.to_string(),
+                total_commands: stats.total_commands,
+                total_raw_bytes: stats.total_raw_bytes,
+                total_squashed_bytes: stats.total_squashed_bytes,
+                aggregate_ratio: stats.aggregate_ratio,
+                grammars_used: stats.grammars_used,
+                duration_ms: stats.duration_ms,
+            },
+        );
+        self.log(entry);
     }
 }
 
@@ -1108,5 +1172,219 @@ mod tests {
 
         let expected_file = expected_dir.join("subdir-test.jsonl");
         assert!(expected_file.exists(), "session file should exist");
+    }
+
+    // --- SessionStart/SessionEnd tests ---
+
+    // 26. SessionStart serializes correctly with type tag
+    #[test]
+    fn session_start_serialization() {
+        let event = AuditEvent::SessionStart {
+            session_id: "sess-abc".into(),
+            server_version: "0.1.0".into(),
+        };
+        let j = serde_json::to_value(&event).unwrap();
+        assert_eq!(j["type"], "SessionStart");
+        assert_eq!(j["session_id"], "sess-abc");
+        assert_eq!(j["server_version"], "0.1.0");
+    }
+
+    // 27. SessionEnd serializes correctly with all aggregate fields
+    #[test]
+    fn session_end_serialization() {
+        let event = AuditEvent::SessionEnd {
+            session_id: "sess-xyz".into(),
+            total_commands: 42,
+            total_raw_bytes: 100_000,
+            total_squashed_bytes: 25_000,
+            aggregate_ratio: 0.25,
+            grammars_used: vec!["git".into(), "cargo".into(), "npm".into()],
+            duration_ms: 120_000,
+        };
+        let j = serde_json::to_value(&event).unwrap();
+        assert_eq!(j["type"], "SessionEnd");
+        assert_eq!(j["session_id"], "sess-xyz");
+        assert_eq!(j["total_commands"], 42);
+        assert_eq!(j["total_raw_bytes"], 100_000);
+        assert_eq!(j["total_squashed_bytes"], 25_000);
+        assert_eq!(j["aggregate_ratio"], 0.25);
+        assert_eq!(j["duration_ms"], 120_000);
+        let grammars = j["grammars_used"].as_array().unwrap();
+        assert_eq!(grammars.len(), 3);
+        assert_eq!(grammars[0], "git");
+        assert_eq!(grammars[1], "cargo");
+        assert_eq!(grammars[2], "npm");
+    }
+
+    // 28. SessionEnd with empty grammars_used serializes as empty array
+    #[test]
+    fn session_end_empty_grammars() {
+        let event = AuditEvent::SessionEnd {
+            session_id: "sess-empty".into(),
+            total_commands: 0,
+            total_raw_bytes: 0,
+            total_squashed_bytes: 0,
+            aggregate_ratio: 0.0,
+            grammars_used: vec![],
+            duration_ms: 500,
+        };
+        let j = serde_json::to_value(&event).unwrap();
+        assert_eq!(j["type"], "SessionEnd");
+        let grammars = j["grammars_used"].as_array().unwrap();
+        assert!(grammars.is_empty(), "grammars_used should be empty array");
+    }
+
+    // 29. SessionStart and SessionEnd respect log level filtering
+    #[test]
+    fn session_start_end_log_level_filtering() {
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "warn".into(), // only warn and error pass
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+        };
+        let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
+
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "".into(),
+            None,
+            AuditEvent::SessionStart {
+                session_id: "s1".into(),
+                server_version: "0.1.0".into(),
+            },
+        ));
+        logger.log(AuditEntry::new(
+            "s1".into(),
+            "".into(),
+            None,
+            AuditEvent::SessionEnd {
+                session_id: "s1".into(),
+                total_commands: 10,
+                total_raw_bytes: 5000,
+                total_squashed_bytes: 1000,
+                aggregate_ratio: 0.2,
+                grammars_used: vec!["git".into()],
+                duration_ms: 60_000,
+            },
+        ));
+        logger.flush();
+
+        let content = read_log(&dir);
+        assert!(content.is_empty(), "info-level session events should be filtered at warn threshold");
+    }
+
+    // 30. Convenience method log_session_start produces correct entry
+    #[test]
+    fn log_session_start_convenience() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let mut logger = AuditLogger::new(&cfg, "sess-conv").unwrap();
+
+        logger.log_session_start("sess-conv");
+        logger.flush();
+
+        let content = read_log(&dir);
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["session"], "sess-conv");
+        assert_eq!(parsed["event"]["type"], "SessionStart");
+        assert_eq!(parsed["event"]["session_id"], "sess-conv");
+        assert_eq!(parsed["event"]["server_version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    // 31. Convenience method log_session_end produces correct entry
+    #[test]
+    fn log_session_end_convenience() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let mut logger = AuditLogger::new(&cfg, "sess-end").unwrap();
+
+        let stats = SessionEndStats {
+            total_commands: 7,
+            total_raw_bytes: 50_000,
+            total_squashed_bytes: 12_000,
+            aggregate_ratio: 0.24,
+            grammars_used: vec!["cargo".into(), "git".into()],
+            duration_ms: 90_000,
+        };
+        logger.log_session_end("sess-end", stats);
+        logger.flush();
+
+        let content = read_log(&dir);
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["session"], "sess-end");
+        assert_eq!(parsed["event"]["type"], "SessionEnd");
+        assert_eq!(parsed["event"]["session_id"], "sess-end");
+        assert_eq!(parsed["event"]["total_commands"], 7);
+        assert_eq!(parsed["event"]["total_raw_bytes"], 50_000);
+        assert_eq!(parsed["event"]["total_squashed_bytes"], 12_000);
+        assert_eq!(parsed["event"]["aggregate_ratio"], 0.24);
+        assert_eq!(parsed["event"]["duration_ms"], 90_000);
+        let grammars = parsed["event"]["grammars_used"].as_array().unwrap();
+        assert_eq!(grammars.len(), 2);
+        assert_eq!(grammars[0], "cargo");
+        assert_eq!(grammars[1], "git");
+    }
+
+    // 32. log_session_end with computed aggregate_ratio
+    #[test]
+    fn log_session_end_computed_ratio() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let mut logger = AuditLogger::new(&cfg, "sess-ratio").unwrap();
+
+        let raw = 80_000_u64;
+        let squashed = 20_000_u64;
+        let ratio = squashed as f64 / raw as f64;
+
+        let stats = SessionEndStats {
+            total_commands: 15,
+            total_raw_bytes: raw,
+            total_squashed_bytes: squashed,
+            aggregate_ratio: ratio,
+            grammars_used: vec!["make".into()],
+            duration_ms: 45_000,
+        };
+        logger.log_session_end("sess-ratio", stats);
+        logger.flush();
+
+        let content = read_log(&dir);
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        let logged_ratio = parsed["event"]["aggregate_ratio"].as_f64().unwrap();
+        assert!(
+            (logged_ratio - 0.25).abs() < 1e-10,
+            "aggregate_ratio should be 0.25 (20000/80000), got {logged_ratio}"
+        );
+    }
+
+    // 33. SessionStart and SessionEnd always pass category filtering
+    #[test]
+    fn session_start_end_always_pass_category_filter() {
+        let dir = TempDir::new().unwrap();
+        let cfg = AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: false,
+            log_policy_decisions: false,
+            log_handoff_events: false,
+        };
+        let mut logger = AuditLogger::new(&cfg, "sess-cat").unwrap();
+
+        logger.log_session_start("sess-cat");
+        logger.log_session_end("sess-cat", SessionEndStats {
+            total_commands: 1,
+            total_raw_bytes: 100,
+            total_squashed_bytes: 50,
+            aggregate_ratio: 0.5,
+            grammars_used: vec![],
+            duration_ms: 1000,
+        });
+        logger.flush();
+
+        let content = read_log(&dir);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "SessionStart and SessionEnd should always be logged regardless of category flags");
     }
 }
