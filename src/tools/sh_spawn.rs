@@ -20,14 +20,9 @@ use crate::process::spool::OutputSpool;
 use crate::process::table::{ProcessTable, ProcessTableError};
 use crate::session::manager::SessionManager;
 
+use crate::policy::scope::extract_scope;
+
 use super::ToolError;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default timeout for wait_for matching (seconds).
-const DEFAULT_TIMEOUT_SEC: u64 = 300;
 
 /// Polling interval when checking spool for wait_for matches.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -40,6 +35,24 @@ const DEFAULT_SESSION: &str = "main";
 
 /// Global counter for auto-generated aliases.
 static ALIAS_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+// ---------------------------------------------------------------------------
+// Timeout resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve timeout using the precedence: explicit > per-scope > config default.
+fn resolve_spawn_timeout(explicit: Option<u64>, cmd: &str, config: &MishConfig) -> Duration {
+    if let Some(secs) = explicit {
+        return Duration::from_secs(secs);
+    }
+
+    let scope = extract_scope(cmd);
+    if let Some(scope_timeout) = config.timeout_defaults.scope.get(scope) {
+        return Duration::from_secs(*scope_timeout);
+    }
+
+    Duration::from_secs(config.timeout_defaults.default)
+}
 
 // ---------------------------------------------------------------------------
 // Alias generation
@@ -82,12 +95,11 @@ pub async fn setup(
     params: ShSpawnParams,
     session_manager: &SessionManager,
     process_table: &mut ProcessTable,
-    _config: &MishConfig,
+    config: &MishConfig,
 ) -> Result<SpawnSetup, ToolError> {
     let session_name = DEFAULT_SESSION;
     let alias = params.alias.clone();
-    let timeout_sec = params.timeout.unwrap_or(DEFAULT_TIMEOUT_SEC);
-    let timeout = Duration::from_secs(timeout_sec);
+    let timeout = resolve_spawn_timeout(params.timeout, &params.cmd, config);
 
     // Validate alias is not empty.
     if alias.is_empty() {
@@ -801,5 +813,43 @@ mod tests {
         assert_eq!(err.code, -32005);
 
         mgr.close_all().await;
+    }
+
+    // ── Per-scope timeout resolution ─────────────────────────────────
+
+    #[test]
+    fn resolve_spawn_timeout_explicit_overrides_scope() {
+        let config = test_config();
+        // npm has scope timeout of 300, but explicit 60 wins
+        let timeout = super::resolve_spawn_timeout(Some(60), "npm install", &config);
+        assert_eq!(timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn resolve_spawn_timeout_per_scope_npm() {
+        let config = test_config();
+        let timeout = super::resolve_spawn_timeout(None, "npm install", &config);
+        assert_eq!(timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn resolve_spawn_timeout_per_scope_cargo() {
+        let config = test_config();
+        let timeout = super::resolve_spawn_timeout(None, "cargo build", &config);
+        assert_eq!(timeout, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn resolve_spawn_timeout_unknown_uses_default() {
+        let config = test_config();
+        let timeout = super::resolve_spawn_timeout(None, "echo hello", &config);
+        assert_eq!(timeout, Duration::from_secs(config.timeout_defaults.default));
+    }
+
+    #[test]
+    fn resolve_spawn_timeout_path_command_extracts_basename() {
+        let config = test_config();
+        let timeout = super::resolve_spawn_timeout(None, "/usr/bin/npm start", &config);
+        assert_eq!(timeout, Duration::from_secs(300));
     }
 }

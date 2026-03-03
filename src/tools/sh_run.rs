@@ -175,22 +175,14 @@ fn resolve_timeout(params: &ShRunParams, cmd: &str, config: &MishConfig) -> Dura
         return Duration::from_secs(explicit);
     }
 
-    // 2. Per-scope timeout: extract first token (basename) of the command.
-    let first_token = extract_first_token(cmd);
-    if let Some(scope_timeout) = config.timeout_defaults.scope.get(first_token) {
+    // 2. Per-scope timeout using policy scope extraction.
+    let scope = crate::policy::scope::extract_scope(cmd);
+    if let Some(scope_timeout) = config.timeout_defaults.scope.get(scope) {
         return Duration::from_secs(*scope_timeout);
     }
 
     // 3. Global default.
     Duration::from_secs(config.timeout_defaults.default)
-}
-
-/// Extract the first token from a command string, returning its basename.
-/// e.g., "/usr/bin/npm install" -> "npm", "cargo build" -> "cargo"
-fn extract_first_token(cmd: &str) -> &str {
-    let first = cmd.split_whitespace().next().unwrap_or("");
-    // Extract basename (last component of path).
-    first.rsplit('/').next().unwrap_or(first)
 }
 
 /// Run output through the squasher pipeline (VTE strip, progress removal,
@@ -313,26 +305,26 @@ mod tests {
     // Unit tests for internal helpers (no PTY required)
     // -----------------------------------------------------------------------
 
-    // -- extract_first_token ------------------------------------------------
+    // -- scope extraction (delegates to policy::scope::extract_scope) ------
 
     #[test]
-    fn test_extract_first_token_simple() {
-        assert_eq!(extract_first_token("echo hello"), "echo");
+    fn test_scope_extraction_simple() {
+        assert_eq!(crate::policy::scope::extract_scope("echo hello"), "echo");
     }
 
     #[test]
-    fn test_extract_first_token_with_path() {
-        assert_eq!(extract_first_token("/usr/bin/npm install"), "npm");
+    fn test_scope_extraction_with_path() {
+        assert_eq!(crate::policy::scope::extract_scope("/usr/bin/npm install"), "npm");
     }
 
     #[test]
-    fn test_extract_first_token_single_word() {
-        assert_eq!(extract_first_token("ls"), "ls");
+    fn test_scope_extraction_single_word() {
+        assert_eq!(crate::policy::scope::extract_scope("ls"), "ls");
     }
 
     #[test]
-    fn test_extract_first_token_empty() {
-        assert_eq!(extract_first_token(""), "");
+    fn test_scope_extraction_empty() {
+        assert_eq!(crate::policy::scope::extract_scope(""), "");
     }
 
     // -- resolve_timeout ----------------------------------------------------
