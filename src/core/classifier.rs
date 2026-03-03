@@ -11,6 +11,7 @@ use regex::Regex;
 
 use crate::core::grammar::{Action, Grammar, Rule, RuleAction, Severity};
 use crate::core::line_buffer::Line;
+use crate::squasher::dedup::{DedupResult, ImplicitDedup};
 use crate::squasher::vte_strip::{AnsiColor, AnsiMetadata, VteStripper};
 
 // ---------------------------------------------------------------------------
@@ -199,6 +200,7 @@ pub struct Classifier {
     universal: UniversalPatterns,
 
     // Tier 3: Structural state
+    implicit_dedup: ImplicitDedup,
     previous_line: Option<String>,
     /// Count of consecutive Unknown lines (for volume compression)
     consecutive_unknown_count: usize,
@@ -248,6 +250,7 @@ impl Classifier {
             global_noise_rules,
             has_grammar,
             universal: UniversalPatterns::new(),
+            implicit_dedup: ImplicitDedup::new(),
             previous_line: None,
             consecutive_unknown_count: 0,
             ring_buffer: VecDeque::with_capacity(RING_BUFFER_SIZE + 1),
@@ -448,6 +451,24 @@ impl Classifier {
             if let Some(c) = self.classify_tier3(clean) {
                 self.update_tracking(clean, &c);
                 return c;
+            }
+
+            // Tier 3b: Implicit dedup — consecutive similar lines get Noise(Dedup)
+            match self.implicit_dedup.check(clean) {
+                DedupResult::Absorbed => {
+                    let result = Classification::Noise {
+                        action: NoiseAction::Dedup,
+                        text: clean.clone(),
+                    };
+                    self.update_tracking(clean, &result);
+                    return result;
+                }
+                DedupResult::FlushStreak { .. } => {
+                    // Streak broken — current line classified as-is below
+                }
+                DedupResult::NotSimilar => {
+                    // Not similar — fall through to Unknown
+                }
             }
         }
 
@@ -2292,5 +2313,148 @@ success = "ok"
                 ..
             }
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tier 3b: ImplicitDedup in classifier path
+    // -----------------------------------------------------------------------
+
+    // Test 84: 5 consecutive similar lines → classified as Noise(Dedup)
+    #[test]
+    fn test_implicit_dedup_consecutive_similar_noise_dedup() {
+        let mut c = Classifier::new(None, None);
+
+        // First line: NotSimilar → Unknown
+        let r1 = c.classify(Line::Complete("Compiling serde v1.0.195".into()));
+        assert!(matches!(r1, Classification::Unknown { .. }));
+
+        // Lines 2-5: Absorbed → Noise(Dedup)
+        let r2 = c.classify(Line::Complete("Compiling tokio v1.35.0".into()));
+        assert!(matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        let r3 = c.classify(Line::Complete("Compiling regex v1.10.0".into()));
+        assert!(matches!(
+            r3,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        let r4 = c.classify(Line::Complete("Compiling syn v2.0.48".into()));
+        assert!(matches!(
+            r4,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        let r5 = c.classify(Line::Complete("Compiling quote v1.0.35".into()));
+        assert!(matches!(
+            r5,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+    }
+
+    // Test 85: Dissimilar lines → still Unknown (not affected by ImplicitDedup)
+    #[test]
+    fn test_implicit_dedup_dissimilar_lines_still_unknown() {
+        let mut c = Classifier::new(None, None);
+
+        let r1 = c.classify(Line::Complete("Starting build process".into()));
+        assert!(matches!(r1, Classification::Unknown { .. }));
+
+        let r2 = c.classify(Line::Complete("Loading configuration file".into()));
+        assert!(matches!(r2, Classification::Unknown { .. }));
+
+        let r3 = c.classify(Line::Complete("Initializing database connection".into()));
+        assert!(matches!(r3, Classification::Unknown { .. }));
+    }
+
+    // Test 86: Mixed — similar lines then a different line → Noise then Unknown
+    #[test]
+    fn test_implicit_dedup_mixed_similar_then_different() {
+        let mut c = Classifier::new(None, None);
+
+        // Similar lines
+        let r1 = c.classify(Line::Complete("Compiling serde v1.0.195".into()));
+        assert!(matches!(r1, Classification::Unknown { .. }));
+
+        let r2 = c.classify(Line::Complete("Compiling tokio v1.35.0".into()));
+        assert!(matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        let r3 = c.classify(Line::Complete("Compiling regex v1.10.0".into()));
+        assert!(matches!(
+            r3,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        // Break the streak with a dissimilar line
+        let r4 = c.classify(Line::Complete("Finished release target in 45.2s".into()));
+        assert!(matches!(r4, Classification::Unknown { .. }));
+    }
+
+    // Test 87: Grammar-matched lines still classified by Tier 1 (ImplicitDedup doesn't override)
+    #[test]
+    fn test_implicit_dedup_does_not_override_grammar() {
+        let toml_str = r#"
+[tool]
+name = "cargo"
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.noise]]
+pattern = '^Compiling'
+action = "dedup"
+
+[actions.build.summary]
+success = "ok"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let action = grammar.actions.get("build").unwrap();
+        let mut c = Classifier::new(Some(&grammar), Some(action));
+
+        // These all match the grammar noise rule (Tier 1) — ImplicitDedup should NOT interfere
+        let r1 = c.classify(Line::Complete("Compiling serde v1.0.195".into()));
+        assert!(matches!(
+            r1,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        let r2 = c.classify(Line::Complete("Compiling tokio v1.35.0".into()));
+        assert!(matches!(
+            r2,
+            Classification::Noise {
+                action: NoiseAction::Dedup,
+                ..
+            }
+        ));
+
+        // Non-matching line → should fall through to Unknown (or Tier 2/3)
+        let r3 = c.classify(Line::Complete("Finished release target in 45.2s".into()));
+        assert!(matches!(r3, Classification::Unknown { .. }));
     }
 }
