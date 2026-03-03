@@ -695,7 +695,7 @@ fn test_40_json_flag_extraction() {
 
 #[test]
 #[serial(pty)]
-fn test_36_pipeline_echo_grep() {
+fn test_48_pipeline_echo_grep() {
     let output = mish()
         .args(&["echo", "hello world", "|", "grep", "hello"])
         .output()
@@ -712,7 +712,7 @@ fn test_36_pipeline_echo_grep() {
 
 #[test]
 #[serial(pty)]
-fn test_37_pipeline_multi_stage() {
+fn test_49_pipeline_multi_stage() {
     let output = mish()
         .args(&["echo", "hello", "world", "|", "wc", "-w"])
         .output()
@@ -729,7 +729,7 @@ fn test_37_pipeline_multi_stage() {
 
 #[test]
 #[serial(pty)]
-fn test_38_pipeline_exit_code_from_last() {
+fn test_50_pipeline_exit_code_from_last() {
     mish()
         .args(&["echo", "hello", "|", "grep", "nonexistent_xyz_pattern"])
         .assert()
@@ -738,7 +738,7 @@ fn test_38_pipeline_exit_code_from_last() {
 
 #[test]
 #[serial(pty)]
-fn test_39_pipeline_passthrough_category() {
+fn test_51_pipeline_passthrough_category() {
     let output = mish()
         .args(&["--json", "echo", "hello", "|", "cat"])
         .output()
@@ -758,7 +758,7 @@ fn test_39_pipeline_passthrough_category() {
 
 #[test]
 #[serial(pty)]
-fn test_40_pipeline_context_mode() {
+fn test_52_pipeline_context_mode() {
     let output = mish()
         .args(&["--context", "echo", "hello", "|", "cat"])
         .output()
@@ -779,7 +779,7 @@ fn test_40_pipeline_context_mode() {
 
 #[test]
 #[serial(pty)]
-fn test_41_compound_and_chain_sequential() {
+fn test_53_compound_and_chain_sequential() {
     let output = mish()
         .args(&["echo", "aaa", "&&", "echo", "bbb", "&&", "echo", "ccc"])
         .output()
@@ -794,7 +794,7 @@ fn test_41_compound_and_chain_sequential() {
 
 #[test]
 #[serial(pty)]
-fn test_42_compound_and_stops_on_failure() {
+fn test_54_compound_and_stops_on_failure() {
     let output = mish()
         .args(&["/bin/sh", "-c", "exit 1", "&&", "echo", "should_not_appear"])
         .output()
@@ -809,7 +809,7 @@ fn test_42_compound_and_stops_on_failure() {
 
 #[test]
 #[serial(pty)]
-fn test_43_compound_or_continues_on_failure() {
+fn test_55_compound_or_continues_on_failure() {
     let output = mish()
         .args(&["/bin/sh", "-c", "exit 1", "||", "echo", "fallback_value"])
         .output()
@@ -825,7 +825,7 @@ fn test_43_compound_or_continues_on_failure() {
 
 #[test]
 #[serial(pty)]
-fn test_44_compound_or_skips_on_success() {
+fn test_56_compound_or_skips_on_success() {
     let output = mish()
         .args(&["echo", "ok", "||", "echo", "should_not_appear"])
         .output()
@@ -840,7 +840,7 @@ fn test_44_compound_or_skips_on_success() {
 
 #[test]
 #[serial(pty)]
-fn test_45_compound_seq_unconditional() {
+fn test_57_compound_seq_unconditional() {
     let output = mish()
         .args(&["/bin/sh", "-c", "exit 1", ";", "echo", "always_runs"])
         .output()
@@ -856,7 +856,7 @@ fn test_45_compound_seq_unconditional() {
 
 #[test]
 #[serial(pty)]
-fn test_46_compound_mixed_operators() {
+fn test_58_compound_mixed_operators() {
     let output = mish()
         .args(&[
             "echo", "first_val", "&&", "echo", "second_val", ";", "echo", "third_val",
@@ -872,7 +872,7 @@ fn test_46_compound_mixed_operators() {
 
 #[test]
 #[serial(pty)]
-fn test_47_compound_mixed_with_failure() {
+fn test_59_compound_mixed_with_failure() {
     let output = mish()
         .args(&[
             "/bin/sh", "-c", "exit 1", "&&", "echo", "skip_this", ";", "echo", "always_this",
@@ -888,5 +888,312 @@ fn test_47_compound_mixed_with_failure() {
     assert!(
         stdout.contains("always_this"),
         "third should run unconditionally after ;"
+    );
+}
+
+// =========================================================================
+// 17. Git commands through proxy
+// =========================================================================
+// Note: git currently routes through condense (the grammar has no category
+// field and categories.toml doesn't include git). Per-action category
+// routing (e.g. `git status` -> structured, `git push` -> condense) is
+// planned for a future bead.
+
+#[test]
+#[serial(pty)]
+fn test_60_git_status_runs_successfully() {
+    // Run git status in the mish repo (which is a git repo)
+    let output = mish()
+        .args(&["git", "status"])
+        .output()
+        .expect("mish should run git status");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should produce output (condensed summary of git status)
+    assert!(
+        !stdout.trim().is_empty(),
+        "git status should produce output"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_61_git_status_json_has_valid_structure() {
+    let output = mish()
+        .args(&["--json", "git", "status"])
+        .output()
+        .expect("mish should run git status in JSON mode");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    // Verify JSON structure is well-formed
+    assert!(parsed["command"].is_string(), "should have command field");
+    assert_eq!(parsed["exit_code"], 0, "git status should exit 0");
+    assert!(parsed["category"].is_string(), "should have category field");
+}
+
+#[test]
+#[serial(pty)]
+fn test_62_git_status_context_mode() {
+    let output = mish()
+        .args(&["--context", "git", "status"])
+        .output()
+        .expect("mish should run git status in context mode");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    // Context mode: single line with "ok" for exit 0
+    assert!(
+        !trimmed.contains('\n'),
+        "context mode should be single line, got: {}",
+        trimmed
+    );
+    assert!(
+        trimmed.contains("ok"),
+        "context mode should contain 'ok' for exit 0, got: {}",
+        trimmed
+    );
+}
+
+// =========================================================================
+// 18. Dangerous category — warning display
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_63_dangerous_rm_rf_shows_warning() {
+    // rm -rf matches dangerous patterns. In CLI mode without stdin,
+    // prompt_confirmation gets empty input → denied (not executed).
+    // The warning symbol ⚠ should appear in stderr (prompt) and the
+    // formatted output should contain the warning.
+    let output = mish()
+        .args(&["rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
+        .output()
+        .expect("mish should handle dangerous command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The dangerous handler prints the prompt to stderr
+    assert!(
+        stderr.contains("\u{26a0}") || stderr.contains("proceed"),
+        "stderr should contain warning prompt, got: {}",
+        stderr
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_64_dangerous_category_in_json() {
+    // In JSON mode, the dangerous handler still runs through the router.
+    // CLI mode prompts for confirmation — but since no stdin is available,
+    // it defaults to denied. The JSON output should reflect the category.
+    let output = mish()
+        .args(&["--json", "rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
+        .output()
+        .expect("mish should handle dangerous command in JSON mode");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // Should produce valid JSON with category "dangerous"
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        assert_eq!(
+            parsed["category"], "dangerous",
+            "rm -rf should be categorized as dangerous, got: {}",
+            parsed["category"]
+        );
+    }
+    // Even if JSON parsing fails, the stderr should have the warning
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\u{26a0}") || stderr.contains("proceed") || stdout.contains("\u{26a0}"),
+        "should contain warning somewhere in output"
+    );
+}
+
+// =========================================================================
+// 19. Passthrough category — ls and cat with real files
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_65_ls_passthrough_category() {
+    let output = mish()
+        .args(&["--json", "ls"])
+        .output()
+        .expect("mish should run ls");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "passthrough",
+        "ls should be categorized as passthrough, got: {}",
+        parsed["category"]
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_66_ls_la_shows_files() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("visible_file.txt");
+    fs::write(&file, "content").unwrap();
+
+    let output = mish()
+        .args(&["ls", "-la", dir.path().to_str().unwrap()])
+        .output()
+        .expect("mish should run ls -la");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("visible_file.txt"),
+        "ls -la should show the file, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_67_cat_passthrough_shows_contents() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("readable.txt");
+    fs::write(&file, "unique_test_content_12345\n").unwrap();
+
+    let output = mish()
+        .args(&["cat", file.to_str().unwrap()])
+        .output()
+        .expect("mish should run cat");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("unique_test_content_12345"),
+        "cat should show file contents, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_68_cat_passthrough_category_json() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("cattest.txt");
+    fs::write(&file, "json_cat_test\n").unwrap();
+
+    let output = mish()
+        .args(&["--json", "cat", file.to_str().unwrap()])
+        .output()
+        .expect("mish should run cat in JSON mode");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "passthrough",
+        "cat should be categorized as passthrough, got: {}",
+        parsed["category"]
+    );
+}
+
+// =========================================================================
+// 20. Narrate category — verified through JSON
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_69_cp_narrate_category_json() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("src_file.txt");
+    let dst = dir.path().join("dst_file.txt");
+    fs::write(&src, "copy me").unwrap();
+
+    let output = mish()
+        .args(&[
+            "--json",
+            "cp",
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+        ])
+        .output()
+        .expect("mish should run cp in JSON mode");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "narrate",
+        "cp should be categorized as narrate, got: {}",
+        parsed["category"]
+    );
+    assert!(dst.exists(), "cp should have created destination file");
+}
+
+#[test]
+#[serial(pty)]
+fn test_70_mkdir_narrate_category_json() {
+    let dir = TempDir::new().unwrap();
+    let nested = dir.path().join("x/y/z");
+
+    let output = mish()
+        .args(&["--json", "mkdir", "-p", nested.to_str().unwrap()])
+        .output()
+        .expect("mish should run mkdir in JSON mode");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "narrate",
+        "mkdir should be categorized as narrate, got: {}",
+        parsed["category"]
+    );
+    assert!(nested.exists(), "mkdir -p should have created nested dirs");
+}
+
+// =========================================================================
+// 21. Condense category — verified through JSON (unknown commands default)
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_71_unknown_command_condense_category() {
+    let output = mish()
+        .args(&["--json", "/bin/sh", "-c", "echo condense_test"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "condense",
+        "/bin/sh should fall back to condense category, got: {}",
+        parsed["category"]
     );
 }
