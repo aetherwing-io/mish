@@ -1,0 +1,65 @@
+[tool]
+name = "webpack"
+detect = ["webpack", "npx webpack"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Module count lines
+pattern = '^\s+(runtime|orphan|cacheable) modules'
+action = "strip"
+
+[[global_noise]]
+# Nested "modules by path" lines
+pattern = '^\s+modules by path'
+action = "dedup"
+
+# ---- fallback action (webpack has no subcommands typically) ----
+
+[fallback]
+
+[[fallback.noise]]
+# Asset output lines (individual)
+pattern = '^asset\s+'
+action = "dedup"
+
+[[fallback.hazard]]
+# webpack error
+pattern = '^ERROR in'
+severity = "error"
+action = "keep"
+multiline = 5
+
+[[fallback.hazard]]
+# Module not found
+pattern = 'Module not found'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Warning
+pattern = '^WARNING in'
+severity = "warning"
+action = "keep"
+
+[[fallback.outcome]]
+# compiled successfully
+pattern = 'compiled (?P<status>successfully) in (?P<time>.+)'
+action = "promote"
+captures = ["status", "time"]
+
+[[fallback.outcome]]
+# compiled with warnings/errors
+pattern = 'compiled with (?P<count>\d+) (error|warning)'
+action = "promote"
+captures = ["count"]
+
+[fallback.summary]
+success = "+ webpack built ({time})"
+failure = "! webpack build failed (exit {exit_code})"
+partial = "... building ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["--stats=errors-only"]
+recommend = ["--stats=none"]

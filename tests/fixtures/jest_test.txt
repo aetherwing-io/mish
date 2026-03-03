@@ -1,0 +1,29 @@
+ PASS  src/__tests__/utils.test.ts
+  ✓ formats date correctly (3 ms)
+  ✓ parses JSON safely (1 ms)
+  ✓ validates email format (2 ms)
+
+ FAIL  src/__tests__/api.test.ts
+  ● UserService › should create a user
+
+    expect(received).toEqual(expected)
+
+    Expected: {"id": 1, "name": "Alice"}
+    Received: {"id": 1, "name": "Bob"}
+
+      12 |     const user = await service.createUser("Alice");
+      13 |     expect(user).toEqual({ id: 1, name: "Alice" });
+         |                  ^
+      14 |   });
+      15 | });
+
+      at Object.<anonymous> (src/__tests__/api.test.ts:13:18)
+
+  ✓ should list users (5 ms)
+  ✓ should delete user (2 ms)
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       1 failed, 4 passed, 5 total
+Snapshots:   0 total
+Time:        3.456 s
+Ran all test suites.

@@ -1,0 +1,11 @@
+asset main.js 1.24 MiB [emitted] (name: main)
+asset vendors.js 456 KiB [emitted] (name: vendors)
+asset styles.css 12.3 KiB [emitted] (name: styles)
+runtime modules 1.02 KiB 5 modules
+orphan modules 234 bytes [orphan] 3 modules
+cacheable modules 1.45 MiB
+  modules by path ./src/ 234 KiB 42 modules
+  modules by path ./node_modules/ 1.22 MiB
+    modules by path ./node_modules/react/ 234 KiB 12 modules
+    modules by path ./node_modules/react-dom/ 987 KiB 8 modules
+webpack 5.90.1 compiled successfully in 4523 ms

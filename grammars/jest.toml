@@ -1,0 +1,81 @@
+[tool]
+name = "jest"
+detect = ["jest", "npx jest", "react-scripts test"]
+inherit = ["ansi-progress", "node-stacktrace"]
+
+[[global_noise]]
+# Snapshot count line
+pattern = '^Snapshots:\s+'
+action = "strip"
+
+[[global_noise]]
+# Time line
+pattern = '^Time:\s+'
+action = "strip"
+
+[[global_noise]]
+# "Ran all test suites" boilerplate
+pattern = '^Ran all test suites'
+action = "strip"
+
+# ---- fallback action (jest has no subcommands) ----
+
+[fallback]
+
+[[fallback.noise]]
+# Individual passing test checkmarks
+pattern = '^\s+[✓✔]\s+'
+action = "dedup"
+
+[[fallback.noise]]
+# PASS suite lines
+pattern = '^\s*PASS\s+'
+action = "dedup"
+
+[[fallback.hazard]]
+# FAIL suite line
+pattern = '^\s*FAIL\s+'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Individual failing test (● marker)
+pattern = '^\s+●\s+'
+severity = "error"
+action = "keep"
+multiline = 10
+
+[[fallback.hazard]]
+# expect().toEqual / toBe mismatch
+pattern = '^\s+(Expected|Received):'
+severity = "error"
+action = "keep"
+
+[[fallback.outcome]]
+# Test Suites summary (combined)
+pattern = 'Test Suites:\s+(?P<failed>\d+) failed.+(?P<passed>\d+) passed'
+action = "promote"
+captures = ["failed", "passed"]
+
+[[fallback.outcome]]
+# Test Suites: all passed
+pattern = 'Test Suites:\s+(?P<passed>\d+) passed'
+action = "promote"
+captures = ["passed"]
+
+[[fallback.outcome]]
+# Tests line (combined)
+pattern = 'Tests:\s+(?P<failed>\d+) failed.+(?P<passed>\d+) passed'
+action = "promote"
+captures = ["failed", "passed"]
+
+[[fallback.outcome]]
+# Tests line (all passed)
+pattern = 'Tests:\s+(?P<passed>\d+) passed'
+action = "promote"
+captures = ["passed"]
+
+[fallback.summary]
+success = "+ {passed} tests passed"
+failure = "! {failed} failed, {passed} passed"
+partial = "... testing ({lines} lines)"

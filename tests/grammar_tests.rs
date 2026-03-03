@@ -439,7 +439,7 @@ fn test_19_cargo_build_summary_failure() {
 fn test_20_load_all_grammars_loads_all() {
     let grammars = build_grammars_map();
 
-    for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest"] {
+    for name in &["npm", "cargo", "git", "docker", "make", "pip", "pytest", "jest", "webpack"] {
         assert!(
             grammars.contains_key(*name),
             "load_all_grammars should load {name}"
@@ -1032,4 +1032,184 @@ fn test_pytest_summary_format() {
 
     let result = format_summary(grammar, Some(action), &outcomes, 1);
     assert_eq!(result, vec!["! 2 failed, 5 passed (1.23s)"]);
+}
+
+// ===========================================================================
+// jest + webpack grammar tests (e2)
+// ===========================================================================
+
+#[test]
+fn test_jest_grammar_parses() {
+    let grammar = load_tool_grammar("jest");
+    assert_eq!(grammar.tool.name, "jest");
+    assert!(grammar.detect.contains(&"jest".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress", "node-stacktrace"]);
+    assert!(grammar.fallback.is_some());
+}
+
+#[test]
+fn test_webpack_grammar_parses() {
+    let grammar = load_tool_grammar("webpack");
+    assert_eq!(grammar.tool.name, "webpack");
+    assert!(grammar.detect.contains(&"webpack".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_detect_tool_jest() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["jest", "--verbose"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "jest should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "jest");
+    assert!(a.is_some(), "fallback action should be resolved");
+}
+
+#[test]
+fn test_detect_tool_webpack() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["webpack", "--mode", "production"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "webpack should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "webpack");
+    assert!(a.is_some(), "fallback action should be resolved");
+}
+
+#[test]
+fn test_jest_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("jest").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: passing test checkmark
+    let pass_line = "  ✓ formats date correctly (3 ms)";
+    let pass_matched = fallback.noise.iter().any(|r| r.pattern.is_match(pass_line));
+    assert!(pass_matched, "jest noise should match checkmark test line");
+
+    // Noise: PASS suite
+    let pass_suite = " PASS  src/__tests__/utils.test.ts";
+    let ps_matched = fallback.noise.iter().any(|r| r.pattern.is_match(pass_suite));
+    assert!(ps_matched, "jest noise should match PASS suite line");
+
+    // Hazard: FAIL suite
+    let fail_suite = " FAIL  src/__tests__/api.test.ts";
+    let fs_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(fail_suite));
+    assert!(fs_matched, "jest hazard should match FAIL suite line");
+
+    // Hazard: bullet marker
+    let bullet = "  ● UserService › should create a user";
+    let bullet_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(bullet));
+    assert!(bullet_matched, "jest hazard should match ● test name line");
+
+    // Outcome: Tests line with failures
+    let tests_line = "Tests:       1 failed, 4 passed, 5 total";
+    let tests_matched = fallback.outcome.iter().any(|r| r.pattern.is_match(tests_line));
+    assert!(tests_matched, "jest outcome should match Tests summary line");
+
+    // Global noise: Snapshots
+    let snap = "Snapshots:   0 total";
+    let snap_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(snap));
+    assert!(snap_matched, "jest global_noise should match Snapshots line");
+
+    // Global noise: Ran all test suites
+    let ran = "Ran all test suites.";
+    let ran_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(ran));
+    assert!(ran_matched, "jest global_noise should match 'Ran all test suites'");
+}
+
+#[test]
+fn test_webpack_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("webpack").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: asset line
+    let asset_line = "asset main.js 1.24 MiB [emitted] (name: main)";
+    let asset_matched = fallback.noise.iter().any(|r| r.pattern.is_match(asset_line));
+    assert!(asset_matched, "webpack noise should match asset line");
+
+    // Hazard: ERROR in
+    let error_line = "ERROR in ./src/index.js";
+    let error_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(error_matched, "webpack hazard should match ERROR in");
+
+    // Hazard: Module not found
+    let module_line = "Module not found: Error: Can't resolve './missing'";
+    let module_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(module_line));
+    assert!(module_matched, "webpack hazard should match Module not found");
+
+    // Hazard: WARNING in
+    let warn_line = "WARNING in ./src/legacy.js";
+    let warn_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(warn_line));
+    assert!(warn_matched, "webpack hazard should match WARNING in");
+
+    // Outcome: compiled successfully
+    let success_line = "webpack 5.90.1 compiled successfully in 4523 ms";
+    let success_matched = fallback.outcome.iter().any(|r| r.pattern.is_match(success_line));
+    assert!(success_matched, "webpack outcome should match compiled successfully");
+
+    // Global noise: module count lines
+    let modules_line = "  runtime modules 1.02 KiB 5 modules";
+    let mod_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(modules_line));
+    assert!(mod_matched, "webpack global_noise should match module count line");
+}
+
+#[test]
+fn test_jest_outcome_captures_from_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("jest").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("jest_test.txt");
+    let mut captured = HashMap::new();
+
+    for line in fixture.lines() {
+        for rule in &fallback.outcome {
+            if let Some(caps) = rule.pattern.captures(line) {
+                for name in &rule.captures {
+                    if let Some(m) = caps.name(name) {
+                        captured.insert(name.clone(), m.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(captured.get("failed").map(|s| s.as_str()), Some("1"));
+    assert_eq!(captured.get("passed").map(|s| s.as_str()), Some("4"));
+}
+
+#[test]
+fn test_webpack_outcome_captures_from_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("webpack").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("webpack_build.txt");
+    let mut captured = HashMap::new();
+
+    for line in fixture.lines() {
+        for rule in &fallback.outcome {
+            if let Some(caps) = rule.pattern.captures(line) {
+                for name in &rule.captures {
+                    if let Some(m) = caps.name(name) {
+                        captured.insert(name.clone(), m.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(captured.get("status").map(|s| s.as_str()), Some("successfully"));
+    assert_eq!(captured.get("time").map(|s| s.as_str()), Some("4523 ms"));
 }
