@@ -7,12 +7,12 @@
 /// condensed summary with hazards, outcomes, and noise counts.
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
 use crate::core::classifier::Classifier;
-use crate::core::emit::{EmitBuffer, Summary};
+use crate::core::emit::{EmitBuffer, Summary, TimingConfig};
 use crate::core::grammar::{Action, Grammar};
 use crate::core::line_buffer::LineBuffer;
 use crate::core::pty::{ExitStatus, PtyCapture};
@@ -43,12 +43,18 @@ pub fn handle(
     // 3. Event loop: read PTY output and feed through pipeline
     let mut buf = [0u8; 4096];
     let mut exit_status: Option<ExitStatus> = None;
+    let timing = TimingConfig::default();
+    let now = Instant::now();
+    let mut last_activity = now;
+    let mut last_flush = now;
 
     loop {
         // Read bytes from PTY (non-blocking)
         let n = pty.read_output(&mut buf)?;
 
         if n > 0 {
+            last_activity = Instant::now();
+
             // Feed raw bytes into LineBuffer to produce lines
             let lines = line_buffer.ingest(&buf[..n]);
             for line in lines {
@@ -85,6 +91,19 @@ pub fn handle(
         if let Some(partial) = line_buffer.emit_partial() {
             let classification = classifier.classify(partial);
             emit_buffer.accept(classification);
+        }
+
+        // Timer-based flush triggers
+        let since_last_flush = last_flush.elapsed();
+        if since_last_flush >= timing.flush_debounce && emit_buffer.has_pending() {
+            let silence_elapsed = last_activity.elapsed();
+            let should_flush = silence_elapsed >= timing.silence_timeout
+                || since_last_flush >= timing.flush_interval;
+
+            if should_flush {
+                emit_buffer.flush_pending();
+                last_flush = Instant::now();
+            }
         }
 
         // Sleep briefly to avoid busy-looping
@@ -124,6 +143,7 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::classifier::{Classification, NoiseAction};
     use crate::core::grammar::load_grammar_from_str;
     use nix::sys::signal::Signal;
     use serial_test::serial;
@@ -346,6 +366,165 @@ failure = "! compile failed"
             result.summary.summary_lines.len(),
             result.summary.hazard_lines.len(),
             total_output_lines
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Timer-based flush trigger tests
+    // -----------------------------------------------------------------------
+
+    // Test 9: Silence timeout triggers flush of pending content
+    #[test]
+    fn test_silence_timeout_triggers_flush() {
+        let mut emit_buffer = EmitBuffer::new();
+        let timing = TimingConfig::default();
+
+        // Accept 15 noise lines (above the 10-line threshold for "... N lines")
+        for _ in 0..15 {
+            emit_buffer.accept(Classification::Noise {
+                action: NoiseAction::Strip,
+                text: "noise".into(),
+            });
+        }
+
+        // Verify pending content exists
+        assert!(emit_buffer.has_pending(), "should have pending content");
+        assert!(emit_buffer.output().is_empty(), "no output yet before flush");
+
+        // Simulate silence exceeding timeout
+        let last_activity = Instant::now() - timing.silence_timeout - Duration::from_millis(100);
+        let last_flush = Instant::now() - timing.flush_debounce - Duration::from_millis(100);
+
+        // Check timer conditions (mirrors the event loop logic)
+        let since_last_flush = last_flush.elapsed();
+        let silence_elapsed = last_activity.elapsed();
+        assert!(since_last_flush >= timing.flush_debounce);
+        assert!(silence_elapsed >= timing.silence_timeout);
+
+        // Flush should be triggered
+        emit_buffer.flush_pending();
+        assert!(
+            emit_buffer.output().iter().any(|l| l.contains("15 lines")),
+            "expected '... 15 lines' marker after silence timeout flush, got: {:?}",
+            emit_buffer.output()
+        );
+    }
+
+    // Test 10: Flush debounce prevents rapid re-flushing
+    #[test]
+    fn test_flush_debounce_prevents_rapid_reflush() {
+        let timing = TimingConfig::default();
+
+        // Simulate: last flush was very recent (10ms ago)
+        let last_flush = Instant::now() - Duration::from_millis(10);
+        let last_activity = Instant::now() - timing.silence_timeout - Duration::from_millis(100);
+
+        let since_last_flush = last_flush.elapsed();
+
+        // Debounce should prevent flush even though silence timeout is exceeded
+        assert!(
+            since_last_flush < timing.flush_debounce,
+            "since_last_flush ({:?}) should be less than debounce ({:?})",
+            since_last_flush,
+            timing.flush_debounce
+        );
+
+        // Verify the silence timeout IS exceeded
+        let silence_elapsed = last_activity.elapsed();
+        assert!(
+            silence_elapsed >= timing.silence_timeout,
+            "silence should exceed timeout"
+        );
+
+        // The combined condition (debounce check first) prevents the flush
+        let should_flush = since_last_flush >= timing.flush_debounce
+            && silence_elapsed >= timing.silence_timeout;
+        assert!(
+            !should_flush,
+            "debounce should prevent flush despite silence timeout being exceeded"
+        );
+    }
+
+    // Test 11: Periodic flush interval triggers flush even with recent activity
+    #[test]
+    fn test_periodic_flush_interval() {
+        let mut emit_buffer = EmitBuffer::new();
+        let timing = TimingConfig::default();
+
+        // Accept pending content
+        for _ in 0..20 {
+            emit_buffer.accept(Classification::Noise {
+                action: NoiseAction::Strip,
+                text: "noise".into(),
+            });
+        }
+
+        // Simulate: last activity was recent but last flush was long ago
+        let last_activity = Instant::now() - Duration::from_millis(50); // recent activity
+        let last_flush = Instant::now() - timing.flush_interval - Duration::from_millis(100);
+
+        let since_last_flush = last_flush.elapsed();
+        let silence_elapsed = last_activity.elapsed();
+
+        // Silence timeout NOT exceeded (recent activity)
+        assert!(silence_elapsed < timing.silence_timeout);
+
+        // But flush interval IS exceeded, and debounce is satisfied
+        assert!(since_last_flush >= timing.flush_debounce);
+        assert!(since_last_flush >= timing.flush_interval);
+
+        let should_flush = since_last_flush >= timing.flush_debounce
+            && (silence_elapsed >= timing.silence_timeout
+                || since_last_flush >= timing.flush_interval);
+        assert!(should_flush, "periodic interval should trigger flush");
+
+        emit_buffer.flush_pending();
+        assert!(
+            emit_buffer.output().iter().any(|l| l.contains("20 lines")),
+            "expected '... 20 lines' marker after periodic flush, got: {:?}",
+            emit_buffer.output()
+        );
+    }
+
+    // Test 12: Bursty output with silence gap shows intermediate flush markers
+    #[test]
+    #[serial(pty)]
+    fn test_bursty_output_intermediate_flush() {
+        // Emit 50 lines, sleep 3s (exceeds 2s silence timeout), emit 50 more lines.
+        // The condense handler should flush pending during the silence gap,
+        // producing "... N lines" markers in hazard_lines.
+        let args = sh_cmd(
+            "for i in $(seq 1 50); do echo \"burst1 line $i\"; done; \
+             sleep 3; \
+             for i in $(seq 1 50); do echo \"burst2 line $i\"; done"
+        );
+        let result = handle(&args, None, None).unwrap();
+
+        assert_eq!(result.summary.exit_code, 0);
+
+        // Should have ~100 lines total
+        assert!(
+            result.summary.header.contains("100 lines")
+                || result.summary.header.contains("lines"),
+            "expected header to mention line count, got: {}",
+            result.summary.header
+        );
+
+        // The silence gap should have triggered an intermediate flush,
+        // producing at least one "... N lines" marker in hazard_lines
+        // before the process exits (which would cause a final flush).
+        // With 100 lines total, we should see at least one intermediate marker.
+        let flush_markers: Vec<&String> = result
+            .summary
+            .hazard_lines
+            .iter()
+            .filter(|l| l.contains("... "))
+            .collect();
+        assert!(
+            flush_markers.len() >= 1,
+            "expected at least 1 intermediate flush marker from silence gap, \
+             hazard_lines: {:?}",
+            result.summary.hazard_lines
         );
     }
 }

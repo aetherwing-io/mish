@@ -218,6 +218,11 @@ impl EmitBuffer {
         self.dedup.flush_into(&mut self.output);
     }
 
+    /// Check whether there is pending content that would be emitted by flush_pending.
+    pub fn has_pending(&self) -> bool {
+        self.pending_count > 0
+    }
+
     fn flush_pending_count(&mut self) {
         if self.pending_count >= 10 {
             self.output
@@ -806,5 +811,68 @@ failure = "! npm install failed (exit {exit_code})"
         }
         let (_, metrics) = buf.finalize_with_metrics(0, Duration::from_secs(1), None, None);
         assert_eq!(metrics.unclassified_lines, 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // has_pending tests
+    // -----------------------------------------------------------------------
+
+    // Test 30: has_pending returns false on fresh buffer
+    #[test]
+    fn test_has_pending_false_initially() {
+        let buf = EmitBuffer::new();
+        assert!(!buf.has_pending());
+    }
+
+    // Test 31: has_pending returns true after noise accepted
+    #[test]
+    fn test_has_pending_true_after_noise() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Noise {
+            action: NoiseAction::Strip,
+            text: "noise".into(),
+        });
+        assert!(buf.has_pending());
+    }
+
+    // Test 32: has_pending returns false after flush_pending
+    #[test]
+    fn test_has_pending_false_after_flush() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Noise {
+            action: NoiseAction::Strip,
+            text: "noise".into(),
+        });
+        assert!(buf.has_pending());
+        buf.flush_pending();
+        assert!(!buf.has_pending());
+    }
+
+    // Test 33: has_pending returns true after unknown accepted
+    #[test]
+    fn test_has_pending_true_after_unknown() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Unknown {
+            text: "unknown".into(),
+        });
+        assert!(buf.has_pending());
+    }
+
+    // Test 34: has_pending returns false after hazard (hazards flush pending)
+    #[test]
+    fn test_has_pending_false_after_hazard_flush() {
+        let mut buf = EmitBuffer::new();
+        buf.accept(Classification::Noise {
+            action: NoiseAction::Strip,
+            text: "noise".into(),
+        });
+        assert!(buf.has_pending());
+        buf.accept(Classification::Hazard {
+            severity: Severity::Error,
+            text: "error".into(),
+            captures: HashMap::new(),
+        });
+        // Hazard flushes pending count
+        assert!(!buf.has_pending());
     }
 }
