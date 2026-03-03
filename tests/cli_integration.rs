@@ -688,3 +688,205 @@ fn test_40_json_flag_extraction() {
     assert_eq!(parsed["command"], "echo test");
     assert_eq!(parsed["exit_code"], 0);
 }
+
+// =========================================================================
+// 15. Pipe handling (pipeline detection and execution)
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_36_pipeline_echo_grep() {
+    let output = mish()
+        .args(&["echo", "hello world", "|", "grep", "hello"])
+        .output()
+        .expect("mish should run pipeline");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("hello"),
+        "pipeline output should contain matched text, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_37_pipeline_multi_stage() {
+    let output = mish()
+        .args(&["echo", "hello", "world", "|", "wc", "-w"])
+        .output()
+        .expect("mish should run multi-stage pipeline");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2"),
+        "multi-stage pipeline should produce word count of 2, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_38_pipeline_exit_code_from_last() {
+    mish()
+        .args(&["echo", "hello", "|", "grep", "nonexistent_xyz_pattern"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+#[serial(pty)]
+fn test_39_pipeline_passthrough_category() {
+    let output = mish()
+        .args(&["--json", "echo", "hello", "|", "cat"])
+        .output()
+        .expect("mish should run pipeline in JSON mode");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    assert_eq!(
+        parsed["category"], "passthrough",
+        "pipeline category should be passthrough, got: {}",
+        parsed["category"]
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_40_pipeline_context_mode() {
+    let output = mish()
+        .args(&["--context", "echo", "hello", "|", "cat"])
+        .output()
+        .expect("mish should run pipeline in context mode");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim().contains("ok"),
+        "context mode pipeline should show 'ok' for exit 0, got: {}",
+        stdout
+    );
+}
+
+// =========================================================================
+// 16. Compound command enhancements
+// =========================================================================
+
+#[test]
+#[serial(pty)]
+fn test_41_compound_and_chain_sequential() {
+    let output = mish()
+        .args(&["echo", "aaa", "&&", "echo", "bbb", "&&", "echo", "ccc"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("aaa"), "first segment should appear");
+    assert!(stdout.contains("bbb"), "second segment should appear");
+    assert!(stdout.contains("ccc"), "third segment should appear");
+}
+
+#[test]
+#[serial(pty)]
+fn test_42_compound_and_stops_on_failure() {
+    let output = mish()
+        .args(&["/bin/sh", "-c", "exit 1", "&&", "echo", "should_not_appear"])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("should_not_appear"),
+        "command after && should not run when previous fails"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_43_compound_or_continues_on_failure() {
+    let output = mish()
+        .args(&["/bin/sh", "-c", "exit 1", "||", "echo", "fallback_value"])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("fallback_value"),
+        "command after || should run when previous fails, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_44_compound_or_skips_on_success() {
+    let output = mish()
+        .args(&["echo", "ok", "||", "echo", "should_not_appear"])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("should_not_appear"),
+        "command after || should not run when previous succeeds"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_45_compound_seq_unconditional() {
+    let output = mish()
+        .args(&["/bin/sh", "-c", "exit 1", ";", "echo", "always_runs"])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("always_runs"),
+        "command after ; should always run, got: {}",
+        stdout
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_46_compound_mixed_operators() {
+    let output = mish()
+        .args(&[
+            "echo", "first_val", "&&", "echo", "second_val", ";", "echo", "third_val",
+        ])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("first_val"), "first should run");
+    assert!(stdout.contains("second_val"), "second should run after && success");
+    assert!(stdout.contains("third_val"), "third should always run after ;");
+}
+
+#[test]
+#[serial(pty)]
+fn test_47_compound_mixed_with_failure() {
+    let output = mish()
+        .args(&[
+            "/bin/sh", "-c", "exit 1", "&&", "echo", "skip_this", ";", "echo", "always_this",
+        ])
+        .output()
+        .expect("mish should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("skip_this"),
+        "second should be skipped after && failure"
+    );
+    assert!(
+        stdout.contains("always_this"),
+        "third should run unconditionally after ;"
+    );
+}

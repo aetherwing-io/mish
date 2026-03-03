@@ -32,8 +32,16 @@ enum Commands {
 
     /// Attach to an operator handoff session
     Attach {
-        /// Handoff ID
+        /// Handoff ID (format: hf_<hex>)
         handoff_id: String,
+
+        /// Share process output with the LLM on detach (default: credential-blind)
+        #[arg(long)]
+        share_output: bool,
+
+        /// Server PID to connect to (auto-discovered if omitted)
+        #[arg(long)]
+        pid: Option<u32>,
     },
 
     /// List running mish server instances
@@ -98,9 +106,14 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Attach { handoff_id } => {
-            eprintln!("mish attach {handoff_id}: not yet implemented");
-            std::process::exit(1);
+        Commands::Attach {
+            handoff_id,
+            share_output,
+            pid,
+        } => {
+            std::process::exit(
+                mish::cli::management::cmd_attach(&handoff_id, share_output, pid).await,
+            );
         }
         Commands::Ps => {
             std::process::exit(mish::cli::management::cmd_ps());
@@ -111,9 +124,9 @@ async fn main() {
             std::process::exit(mish::cli::management::cmd_logs(lines, &config));
         }
         Commands::Handoffs { watch } => {
-            let _ = watch;
-            eprintln!("mish handoffs: not yet implemented");
-            std::process::exit(1);
+            std::process::exit(
+                mish::cli::management::cmd_handoffs(watch).await,
+            );
         }
         Commands::Config { subcommand } => match subcommand {
             ConfigCommands::Check { config } => {

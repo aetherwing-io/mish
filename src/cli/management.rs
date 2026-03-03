@@ -192,6 +192,229 @@ pub fn cmd_logs(n: usize, config: &MishConfig) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// attach — connect to an operator handoff session
+// ---------------------------------------------------------------------------
+
+/// Run `mish attach <handoff_id>` command.
+///
+/// Connects to the mish server's control socket, validates the handoff ID,
+/// sets the terminal to raw mode, and proxies I/O between the operator's
+/// terminal and the PTY session.
+///
+/// Returns exit code (0 = success, 1 = error).
+pub async fn cmd_attach(handoff_id: &str, share_output: bool, server_pid: Option<u32>) -> i32 {
+    use crate::handoff::attach;
+    use std::os::unix::io::AsRawFd;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Validate handoff_id format.
+    if !handoff_id.starts_with("hf_") {
+        eprintln!("mish attach: invalid handoff ID format (expected hf_<hex>)");
+        return 1;
+    }
+
+    // Connect to server.
+    let mut stream = match attach::connect_to_server(server_pid).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("mish attach: {e}");
+            return 1;
+        }
+    };
+
+    // Send attach request.
+    let alias = match attach::send_attach_request(&mut stream, handoff_id, share_output).await {
+        Ok(alias) => alias,
+        Err(e) => {
+            eprintln!("mish attach: {e}");
+            return 1;
+        }
+    };
+
+    eprintln!("attached to {alias} (Ctrl-\\ to detach)");
+
+    // Set terminal to raw mode.
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let original_termios = match attach::set_raw_mode(stdin_fd) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("mish attach: failed to set raw mode: {e}");
+            return 1;
+        }
+    };
+
+    // Proxy I/O: stdin → socket, socket → stdout.
+    let (mut reader, mut writer) = stream.into_split();
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+
+    let mut stdin_buf = [0u8; 4096];
+    let mut sock_buf = [0u8; 4096];
+
+    let exit_code = loop {
+        tokio::select! {
+            // Terminal → Server
+            result = stdin.read(&mut stdin_buf) => {
+                match result {
+                    Ok(0) => break 0, // EOF
+                    Ok(n) => {
+                        // Check for Ctrl-\ (0x1c) — detach signal.
+                        if stdin_buf[..n].contains(&0x1c) {
+                            // Send detach request.
+                            let detach = r#"{"type":"detach"}"#.to_string() + "\n";
+                            let _ = writer.write_all(detach.as_bytes()).await;
+                            break 0;
+                        }
+                        if let Err(e) = writer.write_all(&stdin_buf[..n]).await {
+                            eprintln!("\r\nmish attach: write error: {e}");
+                            break 1;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("\r\nmish attach: stdin error: {e}");
+                        break 1;
+                    }
+                }
+            }
+            // Server → Terminal
+            result = reader.read(&mut sock_buf) => {
+                match result {
+                    Ok(0) => break 0, // Server disconnected
+                    Ok(n) => {
+                        if let Err(e) = stdout.write_all(&sock_buf[..n]).await {
+                            eprintln!("\r\nmish attach: stdout error: {e}");
+                            break 1;
+                        }
+                        let _ = stdout.flush().await;
+                    }
+                    Err(e) => {
+                        eprintln!("\r\nmish attach: read error: {e}");
+                        break 1;
+                    }
+                }
+            }
+        }
+    };
+
+    // Restore terminal.
+    let _ = attach::restore_terminal(stdin_fd, &original_termios);
+    eprintln!("\r\ndetached from {alias}");
+
+    exit_code
+}
+
+// ---------------------------------------------------------------------------
+// handoffs — list active operator handoffs
+// ---------------------------------------------------------------------------
+
+/// Run `mish handoffs` command.
+///
+/// Lists all active handoffs across all running mish server instances.
+/// With `--watch`, polls every 5 seconds and prints new handoffs.
+///
+/// Returns exit code (0 = success, 1 = error).
+pub async fn cmd_handoffs(watch: bool) -> i32 {
+    use crate::handoff::attach;
+    use tokio::io::AsyncWriteExt;
+
+    loop {
+        let sockets = attach::find_server_sockets();
+
+        if sockets.is_empty() {
+            println!("No running mish servers found.");
+            if !watch {
+                return 0;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+
+        let mut any_handoffs = false;
+
+        for (pid, sock_path) in &sockets {
+            match tokio::net::UnixStream::connect(sock_path).await {
+                Ok(mut stream) => {
+                    // Send list request.
+                    let request = r#"{"type":"list"}"#.to_string() + "\n";
+                    if stream.write_all(request.as_bytes()).await.is_err() {
+                        continue;
+                    }
+
+                    // Read response.
+                    let mut buf = tokio::io::BufReader::new(&mut stream);
+                    let mut response_line = String::new();
+                    use tokio::io::AsyncBufReadExt;
+                    if buf.read_line(&mut response_line).await.is_err() {
+                        continue;
+                    }
+
+                    if let Ok(response) = serde_json::from_str::<serde_json::Value>(
+                        response_line.trim(),
+                    ) {
+                        if let Some(entries) = response["entries"].as_array() {
+                            if !entries.is_empty() {
+                                any_handoffs = true;
+                                println!("Server PID {pid}:");
+                                println!(
+                                    "  {:<15} {:<20} {:<10} {:<10}",
+                                    "ALIAS", "REASON", "DURATION", "STATUS"
+                                );
+                                for entry in entries {
+                                    let alias =
+                                        entry["alias"].as_str().unwrap_or("?");
+                                    let reason =
+                                        entry["reason"].as_str().unwrap_or("?");
+                                    let secs =
+                                        entry["duration_secs"].as_u64().unwrap_or(0);
+                                    let attached =
+                                        entry["attached"].as_bool().unwrap_or(false);
+                                    let status = if attached {
+                                        "attached"
+                                    } else {
+                                        "waiting"
+                                    };
+                                    let duration = format_duration(secs);
+                                    println!(
+                                        "  {:<15} {:<20} {:<10} {:<10}",
+                                        alias, reason, duration, status
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        if !any_handoffs {
+            println!("No active handoffs.");
+        }
+
+        if !watch {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // Clear screen for next poll in watch mode.
+        print!("\x1b[2J\x1b[H");
+    }
+
+    0
+}
+
+/// Format seconds into a human-readable duration string.
+fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -430,5 +653,32 @@ max_sessions = 0
 
         let plain = expand_tilde("/absolute/path");
         assert_eq!(plain, "/absolute/path");
+    }
+
+    // ── Test 15: format_duration seconds ──
+
+    #[test]
+    fn test_format_duration_seconds() {
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(30), "30s");
+        assert_eq!(format_duration(59), "59s");
+    }
+
+    // ── Test 16: format_duration minutes ──
+
+    #[test]
+    fn test_format_duration_minutes() {
+        assert_eq!(format_duration(60), "1m0s");
+        assert_eq!(format_duration(90), "1m30s");
+        assert_eq!(format_duration(3599), "59m59s");
+    }
+
+    // ── Test 17: format_duration hours ──
+
+    #[test]
+    fn test_format_duration_hours() {
+        assert_eq!(format_duration(3600), "1h0m");
+        assert_eq!(format_duration(7200), "2h0m");
+        assert_eq!(format_duration(7380), "2h3m");
     }
 }

@@ -204,6 +204,29 @@ impl PtyCapture {
         }
     }
 
+    /// Non-blocking check for child exit status.
+    ///
+    /// Returns `Some(ExitStatus)` if the child has exited, `None` if still alive.
+    pub fn try_wait(&self) -> Result<Option<ExitStatus>, PtyError> {
+        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(_, code)) => Ok(Some(ExitStatus {
+                code: Some(code),
+                signal: None,
+            })),
+            Ok(WaitStatus::Signaled(_, sig, _)) => Ok(Some(ExitStatus {
+                code: None,
+                signal: Some(sig as i32),
+            })),
+            Ok(WaitStatus::StillAlive) => Ok(None),
+            Ok(_) => Ok(None), // stopped/continued — still alive
+            Err(nix::Error::ECHILD) => Ok(Some(ExitStatus {
+                code: Some(0),
+                signal: None,
+            })),
+            Err(e) => Err(PtyError::Nix(e)),
+        }
+    }
+
     /// Resize the PTY to new dimensions.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), PtyError> {
         let ws = Winsize {

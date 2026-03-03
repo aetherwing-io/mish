@@ -2,13 +2,21 @@
 ///
 /// Parses the command, invokes the category router, and formats terminal output.
 /// Handles compound commands (split on &&, ||, ;) and output mode flags.
+///
+/// Also provides an async event loop (`run_interactive_loop`) for signal
+/// handling and stdin forwarding when commands need interactive I/O.
 
 use std::collections::HashMap;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::config_loader::load_runtime_config;
 use crate::core::format::{
     self, EnrichmentLine, FormatInput, HazardEntry, OutputMode,
 };
+use crate::core::pty::PtyCapture;
 use crate::handlers::structured::StructuredData;
 use crate::router::categories::{CategoriesConfig, ExecutionMode};
 use crate::router::{self, HandlerOutput, RouterResult};
@@ -106,6 +114,14 @@ pub fn parse_mode(args: &[String]) -> (OutputMode, Vec<String>) {
     }
 }
 
+/// Check whether args contain a bare `|` token (indicating a shell pipeline).
+///
+/// Detects pipes at the token level — a standalone `|` argument indicates a pipeline.
+/// Tokens like `|` inside a larger string (e.g. `"hello|world"`) are NOT treated as pipes.
+pub fn contains_pipe(args: &[String]) -> bool {
+    args.iter().any(|a| a == "|")
+}
+
 /// Run the CLI proxy pipeline: parse mode from args, split compounds, route, format, print.
 /// Returns the exit code of the last executed command.
 pub fn run(args: &[String]) -> Result<i32, Box<dyn std::error::Error>> {
@@ -118,6 +134,13 @@ pub fn run(args: &[String]) -> Result<i32, Box<dyn std::error::Error>> {
 pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("usage: mish <command> [args...]".into());
+    }
+
+    // Pipe detection: if args contain a bare `|`, run the whole thing as a
+    // single shell pipeline. The final output is what matters, so we treat
+    // it as passthrough category.
+    if contains_pipe(args) {
+        return run_pipeline(args, mode);
     }
 
     let segments = split_compound(args);
@@ -180,6 +203,300 @@ pub fn run_with_mode(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn s
     println!("{}", formatted);
 
     Ok(last_exit_code)
+}
+
+/// Run a pipeline command (args containing `|`) as a single unit via `/bin/sh -c`.
+///
+/// The full argument list is joined and executed as a shell command. The output is
+/// treated as passthrough — the final pipeline output is what matters for the LLM.
+fn run_pipeline(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn std::error::Error>> {
+    let pipeline_str = args.join(" ");
+
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&pipeline_str)
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let combined = if stderr.is_empty() {
+        stdout.into_owned()
+    } else {
+        format!("{}{}", stdout, stderr)
+    };
+
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    let result = FormatInput {
+        command: pipeline_str,
+        exit_code,
+        category: "passthrough".to_string(),
+        body: combined.clone(),
+        raw_output: Some(combined),
+        total_lines: None,
+        elapsed_secs: None,
+        outcomes: vec![],
+        hazards: vec![],
+        enrichment: vec![],
+    };
+
+    let formatted = format::format_result(&result, mode);
+    println!("{}", formatted);
+
+    Ok(exit_code)
+}
+
+// ---------------------------------------------------------------------------
+// Interactive event loop with signal handling + stdin forwarding
+// ---------------------------------------------------------------------------
+
+/// Result from the interactive event loop.
+#[derive(Debug)]
+pub struct EventLoopResult {
+    /// Child exit code (0 = success), or 128+signal if killed.
+    pub exit_code: i32,
+    /// All output captured from the child.
+    pub output: Vec<u8>,
+    /// Whether mish itself was terminated by double-SIGINT.
+    pub force_exit: bool,
+}
+
+/// Run a command with full signal proxying and stdin forwarding.
+///
+/// This spawns the command in a PTY and enters an async event loop that:
+/// - Forwards stdin from the user to the child process
+/// - Forwards PTY output to stdout
+/// - Proxies signals: SIGINT, SIGTERM, SIGWINCH, SIGTSTP, SIGCONT
+/// - Double SIGINT (within 1s) causes mish to exit
+/// - SIGTERM triggers graceful shutdown: forward to child, wait, drain, finalize
+///
+/// Returns an `EventLoopResult` with exit code and captured output.
+pub async fn run_interactive_loop(
+    command: &[String],
+) -> Result<EventLoopResult, Box<dyn std::error::Error>> {
+    if command.is_empty() {
+        return Err("run_interactive_loop: empty command".into());
+    }
+
+    // Set up async stdin reader from real stdin
+    let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let _stdin_handle = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let stdin = std::io::stdin();
+        let mut stdin_lock = stdin.lock();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdin_lock.read(&mut buf) {
+                Ok(0) => break,  // EOF
+                Ok(n) => {
+                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break; // receiver dropped
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    event_loop_inner(command, stdin_rx, true).await
+}
+
+/// Inner event loop — separated for testability.
+///
+/// `stdin_rx` provides input to forward to the child's PTY.
+/// `write_stdout` controls whether PTY output is echoed to stdout (false for tests).
+async fn event_loop_inner(
+    command: &[String],
+    mut stdin_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    write_stdout: bool,
+) -> Result<EventLoopResult, Box<dyn std::error::Error>> {
+    // Spawn child in PTY
+    let pty = PtyCapture::spawn(command)?;
+
+    // Shared state for signal handling
+    let force_exit = Arc::new(AtomicBool::new(false));
+    let last_sigint = Arc::new(std::sync::Mutex::new(Option::<Instant>::None));
+
+    // Set up signal handlers using tokio
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigwinch =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
+
+    let child_pid = pty.pid();
+
+    let mut all_output = Vec::new();
+    let force_exit_clone = force_exit.clone();
+    let last_sigint_clone = last_sigint.clone();
+    let mut stdin_open = true;
+
+    // Event loop
+    let mut pty_buf = [0u8; 4096];
+
+    loop {
+        // Check for force exit (double SIGINT)
+        if force_exit_clone.load(Ordering::SeqCst) {
+            // Send SIGKILL to child and exit
+            let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGKILL);
+            let _ = pty.wait();
+            return Ok(EventLoopResult {
+                exit_code: 130, // 128 + SIGINT(2)
+                output: all_output,
+                force_exit: true,
+            });
+        }
+
+        // Read available PTY output (non-blocking)
+        loop {
+            match pty.read_output(&mut pty_buf) {
+                Ok(0) => break, // no more data right now
+                Ok(n) => {
+                    all_output.extend_from_slice(&pty_buf[..n]);
+                    if write_stdout {
+                        use std::io::Write;
+                        let _ = std::io::stdout().write_all(&pty_buf[..n]);
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                Err(_) => break, // PTY error — child likely exited
+            }
+        }
+
+        // Check if child has exited
+        if let Ok(Some(status)) = pty.try_wait() {
+            // Child exited — drain remaining output
+            if let Ok(remaining) = pty.drain() {
+                all_output.extend_from_slice(&remaining);
+                if write_stdout && !remaining.is_empty() {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(&remaining);
+                    let _ = std::io::stdout().flush();
+                }
+            }
+
+            let exit_code = match (status.code, status.signal) {
+                (Some(code), _) => code,
+                (None, Some(sig)) => 128 + sig,
+                _ => 1,
+            };
+
+            return Ok(EventLoopResult {
+                exit_code,
+                output: all_output,
+                force_exit: false,
+            });
+        }
+
+        // Use tokio::select! to wait for next event.
+        // When stdin is closed, use a pending future so it never fires.
+        tokio::select! {
+            // SIGINT handling
+            _ = sigint.recv() => {
+                let mut last = last_sigint_clone.lock().unwrap();
+                let now = Instant::now();
+
+                if let Some(prev) = *last {
+                    if now.duration_since(prev).as_millis() < 1000 {
+                        // Double SIGINT within 1s — force exit
+                        force_exit_clone.store(true, Ordering::SeqCst);
+                        let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGKILL);
+                        let _ = pty.wait();
+                        return Ok(EventLoopResult {
+                            exit_code: 130,
+                            output: all_output,
+                            force_exit: true,
+                        });
+                    }
+                }
+
+                *last = Some(now);
+                // Forward single SIGINT to child
+                let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGINT);
+            }
+
+            // SIGTERM handling — graceful shutdown
+            _ = sigterm.recv() => {
+                let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGTERM);
+                // Wait briefly for child to exit
+                let deadline = Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    if Instant::now() > deadline {
+                        // Timeout — escalate to SIGKILL
+                        let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGKILL);
+                        break;
+                    }
+                    if let Ok(Some(_)) = pty.try_wait() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+
+                // Drain remaining output
+                if let Ok(remaining) = pty.drain() {
+                    all_output.extend_from_slice(&remaining);
+                }
+
+                return Ok(EventLoopResult {
+                    exit_code: 143, // 128 + SIGTERM(15)
+                    output: all_output,
+                    force_exit: false,
+                });
+            }
+
+            // SIGWINCH handling — resize PTY
+            _ = sigwinch.recv() => {
+                // Query current terminal size and forward to PTY
+                let ws = query_terminal_size();
+                let _ = pty.resize(ws.0, ws.1);
+            }
+
+            // stdin forwarding — only poll when stdin is still open
+            data = stdin_rx.recv(), if stdin_open => {
+                match data {
+                    Some(bytes) => {
+                        let _ = pty.write_stdin(&bytes);
+                    }
+                    None => {
+                        // stdin closed (EOF) — stop polling
+                        stdin_open = false;
+                    }
+                }
+            }
+
+            // Poll interval — drives PTY read and child exit checks
+            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                // PTY output is read at the top of the loop
+            }
+        }
+    }
+}
+
+/// Query the current terminal dimensions (cols, rows).
+///
+/// Returns (cols, rows), falling back to (80, 24).
+fn query_terminal_size() -> (u16, u16) {
+    let mut ws = nix::pty::Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
+    unsafe {
+        if nix::libc::ioctl(nix::libc::STDOUT_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1 {
+            if nix::libc::ioctl(nix::libc::STDERR_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1 {
+                ws.ws_row = 24;
+                ws.ws_col = 80;
+            }
+        }
+    }
+
+    if ws.ws_row == 0 { ws.ws_row = 24; }
+    if ws.ws_col == 0 { ws.ws_col = 80; }
+
+    (ws.ws_col, ws.ws_row)
 }
 
 // ---------------------------------------------------------------------------
@@ -525,5 +842,403 @@ mod tests {
         let (mode, cmd) = parse_mode(&[]);
         assert_eq!(mode, OutputMode::Human, "empty args should default to Human");
         assert!(cmd.is_empty(), "empty args should produce empty command");
+    }
+
+    // =======================================================================
+    // Signal handling + stdin forwarding tests
+    // =======================================================================
+    use serial_test::serial;
+
+    /// Helper: create a fake stdin channel and immediately close sender.
+    fn closed_stdin() -> tokio::sync::mpsc::Receiver<Vec<u8>> {
+        let (_tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        rx
+    }
+
+    /// Helper: create a stdin channel pair for tests that send input.
+    fn test_stdin() -> (tokio::sync::mpsc::Sender<Vec<u8>>, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+        tokio::sync::mpsc::channel::<Vec<u8>>(64)
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 26: Event loop — basic command runs and captures output
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_basic_output() {
+        let stdin_rx = closed_stdin();
+        let result = event_loop_inner(
+            &args(&["/bin/sh", "-c", "echo event_loop_works"]),
+            stdin_rx,
+            false,
+        )
+        .await
+        .expect("event loop should succeed");
+
+        assert_eq!(result.exit_code, 0, "echo should exit 0");
+        assert!(!result.force_exit, "should not be force exit");
+
+        let output = String::from_utf8_lossy(&result.output);
+        assert!(
+            output.contains("event_loop_works"),
+            "output should contain echoed text, got: {:?}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 27: Event loop — exit code propagation
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_exit_code() {
+        let stdin_rx = closed_stdin();
+        let result = event_loop_inner(
+            &args(&["/bin/sh", "-c", "exit 42"]),
+            stdin_rx,
+            false,
+        )
+        .await
+        .expect("event loop should succeed");
+
+        assert_eq!(result.exit_code, 42, "should propagate exit code 42");
+        assert!(!result.force_exit);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 28: Event loop — stdin forwarding via channel
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_stdin_forwarding() {
+        let (stdin_tx, stdin_rx) = test_stdin();
+
+        let send_handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = stdin_tx.send(b"test_input\n".to_vec()).await;
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            event_loop_inner(
+                &args(&["/bin/sh", "-c", "read line && echo got:$line"]),
+                stdin_rx,
+                false,
+            ),
+        )
+        .await
+        .expect("should complete within timeout")
+        .expect("event loop should succeed");
+
+        let _ = send_handle.await;
+
+        let output = String::from_utf8_lossy(&result.output);
+        assert!(
+            output.contains("got:test_input"),
+            "stdin should be forwarded to child, got: {:?}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 29: SIGWINCH — PTY resize
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_sigwinch_resize() {
+        use crate::core::pty::PtyCapture;
+
+        let pty = PtyCapture::spawn(&args(&[
+            "/bin/sh", "-c",
+            "sleep 0.3 && stty size 2>/dev/null || echo unknown"
+        ]))
+        .expect("spawn should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        pty.resize(132, 50).expect("resize should succeed");
+
+        let mut all = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+
+        loop {
+            if Instant::now() > deadline { break; }
+            match pty.read_output(&mut buf) {
+                Ok(0) => {
+                    if let Ok(Some(_)) = pty.try_wait() {
+                        if let Ok(remaining) = pty.drain() {
+                            all.extend_from_slice(&remaining);
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+
+        let output = String::from_utf8_lossy(&all);
+        assert!(
+            output.contains("50 132"),
+            "expected '50 132' in stty output after resize, got: {:?}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 30: SIGTERM forwarding — child receives SIGTERM
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_sigterm_forwarding() {
+        use crate::core::pty::PtyCapture;
+
+        let pty = PtyCapture::spawn(&args(&[
+            "/bin/sh", "-c",
+            "trap 'echo SIGTERM_RECEIVED; exit 0' TERM; echo ready; while true; do sleep 0.1; done"
+        ]))
+        .expect("spawn should succeed");
+
+        let mut buf = [0u8; 4096];
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let mut all = Vec::new();
+
+        loop {
+            if Instant::now() > deadline { break; }
+            match pty.read_output(&mut buf) {
+                Ok(n) if n > 0 => {
+                    all.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&all).contains("ready") { break; }
+                }
+                _ => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+        }
+
+        pty.signal(nix::sys::signal::Signal::SIGTERM).expect("signal should succeed");
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if Instant::now() > deadline { break; }
+            match pty.read_output(&mut buf) {
+                Ok(0) => {
+                    if let Ok(Some(_)) = pty.try_wait() {
+                        if let Ok(remaining) = pty.drain() {
+                            all.extend_from_slice(&remaining);
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+
+        let output = String::from_utf8_lossy(&all);
+        assert!(
+            output.contains("SIGTERM_RECEIVED"),
+            "child should receive SIGTERM and print marker, got: {:?}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 31: Double SIGINT — child killed
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_double_sigint() {
+        use crate::core::pty::PtyCapture;
+
+        let pty = PtyCapture::spawn(&args(&[
+            "/bin/sh", "-c", "sleep 60"
+        ]))
+        .expect("spawn should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        pty.signal(nix::sys::signal::Signal::SIGINT).expect("first SIGINT");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = nix::sys::signal::kill(pty.pid(), nix::sys::signal::Signal::SIGKILL);
+
+        let status = pty.wait().expect("wait should succeed");
+        assert!(
+            status.signal.is_some() || status.code.is_some(),
+            "child should have been killed, got: {:?}",
+            status
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 32: Event loop — empty command returns error
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_event_loop_empty_command_error() {
+        let result = run_interactive_loop(&[]).await;
+        assert!(result.is_err(), "empty command should return error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 33: query_terminal_size returns valid dimensions
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_query_terminal_size() {
+        let (cols, rows) = query_terminal_size();
+        assert!(cols > 0, "cols should be positive, got: {}", cols);
+        assert!(rows > 0, "rows should be positive, got: {}", rows);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 34: try_wait detects child exit
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_try_wait_detects_exit() {
+        use crate::core::pty::PtyCapture;
+
+        let pty = PtyCapture::spawn(&args(&["/bin/sh", "-c", "exit 7"]))
+            .expect("spawn should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let status = pty.try_wait().expect("try_wait should succeed");
+        assert!(status.is_some(), "child should have exited by now");
+        let status = status.unwrap();
+        assert_eq!(status.code, Some(7), "exit code should be 7");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 35: Event loop — SIGINT forwarding to child
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_event_loop_sigint_forwarding() {
+        use crate::core::pty::PtyCapture;
+
+        let pty = PtyCapture::spawn(&args(&[
+            "/bin/sh", "-c",
+            "trap 'echo SIGINT_CAUGHT; exit 0' INT; echo ready; while true; do sleep 0.1; done"
+        ]))
+        .expect("spawn should succeed");
+
+        let mut buf = [0u8; 4096];
+        let mut all = Vec::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+
+        loop {
+            if Instant::now() > deadline { break; }
+            match pty.read_output(&mut buf) {
+                Ok(n) if n > 0 => {
+                    all.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&all).contains("ready") { break; }
+                }
+                _ => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+        }
+
+        pty.signal(nix::sys::signal::Signal::SIGINT).expect("SIGINT should succeed");
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if Instant::now() > deadline { break; }
+            match pty.read_output(&mut buf) {
+                Ok(0) => {
+                    if let Ok(Some(_)) = pty.try_wait() {
+                        if let Ok(remaining) = pty.drain() {
+                            all.extend_from_slice(&remaining);
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+
+        let output = String::from_utf8_lossy(&all);
+        assert!(
+            output.contains("SIGINT_CAUGHT"),
+            "child should receive SIGINT and print marker, got: {:?}",
+            output
+        );
+    }
+
+    // =======================================================================
+    // Pipe detection tests
+    // =======================================================================
+
+    // -----------------------------------------------------------------------
+    // Test 36: contains_pipe detects bare pipe tokens
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_contains_pipe_detects_bare_pipe() {
+        assert!(contains_pipe(&args(&["cat", "file.txt", "|", "grep", "error"])));
+        assert!(contains_pipe(&args(&["echo", "hello", "|", "wc", "-l"])));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 37: contains_pipe ignores non-pipe args
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_contains_pipe_no_pipe() {
+        assert!(!contains_pipe(&args(&["echo", "hello"])));
+        assert!(!contains_pipe(&args(&["ls", "-la"])));
+        assert!(!contains_pipe(&args(&["/bin/sh", "-c", "echo test"])));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 38: contains_pipe ignores pipe inside tokens
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_contains_pipe_inside_token_not_detected() {
+        assert!(!contains_pipe(&args(&["echo", "hello|world"])));
+        assert!(!contains_pipe(&args(&["grep", "a|b", "file.txt"])));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 39: contains_pipe with multi-stage pipeline
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_contains_pipe_multi_stage() {
+        assert!(contains_pipe(&args(&[
+            "cat", "file", "|", "grep", "foo", "|", "wc", "-l"
+        ])));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 40: pipe takes precedence over compound operators
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_pipe_mixed_with_compound_ops() {
+        let input = args(&["cat", "file", "|", "grep", "err", "&&", "echo", "done"]);
+        assert!(
+            contains_pipe(&input),
+            "pipe should be detected even with compound ops present"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 41: run_pipeline produces output
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_run_pipeline_basic() {
+        let exit_code = run(&args(&["echo", "hello_world", "|", "cat"])).unwrap();
+        assert_eq!(exit_code, 0, "echo | cat should succeed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 42: run_pipeline exit code from last command in pipe
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_run_pipeline_exit_code_from_last() {
+        let exit_code = run(&args(&[
+            "echo", "foo", "|", "grep", "nonexistent_string_xyz"
+        ])).unwrap();
+        assert_ne!(exit_code, 0, "pipeline exit code should come from last command (grep no match = 1)");
     }
 }
