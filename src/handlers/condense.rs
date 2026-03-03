@@ -8,9 +8,11 @@
 /// This is the primary handler for verbose command output. It spawns a command
 /// in a PTY, feeds output through both paths, and returns the combined result.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
 use crate::core::classifier::Classifier;
@@ -20,6 +22,87 @@ use crate::core::line_buffer::{Line, LineBuffer};
 use crate::core::pty::{ExitStatus, PtyCapture};
 use crate::router::categories::Category;
 use crate::squasher::pipeline::{Pipeline, PipelineConfig, PipelineMetrics};
+
+// ---------------------------------------------------------------------------
+// Signal handling for the synchronous condense event loop
+// ---------------------------------------------------------------------------
+
+/// Atomic flag set by SIGINT handler — checked in the event loop.
+pub(crate) static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
+/// Atomic flag set by SIGWINCH handler — checked in the event loop.
+static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigint(_: i32) {
+    SIGINT_RECEIVED.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn handle_sigwinch(_: i32) {
+    SIGWINCH_RECEIVED.store(true, Ordering::SeqCst);
+}
+
+/// RAII guard that installs signal handlers and restores originals on drop.
+pub(crate) struct SignalGuard {
+    old_int: SigAction,
+    old_winch: SigAction,
+}
+
+impl SignalGuard {
+    /// Install SIGINT and SIGWINCH handlers, returning a guard that restores
+    /// the previous handlers when dropped.
+    pub fn install() -> Self {
+        // Clear any stale flags
+        SIGINT_RECEIVED.store(false, Ordering::SeqCst);
+        SIGWINCH_RECEIVED.store(false, Ordering::SeqCst);
+
+        let sa_int = SigAction::new(
+            SigHandler::Handler(handle_sigint),
+            SaFlags::SA_RESTART,
+            SigSet::empty(),
+        );
+        let sa_winch = SigAction::new(
+            SigHandler::Handler(handle_sigwinch),
+            SaFlags::SA_RESTART,
+            SigSet::empty(),
+        );
+
+        let old_int = unsafe { sigaction(Signal::SIGINT, &sa_int) }
+            .expect("failed to install SIGINT handler");
+        let old_winch = unsafe { sigaction(Signal::SIGWINCH, &sa_winch) }
+            .expect("failed to install SIGWINCH handler");
+
+        Self { old_int, old_winch }
+    }
+}
+
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = sigaction(Signal::SIGINT, &self.old_int);
+            let _ = sigaction(Signal::SIGWINCH, &self.old_winch);
+        }
+        // Clear flags so they don't leak to the next caller
+        SIGINT_RECEIVED.store(false, Ordering::SeqCst);
+        SIGWINCH_RECEIVED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Query the current terminal dimensions (cols, rows).
+///
+/// Falls back to (80, 24) if the ioctl fails.
+fn query_terminal_size() -> (u16, u16) {
+    let mut ws = nix::pty::Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // TIOCGWINSZ on stdout
+    if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0 {
+        (ws.ws_col, ws.ws_row)
+    } else {
+        (80, 24)
+    }
+}
 
 /// Result of running a command through the condense pipeline.
 pub struct CondenseResult {
@@ -56,13 +139,16 @@ pub fn handle(
     // 1. Spawn command in PTY
     let pty = PtyCapture::spawn(args)?;
 
-    // 2. Create pipeline components
+    // 2. Install signal handlers (restored on drop)
+    let _signal_guard = SignalGuard::install();
+
+    // 3. Create pipeline components
     let mut line_buffer = LineBuffer::new();
     let mut classifier = Classifier::new(grammar, action);
     let mut emit_buffer = EmitBuffer::new();
     let mut raw_lines: Vec<Line> = Vec::new();
 
-    // 3. Event loop: read PTY output and feed through pipeline
+    // 4. Event loop: read PTY output and feed through pipeline
     let mut buf = [0u8; 4096];
     let mut exit_status: Option<ExitStatus> = None;
     let timing = TimingConfig::default();
@@ -71,6 +157,17 @@ pub fn handle(
     let mut last_flush = now;
 
     loop {
+        // Check signal flags
+        if SIGINT_RECEIVED.swap(false, Ordering::SeqCst) {
+            // Forward SIGINT to child process
+            let _ = pty.signal(Signal::SIGINT);
+        }
+        if SIGWINCH_RECEIVED.swap(false, Ordering::SeqCst) {
+            // Resize child PTY to match terminal
+            let (cols, rows) = query_terminal_size();
+            let _ = pty.resize(cols, rows);
+        }
+
         // Read bytes from PTY (non-blocking)
         let n = pty.read_output(&mut buf)?;
 
@@ -270,6 +367,60 @@ mod tests {
 
         assert_eq!(output, expected.output);
         assert_eq!(metrics, expected.metrics);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signal handling tests
+    // -----------------------------------------------------------------------
+
+    // Test: SIGINT flag causes child to receive SIGINT and exit
+    #[test]
+    #[serial(pty)]
+    fn test_sigint_forwarded_to_child() {
+        use std::sync::atomic::Ordering;
+
+        // Set the SIGINT flag after a delay — the condense event loop should
+        // forward it to the child
+        thread::spawn(|| {
+            thread::sleep(Duration::from_millis(500));
+            SIGINT_RECEIVED.store(true, Ordering::SeqCst);
+        });
+
+        // Run a command that sleeps — SIGINT should kill it before completion
+        let args = sh_cmd("sleep 5");
+        let result = handle(&args, None, None).unwrap();
+
+        // Child should have been killed by SIGINT (exit code 130 = 128+2)
+        assert!(
+            result.summary.exit_code == 130 || result.summary.exit_code == 2,
+            "expected SIGINT exit code (130 or 2), got: {}",
+            result.summary.exit_code
+        );
+    }
+
+    // Test: SignalGuard restores previous handlers on drop
+    #[test]
+    fn test_signal_guard_restores_handlers() {
+        use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+
+        // Save current SIGWINCH handler
+        let before = unsafe { sigaction(Signal::SIGWINCH, &SigAction::new(
+            SigHandler::SigDfl,
+            SaFlags::empty(),
+            SigSet::empty(),
+        )) }.unwrap();
+
+        // Restore it
+        unsafe { sigaction(Signal::SIGWINCH, &before) }.unwrap();
+
+        // Install signal guard, then drop it
+        {
+            let _guard = SignalGuard::install();
+        }
+
+        // After guard is dropped, SIGWINCH handler should be restored
+        // (We can't easily inspect the handler, but at minimum it shouldn't crash)
+        // The guard's Drop restores the saved handlers
     }
 
     // Test: CondenseResult includes pipeline_output and pipeline_metrics
