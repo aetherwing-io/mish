@@ -6,7 +6,7 @@ use crate::core::line_buffer::Line;
 use crate::router::categories::Category;
 use crate::squasher::dedup::DedupEngine;
 use crate::squasher::progress::{ProgressFilter, ProgressResult};
-use crate::squasher::truncate::{TruncateConfig, Truncator};
+use crate::squasher::truncate::{HazardCounts, TruncateConfig, Truncator};
 use crate::squasher::vte_strip::VteStripper;
 
 /// Metrics collected during pipeline processing.
@@ -122,9 +122,16 @@ impl Pipeline {
         // Count pre-truncation lines
         let pre_truncation = self.output.len() as u64;
 
-        // Stage 4: Truncation
+        // Stage 4: Truncation with enriched hazard counts
         let output = std::mem::take(&mut self.output);
-        let truncated = self.truncator.truncate(&output);
+        let budget = self.config.truncate.head + self.config.truncate.tail;
+        let hazards = if output.len() > budget {
+            // Scan the middle section that will be hidden
+            Self::scan_hazards(&output[self.config.truncate.head..output.len() - self.config.truncate.tail])
+        } else {
+            HazardCounts::default()
+        };
+        let truncated = self.truncator.truncate_with_counts(&output, &hazards);
 
         let mut metrics = std::mem::take(&mut self.metrics);
         metrics.lines_out = truncated.len() as u64;
@@ -137,6 +144,20 @@ impl Pipeline {
         }
 
         (truncated, metrics)
+    }
+
+    /// Scan lines for error/warning patterns and return hazard counts.
+    fn scan_hazards(lines: &[String]) -> HazardCounts {
+        let mut hazards = HazardCounts::default();
+        for line in lines {
+            let lower = line.to_lowercase();
+            if lower.contains("error:") || lower.contains("error[") || lower.starts_with("fatal:") || lower.starts_with("fatal ") {
+                hazards.errors += 1;
+            } else if lower.contains("warning:") || lower.contains("warning[") || lower.starts_with("warn:") || lower.starts_with("warn ") {
+                hazards.warnings += 1;
+            }
+        }
+        hazards
     }
 
     /// Flush remaining progress and dedup into output (shared by finalize paths).
@@ -764,6 +785,118 @@ mod tests {
             assert_eq!(result.metrics.lines_in, 0);
             assert_eq!(result.metrics.lines_out, 0);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Binary detection tests
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Enriched truncation marker tests (d3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enriched_truncation_shows_error_count() {
+        let config = PipelineConfig {
+            truncate: TruncateConfig { head: 2, tail: 2 },
+            dedup_all: false, // disable dedup to control exact lines
+        };
+        let mut pipe = Pipeline::new(config);
+
+        // Build 20 lines: head(2) + middle(16 with errors/warnings) + tail(2)
+        pipe.feed(Line::Complete("line 1 — head".into()));
+        pipe.feed(Line::Complete("line 2 — head".into()));
+        // Middle section — these will be truncated
+        pipe.feed(Line::Complete("error: undefined function 'foo'".into()));
+        pipe.feed(Line::Complete("warning: unused variable".into()));
+        pipe.feed(Line::Complete("normal output".into()));
+        pipe.feed(Line::Complete("Error: cannot find module".into()));
+        pipe.feed(Line::Complete("WARNING: deprecated API".into()));
+        for i in 0..9 {
+            pipe.feed(Line::Complete(format!("normal middle line {i}")));
+        }
+        // Tail
+        pipe.feed(Line::Complete("line 19 — tail".into()));
+        pipe.feed(Line::Complete("line 20 — tail".into()));
+
+        let (output, _metrics) = pipe.finalize_with_metrics();
+
+        // Should be truncated: head(2) + marker(1) + tail(2) = 5
+        assert_eq!(output.len(), 5);
+        let marker = &output[2];
+        // Marker should mention errors and warnings in hidden region
+        assert!(
+            marker.contains("error"),
+            "marker should mention errors, got: {marker}"
+        );
+        assert!(
+            marker.contains("warning"),
+            "marker should mention warnings, got: {marker}"
+        );
+    }
+
+    #[test]
+    fn test_enriched_truncation_no_hazards_simple_marker() {
+        let config = PipelineConfig {
+            truncate: TruncateConfig { head: 2, tail: 2 },
+            dedup_all: false,
+        };
+        let mut pipe = Pipeline::new(config);
+
+        for i in 1..=20 {
+            pipe.feed(Line::Complete(format!("clean line {i}")));
+        }
+
+        let (output, _) = pipe.finalize_with_metrics();
+        assert_eq!(output.len(), 5);
+        let marker = &output[2];
+        // No errors or warnings → simple marker
+        assert!(
+            !marker.contains("error"),
+            "marker should NOT mention errors, got: {marker}"
+        );
+        assert!(
+            !marker.contains("warning"),
+            "marker should NOT mention warnings, got: {marker}"
+        );
+        assert!(marker.contains("truncated"));
+    }
+
+    #[test]
+    fn test_enriched_truncation_via_process() {
+        // Verify enriched markers work through the process() path too
+        let config = PipelineConfig {
+            truncate: TruncateConfig { head: 2, tail: 2 },
+            dedup_all: false,
+        };
+
+        let mut lines = vec![
+            Line::Complete("head 1".into()),
+            Line::Complete("head 2".into()),
+        ];
+        // Middle with hazards
+        lines.push(Line::Complete("error: something failed".into()));
+        lines.push(Line::Complete("warning: something deprecated".into()));
+        for i in 0..12 {
+            lines.push(Line::Complete(format!("middle {i}")));
+        }
+        // Tail
+        lines.push(Line::Complete("tail 1".into()));
+        lines.push(Line::Complete("tail 2".into()));
+
+        let mut pipe = Pipeline::new(config);
+        let result = pipe.process(lines, Category::Condense);
+
+        assert_eq!(result.output.len(), 5);
+        let marker = &result.output[2];
+        assert!(
+            marker.contains("error"),
+            "process() marker should mention errors, got: {marker}"
+        );
+        assert!(
+            marker.contains("warning"),
+            "process() marker should mention warnings, got: {marker}"
+        );
     }
 
     // -----------------------------------------------------------------------
