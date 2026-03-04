@@ -50,6 +50,14 @@ success = "+ compiled"
 failure = "! gcc failed (exit {exit_code})"
 partial = "... compiling ({lines} lines)"
 
+# ---- block compression (gcc/clang diagnostics) ----
+
+[[block]]
+start   = '^\S+:\d+:\d+:\s+(warning|error|fatal error):'
+end     = '^\s*$'
+extract = '(?P<file>[^\s:]+):(?P<line>\d+):\d+:\s+(?P<level>warning|error|fatal error):\s+(?P<message>[^\n]+?)(?:\s+\[(?P<code>-W[^\]]+)\])?\n'
+digest  = "{level}[{code}]: {message} → {file}:{line}"
+
 # ---- quiet config ----
 
 [quiet]

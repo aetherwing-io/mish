@@ -171,10 +171,16 @@ pub struct CondenseResult {
 
 /// Post-process raw output lines through the squasher pipeline.
 ///
-/// Runs lines through VTE strip → progress removal → dedup → truncation.
+/// Runs lines through VTE strip → progress removal → block compress → dedup → truncation.
 /// Used as the batch-output path for consistency with the MCP handler.
-pub fn post_process(raw_lines: Vec<Line>) -> (Vec<String>, PipelineMetrics) {
-    let config = PipelineConfig::default();
+pub fn post_process(raw_lines: Vec<Line>, grammar: Option<&Grammar>) -> (Vec<String>, PipelineMetrics) {
+    let block_rules = grammar
+        .map(|g| g.block.clone())
+        .unwrap_or_default();
+    let config = PipelineConfig {
+        block_rules,
+        ..PipelineConfig::default()
+    };
     let mut pipeline = Pipeline::new(config);
     let result = pipeline.process(raw_lines, Category::Condense);
     (result.output, result.metrics)
@@ -387,7 +393,7 @@ pub fn handle(
     let summary = emit_buffer.finalize(exit_code, elapsed, grammar, action);
 
     // 8. Batch-process raw output through unified Pipeline
-    let (pipeline_output, pipeline_metrics) = post_process(raw_lines);
+    let (pipeline_output, pipeline_metrics) = post_process(raw_lines, grammar);
 
     Ok(CondenseResult {
         summary,
@@ -417,7 +423,7 @@ mod tests {
             Line::Complete("\x1b[31mERROR: fail\x1b[0m".into()),
             Line::Complete("clean line".into()),
         ];
-        let (output, metrics) = post_process(lines);
+        let (output, metrics) = post_process(lines, None);
         assert!(
             output.iter().all(|l| !l.contains("\x1b")),
             "expected no ANSI codes in pipeline output, got: {:?}",
@@ -432,7 +438,7 @@ mod tests {
         let lines: Vec<Line> = (0..20)
             .map(|i| Line::Complete(format!("Downloading https://registry.npmjs.org/pkg{}", i)))
             .collect();
-        let (output, _metrics) = post_process(lines);
+        let (output, _metrics) = post_process(lines, None);
         assert!(
             output.len() < 20,
             "expected dedup to reduce count from 20, got {}",
@@ -455,7 +461,7 @@ mod tests {
             Line::Overwrite("100%".into()),
             Line::Complete("Done!".into()),
         ];
-        let (output, metrics) = post_process(lines);
+        let (output, metrics) = post_process(lines, None);
         assert!(
             !output.iter().any(|l| l.contains("10%") || l.contains("50%")),
             "expected progress lines removed, got: {:?}",
@@ -490,7 +496,7 @@ mod tests {
         let expected = pipe.process(lines.clone(), Category::Condense);
 
         // post_process path (what CLI condense uses)
-        let (output, metrics) = post_process(lines);
+        let (output, metrics) = post_process(lines, None);
 
         assert_eq!(output, expected.output);
         assert_eq!(metrics, expected.metrics);

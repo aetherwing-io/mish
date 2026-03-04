@@ -622,4 +622,129 @@ fn test_all_grammars_have_success_and_error_fixtures() {
     let _ = load_fixture("ansi_output.txt");
     let _ = load_fixture("progress_bar.txt");
     let _ = load_fixture("cursor_up_progress.txt");
+
+    // Block compression fixture
+    let _ = load_fixture("cargo_build_warnings.txt");
+}
+
+// ---------------------------------------------------------------------------
+// Block compression integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_block_compression_cargo_warnings_fixture() {
+    use mish::core::line_buffer::Line;
+    use mish::squasher::pipeline::{Pipeline, PipelineConfig};
+    use mish::router::categories::Category;
+
+    let grammars = grammars();
+    let cargo_grammar = grammars.get("cargo").expect("cargo grammar should exist");
+
+    // Verify grammar has block rules
+    assert!(
+        !cargo_grammar.block.is_empty(),
+        "cargo grammar should have block rules"
+    );
+
+    let fixture = load_fixture("cargo_build_warnings.txt");
+    let lines: Vec<Line> = fixture.lines().map(|l| Line::Complete(l.to_string())).collect();
+    let input_count = lines.len();
+
+    let config = PipelineConfig {
+        block_rules: cargo_grammar.block.clone(),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::new(config);
+    let result = pipeline.process(lines, Category::Condense);
+
+    // Output should be significantly shorter than input
+    assert!(
+        result.output.len() < input_count,
+        "expected block compression to reduce line count from {}, got {}",
+        input_count,
+        result.output.len()
+    );
+
+    // Should contain digest lines with → separator
+    let digest_lines: Vec<&String> = result.output.iter().filter(|l| l.contains("→")).collect();
+    assert!(
+        !digest_lines.is_empty(),
+        "expected digest lines with → separator, got: {:?}",
+        result.output
+    );
+
+    // Should contain the compressed warning digests
+    assert!(
+        result.output.iter().any(|l| l.contains("field `config` is never read")),
+        "expected 'config' warning digest, got: {:?}",
+        result.output
+    );
+    assert!(
+        result.output.iter().any(|l| l.contains("field `logger` is never read")),
+        "expected 'logger' warning digest, got: {:?}",
+        result.output
+    );
+
+    // blocks_compressed metric should be > 0
+    assert!(
+        result.metrics.blocks_compressed > 0,
+        "expected blocks_compressed > 0, got {}",
+        result.metrics.blocks_compressed
+    );
+}
+
+#[test]
+fn test_block_compression_produces_dedupable_output() {
+    use mish::core::line_buffer::Line;
+    use mish::squasher::pipeline::{Pipeline, PipelineConfig};
+    use mish::router::categories::Category;
+
+    let grammars = grammars();
+    let cargo_grammar = grammars.get("cargo").expect("cargo grammar should exist");
+
+    // Create input with 3 identical warnings (different code locations but same message)
+    let input = "\
+warning[dead_code]: field `x` is never read
+  --> src/a.rs:10:5
+   |
+10 |     x: u32,
+   |     ^
+
+warning[dead_code]: field `x` is never read
+  --> src/b.rs:20:5
+   |
+20 |     x: u32,
+   |     ^
+
+warning[dead_code]: field `x` is never read
+  --> src/c.rs:30:5
+   |
+30 |     x: u32,
+   |     ^
+
+";
+
+    let lines: Vec<Line> = input.lines().map(|l| Line::Complete(l.to_string())).collect();
+
+    let config = PipelineConfig {
+        block_rules: cargo_grammar.block.clone(),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::new(config);
+    let result = pipeline.process(lines, Category::Condense);
+
+    // After block compression + dedup, similar digest lines should be grouped
+    assert!(
+        result.metrics.blocks_compressed >= 3,
+        "expected at least 3 blocks compressed, got {}",
+        result.metrics.blocks_compressed
+    );
+
+    // The output should be compact (digests + maybe dedup markers + blank lines)
+    assert!(
+        result.output.len() <= 10,
+        "expected compact output (<=10 lines), got {} lines: {:?}",
+        result.output.len(),
+        result.output
+    );
 }

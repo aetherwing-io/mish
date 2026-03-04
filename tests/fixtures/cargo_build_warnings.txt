@@ -1,0 +1,28 @@
+   Compiling mish v0.1.0 (/Users/dev/projects/mish)
+warning[dead_code]: field `config` is never read
+  --> src/mcp/server.rs:71:5
+   |
+67 | pub struct McpServer {
+   |            --------- field in this struct
+...
+71 |     config: Arc<MishConfig>,
+   |     ^^^^^^
+   = note: `#[warn(dead_code)]` on by default
+
+warning[dead_code]: field `logger` is never read
+  --> src/mcp/server.rs:72:5
+   |
+67 | pub struct McpServer {
+   |            --------- field in this struct
+...
+72 |     logger: Logger,
+   |     ^^^^^^
+
+warning: unused variable `x`
+  --> src/main.rs:10:9
+   |
+10 |     let x = 42;
+   |         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: `mish` (lib) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.50s

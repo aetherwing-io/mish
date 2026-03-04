@@ -79,3 +79,13 @@ captures = ["passed"]
 success = "+ {passed} tests passed"
 failure = "! {failed} failed, {passed} passed"
 partial = "... testing ({lines} lines)"
+
+# ---- block compression (jest failure blocks) ----
+
+# Jest failure blocks: ● marker through blank line.
+# Captures test path, first message line, and source location from "at" line.
+[[block]]
+start   = '^\s+●\s+'
+end     = '^\s*$'
+extract = '●\s+(?P<test>[^\n]+)\n\s+(?P<message>[^\n]+)\n(?:[^\n]*\n)*?\s+at\s+\S+\s+\((?P<file>[^:]+):(?P<line>\d+)'
+digest  = "FAIL {test}: {message} → {file}:{line}"

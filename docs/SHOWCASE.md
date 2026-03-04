@@ -1,6 +1,6 @@
 # mish Showcase: Side-by-Side Comparison
 
-A detailed comparison of LLM tool calls **with mish** vs **without mish** (bare shell), using real commands run against the mish codebase (42,007 lines of Rust across 69 source files, 1,255 unit tests).
+A detailed comparison of LLM tool calls **with mish** vs **without mish** (bare shell), using real commands run against the mish codebase (43,294 lines of Rust across 70 source files, 1,289 unit tests).
 
 All data in this document was captured from a single live session on 2026-03-03.
 
@@ -11,7 +11,7 @@ All data in this document was captured from a single live session on 2026-03-03.
 1. [Test Setup](#test-setup)
 2. [What mish Exports](#what-mish-exports)
 3. [Challenge 1: Build a Rust Project](#challenge-1-build-a-rust-project)
-4. [Challenge 2: Run 1,255 Unit Tests](#challenge-2-run-1255-unit-tests)
+4. [Challenge 2: Run 1,289 Unit Tests](#challenge-2-run-1289-unit-tests)
 5. [Challenge 3: Error Diagnosis](#challenge-3-error-diagnosis)
 6. [Challenge 4: Watch-Pattern Filtering](#challenge-4-watch-pattern-filtering)
 7. [Challenge 5: Background Process Lifecycle](#challenge-5-background-process-lifecycle)
@@ -29,7 +29,7 @@ All data in this document was captured from a single live session on 2026-03-03.
 - mish v0.1.0 running as MCP server via `mish serve`
 - Claude Code connected over stdio MCP transport
 
-**The challenge:** An LLM agent needs to build, test, and debug a 42K-line Rust project. Every tool call consumes tokens. How much context does mish save, and what intelligence does it add?
+**The challenge:** An LLM agent needs to build, test, and debug a 43K-line Rust project. Every tool call consumes tokens. How much context does mish save, and what intelligence does it add?
 
 **Methodology:** Each challenge runs the same command through both:
 - **Without mish:** Claude Code's built-in `Bash` tool (raw shell execution)
@@ -108,6 +108,7 @@ Response:   Plain text, 29 lines
 ```
 
 ```
+   Compiling mish v0.1.0 (/Users/scottmeyer/projects/mish)
 warning: field `config` is never read
   --> src/mcp/server.rs:71:5
    |
@@ -135,7 +136,7 @@ warning: function `get_output_tail` is never used
     |    ^^^^^^^^^^^^^^^
 
 warning: `mish` (lib) generated 3 warnings
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.98s
 ```
 
 **What the LLM gets:** Raw compiler output. No exit code (must parse text). No timing. No category. No suggestion for next time.
@@ -152,11 +153,11 @@ Response:   Structured JSON
 {
   "result": {
     "exit_code": 0,
-    "duration_ms": 1267,
+    "duration_ms": 1183,
     "cwd": "/Users/scottmeyer/projects/mish",
     "category": "condense",
     "lines": { "total": 29, "shown": 20 },
-    "output": "   Compiling mish v0.1.0 (/Users/scottmeyer/projects/mish)\n    Building [=====>] .../...: mish\nwarning: field `config` is never read (x3)\n  --> src...:...:5 (x3)\n   | (x3)\n67 | pub struct McpServer {\n   |            --------- field in this struct (x2)\n...\n71 |     config: Arc<MishConfig>,\n   |     ^^^^^^\n   = note: `#[warn(dead_code)]` on by default\n (x3)\n87 | pub struct ShellProcess {\n88 |     pty: PtyCapture,\n89 |     shell_path: String,\n   |     ^^^^^^^^^^\nwarning: function `get_output_tail` is never used\n    |\n371 | fn get_output_tail(...) -> String {\n    |    ^^^^^^^^^^^^^^^\n    Building [=====>] 127/128: mish(bin)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.07s",
+    "output": "   Compiling mish v0.1.0 (/Users/scottmeyer/projects/mish)\n    Building [=======================> ] .../...: mish\nwarning: field `config` is never read (x3)\n  --> src...:...:5 (x3)\n   | (x3)\n67 | pub struct McpServer {\n   |            --------- field in this struct (x2)\n...\n71 |     config: Arc<MishConfig>,\n   |     ^^^^^^\n   = note: `#[warn(dead_code)]` on by default\n (x3)\n87 | pub struct ShellProcess {\n88 |     pty: PtyCapture,\n89 |     shell_path: String,\n   |     ^^^^^^^^^^\nwarning: function `get_output_tail` is never used\n    |\n371 | fn get_output_tail(...) -> String {\n    |    ^^^^^^^^^^^^^^^\n    Building [=======================> ] 127/128: mish(bin)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.98s",
     "recommendations": [
       {
         "flag": "--message-format=json",
@@ -174,7 +175,7 @@ Response:   Structured JSON
 |--------|-------------|-----------|
 | Lines returned | 29 | 20 |
 | Exit code | *(must parse text)* | `0` (structured) |
-| Timing | *(unknown)* | `1267ms` |
+| Timing | *(unknown)* | `1183ms` |
 | Category | *(unknown)* | `"condense"` |
 | Deduplication | None | Repeated warning structure collapsed with `(x3)` markers |
 | Next-run suggestion | None | `--message-format=json` recommended |
@@ -184,7 +185,7 @@ Response:   Structured JSON
 
 ---
 
-## Challenge 2: Run 1,255 Unit Tests
+## Challenge 2: Run 1,289 Unit Tests
 
 **Command:** `cargo test --lib`
 
@@ -193,37 +194,37 @@ Response:   Structured JSON
 ```
 Tool call:  Bash({ command: "cargo test --lib 2>&1" })
 
-Response:   Plain text, 1,286 lines
+Response:   Plain text, 1,320 lines
 ```
 
 ```
-(last 5 lines shown — full output is 1,286 lines of individual test names)
+(last 5 lines shown — full output is 1,320 lines of individual test names)
 
-test tools::sh_session::tests::test_list_sessions ... ok
+test tools::sh_spawn::tests::spawn_deny_list_blocks_mkfs ... ok
 test tools::sh_spawn::tests::spawn_invalid_wait_for_regex ... ok
 
-test result: ok. 1255 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.84s
+test result: ok. 1289 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.97s
 ```
 
-**What the LLM gets:** 1,286 lines of `test foo ... ok` repeated 1,255 times. All consumed as context tokens. The only useful line is the last one.
+**What the LLM gets:** 1,320 lines of `test foo ... ok` repeated 1,289 times. All consumed as context tokens. The only useful line is the last one.
 
 ### With mish (sh_run)
 
 ```
 Tool call:  sh_run({ cmd: "cargo test --lib 2>&1", timeout: 120 })
 
-Response:   Structured JSON, 201 lines shown from 1,285 total
+Response:   Structured JSON, 201 lines shown from 1,319 total
 ```
 
 ```json
 {
   "result": {
     "exit_code": 0,
-    "duration_ms": 21835,
+    "duration_ms": 22263,
     "cwd": "/Users/scottmeyer/projects/mish",
     "category": "condense",
-    "lines": { "total": 1285, "shown": 201 },
-    "output": "warning: field `config` is never read\n  --> src...:...:5 (x2)\n   | (x3)\n...\nwarning: `mish` (lib test) generated 2 warnings\n    Finished `test` profile ...\n     Running unittests src/lib.rs (target/debug/deps/mish-9ff88bb7b4389a71)\nrunning 1255 tests\ntest audit::logger::tests::audit_event_serialization ... ok (x3)\ntest audit::logger::tests::command_record_serializes_with_type_tag ... ok\n...\n... [575 lines truncated] ...\n...\ntest yield_engine::detector::tests::test_reset_clears_yield_state ... ok\ntest yield_engine::detector::tests::test_yield_to_operator_decision ... ok\ntest tools::sh_spawn::tests::spawn_alias_conflict_error ... ok\n...\ntest result: ok. 1255 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.57s",
+    "lines": { "total": 1319, "shown": 201 },
+    "output": "warning: field `config` is never read\n  --> src...:...:5 (x2)\n   | (x3)\n...\nwarning: `mish` (lib test) generated 2 warnings\n    Finished `test` profile ...\n     Running unittests src/lib.rs (target/debug/deps/mish-9ff88bb7b4389a71)\nrunning 1289 tests\ntest audit::logger::tests::command_record_null_grammar ... ok (x2)\ntest audit::logger::tests::audit_event_serialization ... ok (x3)\ntest audit::logger::tests::command_record_serializes_with_type_tag ... ok\n...\n... [594 lines truncated] ...\n...\ntest yield_engine::detector::tests::test_reset_clears_yield_state ... ok\ntest yield_engine::detector::tests::test_yield_to_operator_decision ... ok\ntest tools::sh_spawn::tests::spawn_alias_conflict_error ... ok\n...\ntest result: ok. 1289 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.97s",
     "recommendations": [
       {
         "flag": "--message-format=json",
@@ -239,15 +240,15 @@ Response:   Structured JSON, 201 lines shown from 1,285 total
 
 | Metric | Without mish | With mish |
 |--------|-------------|-----------|
-| Lines returned | **1,286** | **201** |
-| Compression | 1:1 | **6.4:1** |
+| Lines returned | **1,320** | **201** |
+| Compression | 1:1 | **6.6:1** |
 | Exit code | *(parse last line)* | `0` (structured) |
-| Duration | *(parse last line)* | `21835ms` (structured) |
+| Duration | *(parse last line)* | `22263ms` (structured) |
 | Deduplication | None | Repeated `... ok` patterns collapsed with `(xN)` |
-| Oreo truncation | None | `[575 lines truncated]` — head + tail preserved |
-| Warnings | Buried in 1,286 lines | Promoted to top, deduplicated |
+| Oreo truncation | None | `[594 lines truncated]` — head + tail preserved |
+| Warnings | Buried in 1,320 lines | Promoted to top, deduplicated |
 
-**Token savings:** ~84% reduction (1,286 → 201 lines). The Oreo truncation keeps the first tests (to see the run start) and last tests (to see the final result), hiding the repetitive middle. Dedup collapses repeated `... ok` patterns.
+**Token savings:** ~85% reduction (1,320 → 201 lines). The Oreo truncation keeps the first tests (to see the run start) and last tests (to see the final result), hiding the repetitive middle. Dedup collapses repeated `... ok` patterns.
 
 ---
 
@@ -287,7 +288,7 @@ Response:   Structured JSON with enrichment
 {
   "result": {
     "exit_code": 1,
-    "duration_ms": 174,
+    "duration_ms": 173,
     "category": "narrate",
     "output": "cp: directory /var/log/readonly_dest does not exist",
     "lines": { "total": 1, "shown": 1 },
@@ -295,6 +296,7 @@ Response:   Structured JSON with enrichment
       { "kind": "source",      "message": "nonexistent_source.txt (not found) ✗" },
       { "kind": "path",        "message": "/var/log ✓  /var/log/readonly_dest ✗" },
       { "kind": "nearest",     "message": "/var/log contains: DiagnosticMessages/, apache2/, asl/, ..." },
+      { "kind": "nearest",     "message": "/tmp contains: (18 entries)" },
       { "kind": "source",      "message": "/tmp/nonexistent_source.txt ✗" },
       { "kind": "dest",        "message": "/var/log/readonly_dest/ ✗" },
       { "kind": "dest_parent", "message": "log (1.3 KB, rwxr-xr-x) ✓" }
@@ -337,13 +339,13 @@ The path walk shows exactly where the path breaks (`/` exists, `/nonexistent` do
 
 **Command:** `cargo test --lib` with `watch="warning"` and `unmatched="drop"`
 
-This is the same 1,255-test run from Challenge 2, but now we only want compiler warnings.
+This is the same 1,289-test run from Challenge 2, but now we only want compiler warnings.
 
 ### Without mish
 
 The LLM would need to:
 1. Run `cargo test --lib 2>&1`
-2. Receive all 1,286 lines
+2. Receive all 1,320 lines
 3. Parse them in context to find warnings
 4. Or run `cargo test --lib 2>&1 | grep warning` — but pipes in Claude Code can cause zombie processes
 
@@ -357,16 +359,16 @@ Tool call:  sh_run({
     unmatched: "drop"
 })
 
-Response:   3 lines from 1,285
+Response:   3 lines from 1,319
 ```
 
 ```json
 {
   "result": {
     "exit_code": 0,
-    "duration_ms": 21720,
+    "duration_ms": 22316,
     "category": "condense",
-    "lines": { "total": 1285, "shown": 3 },
+    "lines": { "total": 1319, "shown": 3 },
     "matched_lines": [
       "warning: field `config` is never read",
       "warning: field `shell_path` is never read",
@@ -381,8 +383,8 @@ Response:   3 lines from 1,285
 
 | Metric | Without mish | With mish + watch |
 |--------|-------------|-------------------|
-| Lines consumed | **1,286** | **3** |
-| Compression | 1:1 | **428:1** |
+| Lines consumed | **1,320** | **3** |
+| Compression | 1:1 | **440:1** |
 | Precision | Must scan all output | Exact regex matches only |
 | Round trips | 1 (but wastes tokens) | 1 (surgical) |
 
@@ -433,20 +435,20 @@ Tool call:  sh_spawn({
 {
   "result": {
     "alias": "watcher",
-    "pid": 98504,
+    "pid": 16391,
     "session": "main",
     "state": "running",
     "wait_matched": true,
     "match_line": "tick 3",
-    "duration_to_match_ms": 1645
+    "duration_to_match_ms": 1610
   },
   "processes": [
-    { "alias": "watcher", "pid": 98504, "state": "running", "elapsed_ms": 1645 }
+    { "alias": "watcher", "pid": 16391, "state": "running", "elapsed_ms": 1610 }
   ]
 }
 ```
 
-The process started, and mish **polled output until `tick 3` appeared** (1,645ms), then returned immediately. The LLM knows the process is ready without polling.
+The process started, and mish **polled output until `tick 3` appeared** (1,610ms), then returned immediately. The LLM knows the process is ready without polling.
 
 **Step 2: Check status**
 
@@ -461,13 +463,14 @@ Tool call:  sh_interact({ alias: "watcher", action: "status" })
     "alias": "watcher",
     "session": "main",
     "state": "running",
-    "pid": 98504,
-    "elapsed_ms": 6593,
+    "pid": 16391,
+    "elapsed_ms": 4232,
     "exit_code": null,
-    "duration_ms": null
+    "duration_ms": null,
+    "signal": null
   },
   "processes": [
-    { "alias": "watcher", "pid": 98504, "state": "running", "elapsed_ms": 6593 }
+    { "alias": "watcher", "pid": 16391, "state": "running", "elapsed_ms": 4232 }
   ]
 }
 ```
@@ -488,7 +491,7 @@ Tool call:  sh_interact({ alias: "watcher", action: "read_tail", lines: 10 })
     "output": "tick 0\ntick 1\ntick 2\ntick 3"
   },
   "processes": [
-    { "alias": "watcher", "pid": 98504, "state": "running", "elapsed_ms": 7567 }
+    { "alias": "watcher", "pid": 16391, "state": "running", "elapsed_ms": 7310 }
   ]
 }
 ```
@@ -509,7 +512,7 @@ Tool call:  sh_interact({ alias: "watcher", action: "kill" })
     "state": "killed"
   },
   "processes": [
-    { "alias": "watcher", "pid": 98504, "state": "killed", "elapsed_ms": 11405, "duration_ms": 11405 }
+    { "alias": "watcher", "pid": 16391, "state": "killed", "elapsed_ms": 9685, "duration_ms": 9685 }
   ]
 }
 ```
@@ -520,7 +523,7 @@ Tool call:  sh_interact({ alias: "watcher", action: "kill" })
 |-----------|-------------|-----------|
 | Start + wait for ready | Manual poll loop | `wait_for: "tick 3"` — blocks until match |
 | Ready confirmation | Parse stdout (if captured) | `wait_matched: true`, `match_line: "tick 3"` |
-| Time to ready | Unknown | `duration_to_match_ms: 1645` |
+| Time to ready | Unknown | `duration_to_match_ms: 1610` |
 | Read output later | Lost (backgrounded) | Spool captures everything |
 | Process state | `kill -0` hack | `state: "running"` / `"killed"` / etc. |
 | Named references | Raw PIDs | `alias: "watcher"` |
@@ -542,11 +545,11 @@ Response:   20 lines, plain text
 ```
 
 ```
+c29ab39 docs: add SHOWCASE.md with side-by-side mish vs bare shell comparison
+fe9728e feat: add ansible/apt/brew/curl/gcc/go/rsync/rustc/ssh/systemctl grammars with fixtures and phase 6 refinements
 4213ba9 feat: raw mode interactivity detection for condense handler (mish-p6.d6)
-0af3fb9 feat: add kubectl + terraform TOML grammars with fixture tests
-cbf4e7f feat: add jest + webpack TOML grammars with fixture tests
 ...
-e0fa678 feat: per-session JSONL audit files
+101ffe3 feat: extract narrate_output() and parse_structured() pipeline-callable functions
 ```
 
 ### With mish (sh_run)
@@ -559,10 +562,10 @@ Tool call:  sh_run({ cmd: "git log --oneline -20" })
 {
   "result": {
     "exit_code": 0,
-    "duration_ms": 198,
+    "duration_ms": 197,
     "category": "condense",
-    "lines": { "total": 21, "shown": 20 },
-    "output": "4213ba9 (HEAD -> main) feat: raw mode interactivity detection ...\n0af3fb9 (worktree-agent-a23e5377) feat: add kubectl + terraform ...\ncbf4e7f feat: add jest + webpack TOML grammars with fixture tests (x2)\n...\ne0fa678 feat: per-session JSONL audit files"
+    "lines": { "total": 20, "shown": 19 },
+    "output": "c29ab39 (HEAD -> main, origin/main) docs: add SHOWCASE.md with side-by-side mish vs bare shell comparison\nfe9728e feat: add ansible/apt/brew/curl/gcc/go/rsync/rustc/ssh/systemctl grammars with fixtures and phase 6 refinements\n4213ba9 feat: raw mode interactivity detection for condense handler (mish-p6.d6)\n0af3fb9 (worktree-agent-a23e5377) feat: add kubectl + terraform TOML grammars with fixture tests\ncbf4e7f feat: add jest + webpack TOML grammars with fixture tests (x2)\n...\n101ffe3 feat: extract narrate_output() and parse_structured() pipeline-callable functions"
   }
 }
 ```
@@ -578,11 +581,11 @@ Tool call:  sh_run({ cmd: "git log --oneline -20" })
 | Challenge | Raw Lines | mish Lines | Compression | Extra Metadata |
 |-----------|-----------|------------|-------------|----------------|
 | cargo build | 29 | 20 | 1.5:1 | exit_code, duration, category, recommendation |
-| cargo test (1,255 tests) | 1,286 | 201 | **6.4:1** | exit_code, duration, Oreo truncation |
-| cargo test + watch | 1,286 | 3 | **428:1** | matched_lines array |
+| cargo test (1,289 tests) | 1,320 | 201 | **6.6:1** | exit_code, duration, Oreo truncation |
+| cargo test + watch | 1,320 | 3 | **440:1** | matched_lines array |
 | cp failure | 1 | 1 | 1:1 | **7 enrichment diagnostics** (saves 4 follow-ups) |
-| ls failure | 1 | 1 | 1:1 | **2 enrichment diagnostics** (path walk + nearest) |
-| git log | 20 | 20 | 1:1 | exit_code, duration, dedup |
+| ls failure | 1 | 1 | 1:1 | **3 enrichment diagnostics** (path walk + nearest) |
+| git log | 20 | 19 | 1.1:1 | exit_code, duration, dedup |
 
 ### What mish Adds (Not Just Compression)
 
@@ -595,7 +598,7 @@ Tool call:  sh_run({ cmd: "git log --oneline -20" })
 | **Watch patterns** | Regex filtering at the source, not in the LLM's context |
 | **Deduplication** | Template-based grouping: `Downloading pkg (x100)` |
 | **Oreo truncation** | Head + tail preserved, hidden middle scanned for hazards |
-| **Hazard markers** | `[575 lines truncated — 3 errors in hidden region]` |
+| **Hazard markers** | `[594 lines truncated — 3 errors in hidden region]` |
 | **Background process management** | Named aliases, output spools, wait-for-ready |
 | **Process table digest** | Ambient awareness on every response |
 | **Recommendations** | Suggested flags for quieter output |
@@ -617,10 +620,10 @@ Every mish response — whether from `sh_run`, `sh_spawn`, `sh_interact`, or `sh
   "processes": [
     {
       "alias": "watcher",
-      "pid": 98504,
+      "pid": 16391,
       "session": "main",
       "state": "running",
-      "elapsed_ms": 7567
+      "elapsed_ms": 7310
     }
   ]
 }
@@ -632,11 +635,11 @@ Every mish response — whether from `sh_run`, `sh_spawn`, `sh_interact`, or `sh
   "processes": [
     {
       "alias": "watcher",
-      "pid": 98504,
+      "pid": 16391,
       "session": "main",
       "state": "killed",
-      "elapsed_ms": 11405,
-      "duration_ms": 11405
+      "elapsed_ms": 9685,
+      "duration_ms": 9685
     }
   ]
 }
@@ -664,11 +667,45 @@ Tool call:  sh_help({})
 {
   "result": {
     "tools": [
-      { "name": "sh_run",     "params": ["cmd*", "timeout", "watch", "unmatched"] },
-      { "name": "sh_spawn",   "params": ["alias*", "cmd*", "wait_for", "timeout"] },
-      { "name": "sh_interact","params": ["alias*", "action*", "input", "lines"] },
-      { "name": "sh_session", "params": ["action*", "name", "shell", "last", "format"] },
-      { "name": "sh_help",    "params": ["tool"] }
+      {
+        "name": "sh_run",
+        "params": [
+          { "name": "cmd", "type": "string", "required": true, "description": "Command to execute" },
+          { "name": "timeout", "type": "integer", "required": false, "default": "300", "description": "Seconds before kill" },
+          { "name": "watch", "type": "string", "required": false, "description": "Regex or @preset to filter output" },
+          { "name": "unmatched", "type": "string", "required": false, "default": "keep", "description": "Handle non-matching lines when watch is set (keep|drop)" }
+        ]
+      },
+      {
+        "name": "sh_spawn",
+        "params": [
+          { "name": "alias", "type": "string", "required": true, "description": "Unique name for this process" },
+          { "name": "cmd", "type": "string", "required": true, "description": "Command to execute" },
+          { "name": "wait_for", "type": "string", "required": false, "description": "Regex to match before returning success" },
+          { "name": "timeout", "type": "integer", "required": false, "default": "300", "description": "Seconds to wait" }
+        ]
+      },
+      {
+        "name": "sh_interact",
+        "params": [
+          { "name": "alias", "type": "string", "required": true, "description": "Target process alias" },
+          { "name": "action", "type": "string", "required": true, "description": "Action: send | read_tail | signal | kill | status" },
+          { "name": "input", "type": "string", "required": false, "description": "For send: string to write (include \\n for enter)" },
+          { "name": "lines", "type": "integer", "required": false, "default": "50", "description": "For read_tail: number of lines" }
+        ]
+      },
+      {
+        "name": "sh_session",
+        "params": [
+          { "name": "action", "type": "string", "required": true, "description": "Action: list" }
+        ]
+      },
+      {
+        "name": "sh_help",
+        "params": [
+          { "name": "tool", "type": "string", "required": false, "description": "Filter to a single tool" }
+        ]
+      }
     ],
     "squasher_defaults": {
       "max_lines": 200,
@@ -682,7 +719,7 @@ Tool call:  sh_help({})
 }
 ```
 
-Under 500 tokens. Includes live resource usage so the LLM knows capacity.
+Includes live resource usage so the LLM knows capacity.
 
 ---
 
@@ -691,7 +728,7 @@ Under 500 tokens. Includes live resource usage so the LLM knows capacity.
 mish is not a shell replacement — it's a **context-efficiency layer** between the LLM and the shell. The LLM still runs the same commands. But instead of raw text that must be parsed, it gets:
 
 1. **Structured metadata** on every response (exit code, timing, category)
-2. **Compressed output** for noisy commands (6x–428x reduction)
+2. **Compressed output** for noisy commands (6.6x–440x reduction)
 3. **Pre-fetched diagnostics** on errors (eliminating 3-5 follow-up calls)
 4. **Surgical filtering** via watch patterns (see only what matters)
 5. **Process lifecycle management** with named handles and output spools

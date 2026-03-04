@@ -77,5 +77,15 @@ partial = "... testing ({lines} lines)"
 
 # ---- quiet config ----
 
+# ---- block compression (rustc diagnostics) ----
+
+[[block]]
+start   = '^(warning|error)(\[.+\])?:\s+'
+end     = '^\s*$'
+extract = '(?P<level>warning|error)(?:\[(?P<code>.+?)\])?:\s+(?P<message>.+)\n\s+-->\s+(?P<file>[^\s:]+):(?P<line>\d+)'
+digest  = "{level}[{code}]: {message} → {file}:{line}"
+
+# ---- quiet config ----
+
 [quiet]
 recommend = ["--message-format=json"]

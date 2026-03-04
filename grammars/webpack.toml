@@ -58,6 +58,22 @@ success = "+ webpack built ({time})"
 failure = "! webpack build failed (exit {exit_code})"
 partial = "... building ({lines} lines)"
 
+# ---- block compression (webpack diagnostics) ----
+
+# ERROR in blocks: "ERROR in ./path\nModule not found: ..." or multi-line TS errors
+[[block]]
+start   = '^ERROR in '
+end     = '^\s*$'
+extract = 'ERROR in (?P<file>\S+)(?:\s+\d+:\d+-\d+)?\n(?P<message>.+?)(?:\n|$)'
+digest  = "error: {message} → {file}"
+
+# WARNING in blocks: "WARNING in ./path\n..."
+[[block]]
+start   = '^WARNING in '
+end     = '^\s*$'
+extract = 'WARNING in (?P<file>\S+)\n(?P<message>.+?)(?:\n|$)'
+digest  = "warning: {message} → {file}"
+
 # ---- quiet config ----
 
 [quiet]

@@ -1,3 +1,4 @@
+pub mod block;
 pub mod dedup;
 pub mod pattern;
 pub mod pipeline;

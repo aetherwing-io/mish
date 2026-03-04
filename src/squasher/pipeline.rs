@@ -2,8 +2,10 @@
 ///
 /// VTE strip -> progress removal -> dedup -> truncation -> output
 
+use crate::core::grammar::BlockRule;
 use crate::core::line_buffer::Line;
 use crate::router::categories::Category;
+use crate::squasher::block::BlockCompressor;
 use crate::squasher::dedup::DedupEngine;
 use crate::squasher::progress::{ProgressFilter, ProgressResult};
 use crate::squasher::truncate::{HazardCounts, TruncateConfig, Truncator};
@@ -16,6 +18,7 @@ pub struct PipelineMetrics {
     pub lines_out: u64,
     pub vte_stripped: u64,
     pub progress_stripped: u64,
+    pub blocks_compressed: u64,
     pub dedup_groups: u64,
     pub dedup_absorbed: u64,
     pub oreo_suppressed: u64,
@@ -28,6 +31,8 @@ pub struct PipelineConfig {
     pub truncate: TruncateConfig,
     /// If true, run dedup on all lines (not just noise-classified ones)
     pub dedup_all: bool,
+    /// Block compression rules (from grammar `[[block]]` sections).
+    pub block_rules: Vec<BlockRule>,
 }
 
 impl Default for PipelineConfig {
@@ -35,6 +40,7 @@ impl Default for PipelineConfig {
         Self {
             truncate: TruncateConfig::default(),
             dedup_all: true,
+            block_rules: Vec::new(),
         }
     }
 }
@@ -50,6 +56,7 @@ pub struct PipelineResult {
 /// The squasher pipeline: processes raw lines into condensed output.
 pub struct Pipeline {
     progress: ProgressFilter,
+    block_compressor: BlockCompressor,
     dedup: DedupEngine,
     truncator: Truncator,
     config: PipelineConfig,
@@ -60,8 +67,10 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(config: PipelineConfig) -> Self {
+        let block_compressor = BlockCompressor::new(config.block_rules.clone());
         Self {
             progress: ProgressFilter::new(),
+            block_compressor,
             dedup: DedupEngine::new(),
             truncator: Truncator::new(config.truncate.clone()),
             config,
@@ -91,11 +100,15 @@ impl Pipeline {
                         self.metrics.vte_stripped += 1;
                     }
 
-                    // Stage 3: Dedup (if enabled)
-                    if self.config.dedup_all {
-                        self.dedup.ingest(&clean);
-                    } else {
-                        self.output.push(clean);
+                    // Stage 2.5: Block compression
+                    let compressed_lines = self.block_compressor.feed(clean);
+                    for compressed in compressed_lines {
+                        // Stage 3: Dedup (if enabled)
+                        if self.config.dedup_all {
+                            self.dedup.ingest(&compressed);
+                        } else {
+                            self.output.push(compressed);
+                        }
                     }
                 }
                 ProgressResult::Stripped => {
@@ -160,19 +173,33 @@ impl Pipeline {
         hazards
     }
 
-    /// Flush remaining progress and dedup into output (shared by finalize paths).
+    /// Flush remaining progress, block compressor, and dedup into output.
     fn flush_remaining(&mut self) {
         let remaining = self.progress.flush();
         for pr in remaining {
             if let ProgressResult::FinalState(text) = pr {
                 let meta = VteStripper::strip(text.as_bytes());
-                if self.config.dedup_all {
-                    self.dedup.ingest(&meta.clean_text);
-                } else {
-                    self.output.push(meta.clean_text);
+                let compressed_lines = self.block_compressor.feed(meta.clean_text);
+                for compressed in compressed_lines {
+                    if self.config.dedup_all {
+                        self.dedup.ingest(&compressed);
+                    } else {
+                        self.output.push(compressed);
+                    }
                 }
             }
         }
+        // Flush any in-progress block at end of stream
+        let block_flush = self.block_compressor.flush();
+        for line in block_flush {
+            if self.config.dedup_all {
+                self.dedup.ingest(&line);
+            } else {
+                self.output.push(line);
+            }
+        }
+        // Capture block compression metrics
+        self.metrics.blocks_compressed = self.block_compressor.blocks_compressed;
         if self.config.dedup_all {
             self.dedup.flush_into(&mut self.output);
         }
@@ -381,6 +408,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false, // disable dedup for this test
+            ..Default::default()
         };
         let mut pipe = Pipeline::new(config);
         for i in 1..=20 {
@@ -462,6 +490,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false, // disable dedup so all 20 lines hit truncation
+            ..Default::default()
         };
         let mut pipe = Pipeline::new(config);
         for i in 1..=20 {
@@ -489,6 +518,7 @@ mod tests {
         assert_eq!(metrics.lines_out, 0);
         assert_eq!(metrics.vte_stripped, 0);
         assert_eq!(metrics.progress_stripped, 0);
+        assert_eq!(metrics.blocks_compressed, 0);
         assert_eq!(metrics.dedup_groups, 0);
         assert_eq!(metrics.dedup_absorbed, 0);
         assert_eq!(metrics.oreo_suppressed, 0);
@@ -629,6 +659,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false,
+            ..Default::default()
         };
         let mut lines = Vec::new();
         for i in 1..=20 {
@@ -800,6 +831,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false, // disable dedup to control exact lines
+            ..Default::default()
         };
         let mut pipe = Pipeline::new(config);
 
@@ -840,6 +872,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false,
+            ..Default::default()
         };
         let mut pipe = Pipeline::new(config);
 
@@ -868,6 +901,7 @@ mod tests {
         let config = PipelineConfig {
             truncate: TruncateConfig { head: 2, tail: 2 },
             dedup_all: false,
+            ..Default::default()
         };
 
         let mut lines = vec![

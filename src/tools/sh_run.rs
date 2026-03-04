@@ -124,8 +124,8 @@ pub async fn handle(
 
     let (processed_output, shown_lines) = match category {
         Category::Condense => {
-            // Full squasher pipeline: VTE strip, progress removal, dedup, truncation.
-            let squashed = squash_output(raw_output, config);
+            // Full squasher pipeline: VTE strip, progress removal, block compress, dedup, truncation.
+            let squashed = squash_output(raw_output, config, detected_grammar);
             let shown = squashed.lines().count() as u64;
             (squashed, shown)
         }
@@ -236,14 +236,19 @@ fn resolve_timeout(params: &ShRunParams, cmd: &str, config: &MishConfig) -> Dura
 }
 
 /// Run output through the squasher pipeline (VTE strip, progress removal,
-/// dedup, truncation).
-fn squash_output(raw: &str, config: &MishConfig) -> String {
+/// block compress, dedup, truncation).
+fn squash_output(raw: &str, config: &MishConfig, grammar: Option<&Grammar>) -> String {
+    let block_rules = grammar
+        .map(|g| g.block.clone())
+        .unwrap_or_default();
+
     let pipeline_config = PipelineConfig {
         truncate: TruncateConfig {
             head: config.squasher.oreo_head,
             tail: config.squasher.oreo_tail,
         },
         dedup_all: true,
+        block_rules,
     };
 
     let mut pipeline = Pipeline::new(pipeline_config);
@@ -465,7 +470,7 @@ mod tests {
     fn test_squash_output_passthrough() {
         let config = default_config();
         let output = "hello\nworld";
-        let squashed = squash_output(output, &config);
+        let squashed = squash_output(output, &config, None);
         assert!(squashed.contains("hello"));
         assert!(squashed.contains("world"));
     }
@@ -474,7 +479,7 @@ mod tests {
     fn test_squash_output_strips_ansi() {
         let config = default_config();
         let output = "\x1b[31merror: something\x1b[0m";
-        let squashed = squash_output(output, &config);
+        let squashed = squash_output(output, &config, None);
         assert!(squashed.contains("error: something"));
         assert!(!squashed.contains("\x1b"));
     }
@@ -482,7 +487,7 @@ mod tests {
     #[test]
     fn test_squash_output_empty() {
         let config = default_config();
-        let squashed = squash_output("", &config);
+        let squashed = squash_output("", &config, None);
         assert!(squashed.is_empty());
     }
 

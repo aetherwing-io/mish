@@ -65,6 +65,22 @@ success = "+ {name} started"
 failure = "! compose up failed"
 partial = "... starting containers"
 
+# ---- block compression (BuildKit error blocks) ----
+
+# BuildKit delimited error blocks: "------\n > [step] RUN cmd:\n...\n------"
+[[block]]
+start   = '^-{4,}$'
+end     = '^-{4,}$'
+extract = '>\s+\[(?P<stage>[^\]]+)\]\s+RUN\s+(?P<cmd>[^:]+):\n.*?(?:ERR!|[Ee]rror|ERROR)[:\s]\s*(?P<message>[^\n]+)'
+digest  = "error[{stage}]: {cmd} — {message}"
+
+# Step failure: "ERROR failed to solve: process ... exit code: N"
+[[block]]
+start   = '^ERROR\s+'
+end     = '^\s*$'
+extract = 'ERROR\s+(?P<message>failed to solve).*?exit code:\s*(?P<code>\d+)'
+digest  = "error: {message} (exit {code})"
+
 # ---- quiet config ----
 
 [quiet]

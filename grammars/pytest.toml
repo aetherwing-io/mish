@@ -94,3 +94,20 @@ captures = ["passed", "time"]
 success = "+ {passed} tests passed ({time})"
 failure = "! {failed} failed, {passed} passed ({time})"
 partial = "... testing ({lines} lines)"
+
+# ---- block compression (pytest failure blocks) ----
+
+# Pytest failure blocks start with ___ test_name ___ separator and end with blank
+# or next separator. Captures test name, assertion detail, and file:line.
+[[block]]
+start   = '^_{3,}\s+\S+\s+_{3,}$'
+end     = '^\s*$'
+extract = '_{3,}\s+(?P<test>\S+)\s+_{3,}\n(?:[^\n]*\n)*?>\s+(?P<assertion>[^\n]+)\nE\s+(?P<error>[^\n]+)\n(?:[^\n]*\n)*?(?P<file>[^\s:]+):(?P<line>\d+):\s*(?P<exc>\w+)'
+digest  = "FAIL {test}: {error} ({exc}) → {file}:{line}"
+
+# Short summary FAILED lines — already single-line but formalize as block for consistency
+[[block]]
+start   = '^FAILED\s+'
+end     = '^\s*$'
+extract = 'FAILED\s+(?P<file>[^\s:]+)::(?P<test>\S+)\s+-\s+(?P<error>[^\n]+)'
+digest  = "FAIL {file}::{test}: {error}"

@@ -72,6 +72,7 @@ pub struct Grammar {
     pub verbosity: Option<VerbosityConfig>,
     pub enrich: Option<EnrichConfig>,
     pub category: Option<Category>,
+    pub block: Vec<BlockRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +165,16 @@ pub struct EnrichActionConfig {
     pub on_failure: Vec<String>,
 }
 
+/// A block compression rule for collapsing multi-line diagnostic blocks
+/// (e.g., rustc warnings/errors) into single dense digest lines.
+#[derive(Debug, Clone)]
+pub struct BlockRule {
+    pub start: Regex,
+    pub end: Regex,
+    pub extract: Regex,
+    pub digest: String,
+}
+
 /// A captured outcome from evaluating rules against output lines.
 #[derive(Debug, Clone)]
 pub struct CapturedOutcome {
@@ -195,6 +206,16 @@ struct RawGrammar {
     enrich: Option<RawEnrichConfig>,
     #[serde(default)]
     category: Option<String>,
+    #[serde(default)]
+    block: Vec<RawBlockRule>,
+}
+
+#[derive(Deserialize)]
+struct RawBlockRule {
+    start: String,
+    end: Option<String>,
+    extract: String,
+    digest: String,
 }
 
 #[derive(Deserialize)]
@@ -358,6 +379,34 @@ impl TryFrom<RawRule> for Rule {
     }
 }
 
+impl TryFrom<RawBlockRule> for BlockRule {
+    type Error = GrammarError;
+
+    fn try_from(raw: RawBlockRule) -> Result<Self, GrammarError> {
+        let start = Regex::new(&raw.start).map_err(|e| GrammarError::InvalidRegex {
+            pattern: raw.start.clone(),
+            source: e,
+        })?;
+        let end_pattern = raw.end.as_deref().unwrap_or(r"^\s*$");
+        let end = Regex::new(end_pattern).map_err(|e| GrammarError::InvalidRegex {
+            pattern: end_pattern.to_string(),
+            source: e,
+        })?;
+        // Build multiline regex with (?s) flag for dot-matches-newline
+        let extract_pattern = format!("(?s){}", raw.extract);
+        let extract = Regex::new(&extract_pattern).map_err(|e| GrammarError::InvalidRegex {
+            pattern: raw.extract.clone(),
+            source: e,
+        })?;
+        Ok(BlockRule {
+            start,
+            end,
+            extract,
+            digest: raw.digest,
+        })
+    }
+}
+
 impl TryFrom<RawAction> for Action {
     type Error = GrammarError;
 
@@ -466,6 +515,12 @@ fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
             .collect(),
     });
 
+    let block = raw
+        .block
+        .into_iter()
+        .map(BlockRule::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(Grammar {
         tool: ToolInfo {
             name: raw.tool.name,
@@ -479,6 +534,7 @@ fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
         verbosity,
         enrich,
         category,
+        block,
     })
 }
 

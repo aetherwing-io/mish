@@ -6,9 +6,16 @@ target/
 
 # Worktrees
 .worktrees/
+.claude/worktrees/
 
 # Decomposition sessions
 sessions/
+
+# Claude Code
+.claude/agents/
+
+# Image generation drafts
+site/nanobanana-output/
 
 # macOS
 .DS_Store
