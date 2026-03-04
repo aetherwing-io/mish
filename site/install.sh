@@ -10,7 +10,14 @@ main() {
 
   case "$os" in
     Darwin) os_target="apple-darwin" ;;
-    Linux)  os_target="unknown-linux-gnu" ;;
+    Linux)
+      # Use musl static binary on Alpine/musl systems, glibc elsewhere
+      if ldd --version 2>&1 | grep -qi musl; then
+        os_target="unknown-linux-musl"
+      else
+        os_target="unknown-linux-gnu"
+      fi
+      ;;
     *)      err "Unsupported OS: $os (mish supports macOS and Linux)" ;;
   esac
 
