@@ -68,7 +68,7 @@ pub struct McpServer {
     session_manager: Arc<SessionManager>,
     process_table: Arc<TokioMutex<ProcessTable>>,
     dispatcher: Arc<McpDispatcher>,
-    config: Arc<MishConfig>,
+    _config: Arc<MishConfig>,
 }
 
 impl McpServer {
@@ -89,7 +89,7 @@ impl McpServer {
             session_manager,
             process_table,
             dispatcher: Arc::new(dispatcher),
-            config,
+            _config: config,
         })
     }
 

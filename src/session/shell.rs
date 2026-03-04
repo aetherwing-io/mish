@@ -86,7 +86,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// and CWD tracking.
 pub struct ShellProcess {
     pty: PtyCapture,
-    shell_path: String,
+    _shell_path: String,
     boundary: BoundaryDetector,
     cwd: String,
     ready: bool,
@@ -120,7 +120,7 @@ impl ShellProcess {
 
         Ok(ShellProcess {
             pty,
-            shell_path: shell_path.to_string(),
+            _shell_path: shell_path.to_string(),
             boundary,
             cwd: initial_cwd.to_string(),
             ready: false,

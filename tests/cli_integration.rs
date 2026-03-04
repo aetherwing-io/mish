@@ -11,6 +11,7 @@
 //! the Condense handler (the default fallback). These tests verify the
 //! full pipeline as-is: PTY capture → classifier → emit buffer → format.
 
+use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serial_test::serial;
@@ -19,7 +20,7 @@ use tempfile::TempDir;
 
 /// Helper: build a `mish` command from the compiled binary.
 fn mish() -> Command {
-    Command::cargo_bin("mish").unwrap()
+    cargo_bin_cmd!("mish").into()
 }
 
 // =========================================================================

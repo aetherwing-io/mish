@@ -368,6 +368,7 @@ fn find_match_line(output: &str, regex: &Regex) -> Option<String> {
 }
 
 /// Get the last N lines from a process's spool output (ANSI-stripped).
+#[cfg(test)]
 fn get_output_tail(table: &ProcessTable, alias: &str, max_lines: usize) -> String {
     if let Some(entry) = table.get(alias) {
         let raw = entry.spool.read_all();
