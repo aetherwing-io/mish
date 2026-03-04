@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Outfit:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
-<script defer data-domain="ohitsmish.com" src="https://plausible.io/js/script.js"></script>
+<script defer data-domain="ohitsmish.com" src="https://plausible.io/js/script.outbound-links.js"></script>
 <style>
   :root {
     --violet: #8b5cf6;
@@ -294,6 +294,11 @@
     white-space: pre;
     max-width: 100%;
     overflow-x: auto;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  .hero-terminal:hover {
+    border-color: var(--violet);
   }
   .hero-cta {
     display: flex;
@@ -530,7 +535,7 @@
     <div class="hero-wordmark"><span class="mu">&#x3BC;</span>ish</div>
     <div class="hero-tag">the llm-native shell</div>
     <p class="hero-desc">Five MCP tools that give your agent structured output, error diagnostics, and process control. One binary. No dependencies.</p>
-    <div class="hero-terminal"><span class="tp">$</span> <span class="tc">curl -fsSL https://ohitsmish.com/install.sh | sh</span>
+    <div class="hero-terminal" role="button" tabindex="0" title="Click to copy" onclick="copyInstall(this)"><span class="tp">$</span> <span class="tc">curl -fsSL https://ohitsmish.com/install.sh | sh</span>
 <span class="tp">$</span> <span class="tc">claude mcp add mish -- mish serve</span></div>
     <div class="hero-cta">
       <a href="https://github.com/aetherwing-io/mish" class="btn btn-ghost">Source</a>
@@ -781,5 +786,14 @@
   </div>
 </footer>
 
+<script>
+function copyInstall(el) {
+  var text = el.textContent.replace(/\$ /g, '').trim();
+  navigator.clipboard.writeText(text);
+  el.title = 'Copied!';
+  setTimeout(function() { el.title = 'Click to copy'; }, 2000);
+  if (window.plausible) plausible('Install Copied');
+}
+</script>
 </body>
 </html>
