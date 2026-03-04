@@ -368,11 +368,11 @@ mod tests {
         Arc::new(default_config())
     }
 
-    /// Extract the tool payload from a content-wrapped MCP tools/call response.
-    fn extract_tool_payload(parsed: &serde_json::Value) -> serde_json::Value {
-        let text = parsed["result"]["content"][0]["text"].as_str()
-            .expect("tools/call response should have result.content[0].text");
-        serde_json::from_str(text).expect("content text should be valid JSON")
+    /// Extract compact text from a content-wrapped MCP tools/call response.
+    fn extract_tool_text(parsed: &serde_json::Value) -> String {
+        parsed["result"]["content"][0]["text"].as_str()
+            .expect("tools/call response should have result.content[0].text")
+            .to_string()
     }
 
     fn make_transport(
@@ -520,9 +520,9 @@ mod tests {
         assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
         let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(parsed["error"].is_null());
-        let payload = extract_tool_payload(&parsed);
-        assert!(payload["result"]["tools"].is_array());
-        assert!(payload["processes"].is_array());
+        let text = extract_tool_text(&parsed);
+        assert!(text.contains("# mish reference card"), "should have reference card: {}", text);
+        assert!(text.contains("## tools"), "should have tools section: {}", text);
     }
 
     // ── Test 8: Unknown tool returns error with process digest ──
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "Expected 2 responses, got: {lines:?}");
         let parsed: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert!(parsed["error"].is_object());
-        assert!(parsed["error"]["data"]["processes"].is_array());
+        // With no running processes, error.data may be null (empty digest)
     }
 
     // ── Test 9: run_with_shutdown exits when shutdown triggered ──
@@ -613,15 +613,9 @@ mod tests {
             parsed["error"].is_null(),
             "Expected success, got: {parsed}"
         );
-        let payload = extract_tool_payload(&parsed);
-        assert_eq!(payload["result"]["exit_code"], 0);
-        assert!(
-            payload["result"]["output"]
-                .as_str()
-                .unwrap()
-                .contains("mcp_server_test")
-        );
-        assert!(payload["processes"].is_array());
+        let text = extract_tool_text(&parsed);
+        assert!(text.contains("exit:0"), "should show exit:0: {}", text);
+        assert!(text.contains("mcp_server_test"), "should contain output: {}", text);
 
         server.session_manager.close_all().await;
     }
@@ -669,8 +663,8 @@ mod tests {
 
         let resp3: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(resp3["id"], 3);
-        let payload3 = extract_tool_payload(&resp3);
-        assert!(payload3["result"]["tools"].is_array());
+        let text3 = extract_tool_text(&resp3);
+        assert!(text3.contains("# mish reference card"), "should have reference card: {}", text3);
 
         server.session_manager.close_all().await;
     }

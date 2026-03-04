@@ -101,13 +101,12 @@ impl MishServer {
         );
     }
 
-    /// Extract the tool payload from a content-wrapped MCP tools/call response.
-    /// Response format: result.content[0].text = JSON string with {result, processes}
-    fn extract_tool_payload(resp: &serde_json::Value) -> serde_json::Value {
-        let text = resp["result"]["content"][0]["text"]
+    /// Extract the compact text from a content-wrapped MCP tools/call response.
+    fn extract_tool_text(resp: &serde_json::Value) -> String {
+        resp["result"]["content"][0]["text"]
             .as_str()
-            .expect("tools/call response should have result.content[0].text");
-        serde_json::from_str(text).expect("content text should be valid JSON")
+            .expect("tools/call response should have result.content[0].text")
+            .to_string()
     }
 
     /// Close stdin (triggers EOF → graceful shutdown) and wait for exit.
@@ -167,43 +166,41 @@ fn test_sh_run_battery() {
         r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo integration_test_output","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run echo failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    assert_eq!(payload["result"]["exit_code"], 0);
+    let text = MishServer::extract_tool_text(&resp);
+    assert!(text.contains("exit:0"), "should show exit:0: {}", text);
     assert!(
-        payload["result"]["output"]
-            .as_str()
-            .unwrap()
-            .contains("integration_test_output"),
-        "output should contain echo text, got: {}",
-        payload["result"]["output"]
+        text.contains("integration_test_output"),
+        "output should contain echo text: {}",
+        text
     );
 
     // -- response structure (test_04) --
+    // Compact text format: {symbol} exit:{code} {elapsed} {category} ({total}→{shown})\n{body}
     let resp = server.request(
         r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo structure_check","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run structure failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    let result = &payload["result"];
-    assert!(result["exit_code"].is_number(), "exit_code should be number");
-    assert!(result["duration_ms"].is_number(), "duration_ms should be number");
-    assert!(result["cwd"].is_string(), "cwd should be string");
-    assert!(result["category"].is_string(), "category should be string");
-    assert!(result["output"].is_string(), "output should be string");
-    assert!(result["lines"].is_object(), "lines should be object");
-    assert!(result["lines"]["total"].is_number(), "lines.total should be number");
-    assert!(result["lines"]["shown"].is_number(), "lines.shown should be number");
+    let text = MishServer::extract_tool_text(&resp);
+    assert!(text.contains("exit:0"), "should have exit code: {}", text);
+    // Category should be in the header (passthrough or condense)
+    let first_line = text.lines().next().unwrap();
+    assert!(
+        first_line.contains("passthrough") || first_line.contains("condense"),
+        "header should contain category: {}",
+        first_line
+    );
 
     // -- category present (test_05) --
     let resp = server.request(
         r#"{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo hello","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run category failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
+    let text = MishServer::extract_tool_text(&resp);
+    let first_line = text.lines().next().unwrap();
     assert!(
-        payload["result"]["category"].is_string(),
-        "category should be a string, got: {}",
-        payload["result"]["category"]
+        first_line.contains("passthrough") || first_line.contains("condense"),
+        "header should contain category: {}",
+        first_line
     );
 
     // -- line counts (test_06) --
@@ -211,20 +208,23 @@ fn test_sh_run_battery() {
         r#"{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo line1; echo line2; echo line3","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run lines failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    assert!(payload["result"]["lines"]["total"].is_number());
-    assert!(payload["result"]["lines"]["shown"].is_number());
-    assert!(payload["result"]["lines"]["total"].as_u64().unwrap() >= 1);
+    let text = MishServer::extract_tool_text(&resp);
+    // Compact format shows (total→shown) ratio
+    assert!(
+        text.contains("\u{2192}"),
+        "should contain arrow in line ratio: {}",
+        text
+    );
 
     // -- digest on sh_help (test_07) --
     let resp = server.request(
         r#"{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_help failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
+    let text = MishServer::extract_tool_text(&resp);
     assert!(
-        payload["processes"].is_array(),
-        "processes digest missing from sh_help response: {resp}"
+        text.contains("# mish reference card"),
+        "sh_help should return reference card: {resp}"
     );
 
     // -- digest on sh_run (test_08) --
@@ -232,10 +232,10 @@ fn test_sh_run_battery() {
         r#"{"jsonrpc":"2.0","id":80,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo digest_check","timeout":5}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run digest failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
+    let text = MishServer::extract_tool_text(&resp);
     assert!(
-        payload["processes"].is_array(),
-        "processes digest missing from sh_run response: {resp}"
+        text.contains("exit:0"),
+        "sh_run should show exit code: {resp}"
     );
 
     // -- multiple sequential commands (test_27) --
@@ -248,8 +248,8 @@ fn test_sh_run_battery() {
         let resp = server.request(&cmd);
         assert!(resp["error"].is_null(), "sh_run #{i} failed: {resp}");
         assert_eq!(resp["id"], id);
-        let payload = MishServer::extract_tool_payload(&resp);
-        assert_eq!(payload["result"]["exit_code"], 0);
+        let text = MishServer::extract_tool_text(&resp);
+        assert!(text.contains("exit:0"), "should show exit:0 for seq_{}: {}", i, text);
     }
 
     server.shutdown();
@@ -270,10 +270,8 @@ fn test_error_codes_battery() {
         r#"{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"nonexistent_tool","arguments":{}}}"#,
     );
     assert!(resp["error"].is_object(), "Expected error: {resp}");
-    assert!(
-        resp["error"]["data"]["processes"].is_array(),
-        "processes digest missing from error response: {resp}"
-    );
+    // With no running processes, error.data may be null (empty digest).
+    // If processes are running, data is a compact text string like "[procs] ..."
 
     // -- unknown tool error code (test_11) --
     let resp = server.request(
@@ -362,19 +360,9 @@ fn test_session_battery() {
         r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"list"}}}"#,
     );
     assert!(resp["error"].is_null(), "Expected success, got: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    let sessions = &payload["result"]["sessions"];
-    assert!(sessions.is_array());
-    let names: Vec<&str> = sessions
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["session"].as_str().unwrap())
-        .collect();
-    assert!(
-        names.contains(&"main"),
-        "Expected 'main' session in {names:?}"
-    );
+    let text = MishServer::extract_tool_text(&resp);
+    assert!(text.contains("+ session list"), "should have list header: {}", text);
+    assert!(text.contains("main"), "Expected 'main' session in: {}", text);
 
     // -- create/list/close lifecycle (test_02) --
     let create_resp = server.request(
@@ -384,25 +372,18 @@ fn test_session_battery() {
         create_resp["error"].is_null(),
         "create failed: {create_resp}"
     );
-    let create_payload = MishServer::extract_tool_payload(&create_resp);
-    assert_eq!(create_payload["result"]["session"], "test-session");
-    assert_eq!(create_payload["result"]["ready"], true);
+    let create_text = MishServer::extract_tool_text(&create_resp);
+    assert!(create_text.contains("+ session create test-session ready"), "create: {}", create_text);
 
     let list_resp = server.request(
         r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"list"}}}"#,
     );
-    let list_payload = MishServer::extract_tool_payload(&list_resp);
-    let sessions = &list_payload["result"]["sessions"];
-    let names: Vec<&str> = sessions
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["session"].as_str().unwrap())
-        .collect();
-    assert!(names.contains(&"main"), "missing 'main' in {names:?}");
+    let list_text = MishServer::extract_tool_text(&list_resp);
+    assert!(list_text.contains("main"), "missing 'main' in: {}", list_text);
     assert!(
-        names.contains(&"test-session"),
-        "missing 'test-session' in {names:?}"
+        list_text.contains("test-session"),
+        "missing 'test-session' in: {}",
+        list_text
     );
 
     let close_resp = server.request(
@@ -412,55 +393,41 @@ fn test_session_battery() {
         close_resp["error"].is_null(),
         "close failed: {close_resp}"
     );
-    let close_payload = MishServer::extract_tool_payload(&close_resp);
-    assert_eq!(close_payload["result"]["closed"], true);
+    let close_text = MishServer::extract_tool_text(&close_resp);
+    assert!(close_text.contains("+ session close test-session"), "close: {}", close_text);
 
     let list2_resp = server.request(
         r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"list"}}}"#,
     );
-    let list2_payload = MishServer::extract_tool_payload(&list2_resp);
-    let sessions2 = &list2_payload["result"]["sessions"];
-    let names2: Vec<&str> = sessions2
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["session"].as_str().unwrap())
-        .collect();
+    let list2_text = MishServer::extract_tool_text(&list2_resp);
     assert!(
-        !names2.contains(&"test-session"),
-        "test-session should be gone, got: {names2:?}"
+        !list2_text.contains("test-session"),
+        "test-session should be gone: {}",
+        list2_text
     );
 
     // -- digest on session operations (test_10) --
+    // Compact format: digest appears as [procs] line (only when processes exist)
     let create_resp = server.request(
         r#"{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"create","name":"digest-test","shell":"/bin/bash"}}}"#,
     );
     assert!(create_resp["error"].is_null(), "create failed: {create_resp}");
-    let create_payload = MishServer::extract_tool_payload(&create_resp);
-    assert!(
-        create_payload["processes"].is_array(),
-        "processes digest missing from session create: {create_resp}"
-    );
+    let create_text = MishServer::extract_tool_text(&create_resp);
+    assert!(create_text.contains("+ session create digest-test"), "create: {}", create_text);
 
     let list_resp = server.request(
         r#"{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"list"}}}"#,
     );
     assert!(list_resp["error"].is_null(), "list failed: {list_resp}");
-    let list_payload = MishServer::extract_tool_payload(&list_resp);
-    assert!(
-        list_payload["processes"].is_array(),
-        "processes digest missing from session list: {list_resp}"
-    );
+    let list_text = MishServer::extract_tool_text(&list_resp);
+    assert!(list_text.contains("+ session list"), "list: {}", list_text);
 
     let close_resp = server.request(
         r#"{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"close","name":"digest-test"}}}"#,
     );
     assert!(close_resp["error"].is_null(), "close failed: {close_resp}");
-    let close_payload = MishServer::extract_tool_payload(&close_resp);
-    assert!(
-        close_payload["processes"].is_array(),
-        "processes digest missing from session close: {close_resp}"
-    );
+    let close_text = MishServer::extract_tool_text(&close_resp);
+    assert!(close_text.contains("+ session close digest-test"), "close: {}", close_text);
 
     // -- sh_run on custom session (test_25) --
     let create_resp = server.request(
@@ -472,15 +439,12 @@ fn test_session_battery() {
         r#"{"jsonrpc":"2.0","id":251,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo custom_session_output","session":"custom-run","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run on custom session failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    assert_eq!(payload["result"]["exit_code"], 0);
+    let text = MishServer::extract_tool_text(&resp);
+    assert!(text.contains("exit:0"), "should show exit:0: {}", text);
     assert!(
-        payload["result"]["output"]
-            .as_str()
-            .unwrap()
-            .contains("custom_session_output"),
+        text.contains("custom_session_output"),
         "output should contain echo text: {}",
-        payload["result"]["output"]
+        text
     );
 
     server.request(
@@ -505,11 +469,9 @@ fn test_background_battery() {
         r#"{"jsonrpc":"2.0","id":280,"method":"tools/call","params":{"name":"sh_spawn","arguments":{"alias":"bgtest","cmd":"sleep 60","timeout":5}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_spawn failed: {resp}");
-    let payload = MishServer::extract_tool_payload(&resp);
-    let result = &payload["result"];
-    assert_eq!(result["alias"], "bgtest");
-    assert_eq!(result["state"], "running");
-    assert!(result["pid"].is_number(), "pid should be a number: {result}");
+    let text = MishServer::extract_tool_text(&resp);
+    assert!(text.contains("spawned bgtest"), "should contain alias: {}", text);
+    assert!(text.contains("pid:"), "should contain pid: {}", text);
 
     // Kill bgtest before next spawn
     server.request(
@@ -526,16 +488,17 @@ fn test_background_battery() {
         r#"{"jsonrpc":"2.0","id":291,"method":"tools/call","params":{"name":"sh_interact","arguments":{"alias":"interact_test","action":"status"}}}"#,
     );
     assert!(status_resp["error"].is_null(), "status failed: {status_resp}");
-    let status_payload = MishServer::extract_tool_payload(&status_resp);
-    assert_eq!(status_payload["result"]["alias"], "interact_test");
-    assert_eq!(status_payload["result"]["action"], "status");
+    let status_text = MishServer::extract_tool_text(&status_resp);
+    assert!(status_text.contains("interact_test"), "should contain alias: {}", status_text);
+    assert!(status_text.contains("status"), "should contain status: {}", status_text);
 
     let kill_resp = server.request(
         r#"{"jsonrpc":"2.0","id":292,"method":"tools/call","params":{"name":"sh_interact","arguments":{"alias":"interact_test","action":"kill"}}}"#,
     );
     assert!(kill_resp["error"].is_null(), "kill failed: {kill_resp}");
-    let kill_payload = MishServer::extract_tool_payload(&kill_resp);
-    assert_eq!(kill_payload["result"]["action"], "kill");
+    let kill_text = MishServer::extract_tool_text(&kill_resp);
+    assert!(kill_text.contains("interact_test"), "should contain alias: {}", kill_text);
+    assert!(kill_text.contains("killed"), "should contain killed: {}", kill_text);
 
     // -- spawn appears in digest (test_30) --
     let spawn_resp = server.request(
@@ -546,18 +509,16 @@ fn test_background_battery() {
     let help_resp = server.request(
         r#"{"jsonrpc":"2.0","id":301,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#,
     );
-    let help_payload = MishServer::extract_tool_payload(&help_resp);
-    let processes = &help_payload["processes"];
-    assert!(processes.is_array(), "processes digest missing: {help_resp}");
-    let aliases: Vec<&str> = processes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|p| p["alias"].as_str())
-        .collect();
+    let help_text = MishServer::extract_tool_text(&help_resp);
     assert!(
-        aliases.contains(&"digest_bg"),
-        "digest should include 'digest_bg', got: {aliases:?}"
+        help_text.contains("[procs]"),
+        "should have process digest: {}",
+        help_text
+    );
+    assert!(
+        help_text.contains("digest_bg"),
+        "digest should include 'digest_bg': {}",
+        help_text
     );
 
     // Clean up
@@ -596,38 +557,33 @@ fn test_full_lifecycle() {
         r#"{"jsonrpc":"2.0","id":221,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo lifecycle_test","timeout":10}}}"#,
     );
     assert!(run_resp["error"].is_null());
-    let run_payload = MishServer::extract_tool_payload(&run_resp);
-    assert_eq!(run_payload["result"]["exit_code"], 0);
-    assert!(
-        run_payload["result"]["output"]
-            .as_str()
-            .unwrap()
-            .contains("lifecycle_test")
-    );
+    let run_text = MishServer::extract_tool_text(&run_resp);
+    assert!(run_text.contains("exit:0"), "should show exit:0: {}", run_text);
+    assert!(run_text.contains("lifecycle_test"), "should contain output: {}", run_text);
 
     // 3. sh_session — create, use, close a session
     let create_resp = server.request(
         r#"{"jsonrpc":"2.0","id":222,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"create","name":"lifecycle-sess","shell":"/bin/bash"}}}"#,
     );
     assert!(create_resp["error"].is_null());
-    let create_payload = MishServer::extract_tool_payload(&create_resp);
-    assert_eq!(create_payload["result"]["session"], "lifecycle-sess");
+    let create_text = MishServer::extract_tool_text(&create_resp);
+    assert!(create_text.contains("lifecycle-sess"), "should contain session name: {}", create_text);
 
     let close_resp = server.request(
         r#"{"jsonrpc":"2.0","id":223,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"close","name":"lifecycle-sess"}}}"#,
     );
     assert!(close_resp["error"].is_null());
-    let close_payload = MishServer::extract_tool_payload(&close_resp);
-    assert_eq!(close_payload["result"]["closed"], true);
+    let close_text = MishServer::extract_tool_text(&close_resp);
+    assert!(close_text.contains("+ session close lifecycle-sess"), "close: {}", close_text);
 
-    // 4. sh_help — reference card with digest
+    // 4. sh_help — reference card
     let help_resp = server.request(
         r#"{"jsonrpc":"2.0","id":224,"method":"tools/call","params":{"name":"sh_help","arguments":{}}}"#,
     );
     assert!(help_resp["error"].is_null());
-    let help_payload = MishServer::extract_tool_payload(&help_resp);
-    assert!(help_payload["result"]["tools"].is_array());
-    assert!(help_payload["processes"].is_array());
+    let help_text = MishServer::extract_tool_text(&help_resp);
+    assert!(help_text.contains("# mish reference card"), "should have reference card: {}", help_text);
+    assert!(help_text.contains("## tools"), "should have tools section: {}", help_text);
 
     // 5. Graceful shutdown
     let status = server.shutdown();

@@ -46,17 +46,15 @@ def section(title):
     print(f"\n{BOLD}{title}{RESET}")
 
 
-def extract_tool_payload(resp):
-    """Extract tool payload from MCP content-wrapped response.
+def extract_tool_text(resp):
+    """Extract compact text from MCP content-wrapped response.
 
-    tools/call responses use: result.content[0].text = JSON string
-    The JSON string contains {result: ..., processes: [...]}.
-    Returns a dict mimicking the old {result: ..., processes: [...]} shape.
+    tools/call responses use: result.content[0].text = compact text string.
     """
     content = resp.get("result", {}).get("content", [])
     if content and content[0].get("type") == "text":
-        return json.loads(content[0]["text"])
-    return {}
+        return content[0]["text"]
+    return ""
 
 
 class MishServer:
@@ -152,18 +150,11 @@ def main():
         "name": "sh_help", "arguments": {}
     }, req_id=3)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("tools"):
-        ok("sh_help", f"{len(result['tools'])} tool descriptions")
+    text = extract_tool_text(resp)
+    if "sh_run" in text and "sh_spawn" in text:
+        ok("sh_help", "contains tool descriptions")
     else:
-        fail("sh_help", str(resp))
-
-    # Check process digest
-    processes = extract_tool_payload(resp).get("processes")
-    if isinstance(processes, list):
-        ok("digest on sh_help", f"{len(processes)} processes")
-    else:
-        fail("digest on sh_help", "missing processes array")
+        fail("sh_help", f"unexpected: {text[:100]}")
 
     # ── 4. sh_run — simple command ──
     section("4. sh_run")
@@ -173,18 +164,11 @@ def main():
         "arguments": {"cmd": "echo hello_from_mish", "timeout": 10}
     }, req_id=10)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("exit_code") == 0 and "hello_from_mish" in result.get("output", ""):
-        ok("echo", f"exit={result['exit_code']} category={result.get('category', '?')}")
+    text = extract_tool_text(resp)
+    if "exit:0" in text and "hello_from_mish" in text:
+        ok("echo", "exit:0 + output present")
     else:
-        fail("echo", str(result))
-
-    # Check response structure
-    for field in ["exit_code", "output", "duration_ms", "cwd", "category", "lines"]:
-        if field in result:
-            ok(f"  field:{field}", str(result[field])[:60])
-        else:
-            fail(f"  field:{field}", "missing")
+        fail("echo", text[:200])
 
     # ── 5. sh_run — multi-line output (test squasher) ──
     resp = server.request("tools/call", {
@@ -192,12 +176,11 @@ def main():
         "arguments": {"cmd": "seq 1 50", "timeout": 10}
     }, req_id=11)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("exit_code") == 0:
-        lines_info = result.get("lines", {})
-        ok("seq 1 50", f"total={lines_info.get('total')} shown={lines_info.get('shown')}")
+    text = extract_tool_text(resp)
+    if "exit:0" in text:
+        ok("seq 1 50", "exit:0")
     else:
-        fail("seq 1 50", str(result))
+        fail("seq 1 50", text[:200])
 
     # ── 6. sh_run — nonzero exit ──
     resp = server.request("tools/call", {
@@ -205,11 +188,12 @@ def main():
         "arguments": {"cmd": "false", "timeout": 5}
     }, req_id=12)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("exit_code") not in (None, 0):
-        ok("nonzero exit", f"exit={result['exit_code']}")
+    text = extract_tool_text(resp)
+    # exit code should be non-zero (typically exit:1)
+    if "exit:0" not in text and "exit:" in text:
+        ok("nonzero exit", "non-zero exit code")
     else:
-        fail("nonzero exit", f"expected nonzero, got {result.get('exit_code')}")
+        fail("nonzero exit", text[:200])
 
     # ── 7. sh_run — denied command ──
     resp = server.request("tools/call", {
@@ -231,13 +215,11 @@ def main():
         "arguments": {"action": "list"}
     }, req_id=20)
 
-    result = extract_tool_payload(resp).get("result", {})
-    sessions = result.get("sessions", [])
-    names = [s.get("session") for s in sessions]
-    if "main" in names:
-        ok("list", f"sessions: {names}")
+    text = extract_tool_text(resp)
+    if "main" in text:
+        ok("list", "contains 'main' session")
     else:
-        fail("list", f"expected 'main' in {names}")
+        fail("list", text[:200])
 
     # Create
     resp = server.request("tools/call", {
@@ -245,11 +227,11 @@ def main():
         "arguments": {"action": "create", "name": "smoke-sess", "shell": "/bin/bash"}
     }, req_id=21)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("session") == "smoke-sess" and result.get("ready"):
-        ok("create", "smoke-sess ready")
+    text = extract_tool_text(resp)
+    if "smoke-sess" in text:
+        ok("create", "smoke-sess created")
     else:
-        fail("create", str(result))
+        fail("create", text[:200])
 
     # Run on custom session
     resp = server.request("tools/call", {
@@ -257,11 +239,11 @@ def main():
         "arguments": {"cmd": "echo on_custom_session", "session": "smoke-sess", "timeout": 5}
     }, req_id=22)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if "on_custom_session" in result.get("output", ""):
+    text = extract_tool_text(resp)
+    if "on_custom_session" in text:
         ok("run on custom session")
     else:
-        fail("run on custom session", str(result))
+        fail("run on custom session", text[:200])
 
     # Close
     resp = server.request("tools/call", {
@@ -269,11 +251,11 @@ def main():
         "arguments": {"action": "close", "name": "smoke-sess"}
     }, req_id=23)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("closed"):
+    text = extract_tool_text(resp)
+    if "smoke-sess" in text and "close" in text.lower():
         ok("close", "smoke-sess closed")
     else:
-        fail("close", str(result))
+        fail("close", text[:200])
 
     # ── 9. sh_spawn + sh_interact ──
     section("6. sh_spawn + sh_interact")
@@ -283,11 +265,11 @@ def main():
         "arguments": {"alias": "bg1", "cmd": "sleep 30", "timeout": 5}
     }, req_id=30)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("alias") == "bg1" and result.get("state") == "running":
-        ok("spawn", f"alias=bg1 pid={result.get('pid')} state={result.get('state')}")
+    text = extract_tool_text(resp)
+    if "bg1" in text and "pid:" in text:
+        ok("spawn", "bg1 spawned with pid")
     else:
-        fail("spawn", str(result))
+        fail("spawn", text[:200])
 
     # Status
     resp = server.request("tools/call", {
@@ -295,19 +277,17 @@ def main():
         "arguments": {"alias": "bg1", "action": "status"}
     }, req_id=31)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("alias") == "bg1":
-        ok("status", f"action={result.get('action')}")
+    text = extract_tool_text(resp)
+    if "bg1" in text and "status" in text:
+        ok("status", "bg1 status ok")
     else:
-        fail("status", str(result))
+        fail("status", text[:200])
 
     # Check digest includes bg1
-    processes = extract_tool_payload(resp).get("processes", [])
-    bg_aliases = [p.get("alias") for p in processes]
-    if "bg1" in bg_aliases:
-        ok("digest includes bg1", f"processes: {bg_aliases}")
+    if "[procs]" in text and "bg1" in text:
+        ok("digest includes bg1")
     else:
-        fail("digest includes bg1", f"got: {bg_aliases}")
+        fail("digest includes bg1", f"no [procs] with bg1 in: {text[:200]}")
 
     # Kill
     resp = server.request("tools/call", {
@@ -315,11 +295,11 @@ def main():
         "arguments": {"alias": "bg1", "action": "kill"}
     }, req_id=32)
 
-    result = extract_tool_payload(resp).get("result", {})
-    if result.get("action") == "kill":
+    text = extract_tool_text(resp)
+    if "bg1" in text and "kill" in text:
         ok("kill", "bg1 killed")
     else:
-        fail("kill", str(result))
+        fail("kill", text[:200])
 
     # ── 10. Error handling ──
     section("7. Error Handling")

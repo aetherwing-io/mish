@@ -117,6 +117,31 @@ pub fn format_results(inputs: &[FormatInput], mode: OutputMode) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Format an elapsed time for compact output.
+///
+/// - `<1s` → `"150ms"`
+/// - `<60s` → `"12.3s"` (strips `.0`)
+/// - `≥60s` → `"2m"`
+pub fn format_elapsed(elapsed_secs: Option<f64>) -> String {
+    match elapsed_secs {
+        None => String::new(),
+        Some(secs) => {
+            if secs < 1.0 {
+                format!("{}ms", (secs * 1000.0).round() as u64)
+            } else if secs < 60.0 {
+                let s = format!("{:.1}s", secs);
+                s.replace(".0s", "s")
+            } else {
+                format!("{}m", (secs / 60.0).ceil() as u64)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Private formatters
 // ---------------------------------------------------------------------------
 
@@ -127,69 +152,65 @@ fn format_human(input: &FormatInput) -> String {
 
     let has_metadata = input.total_lines.is_some() || input.elapsed_secs.is_some();
 
-    match input.category.as_str() {
-        "passthrough" => {
-            // Passthrough: raw output + footer (no symbol prefix)
-            lines.push(input.body.clone());
+    if has_metadata {
+        // Compact header: {symbol} exit:{code} {elapsed} {category} ({total}→{shown})
+        let mut parts = vec![format!("{} exit:{}", symbol, input.exit_code)];
+
+        let elapsed = format_elapsed(input.elapsed_secs);
+        if !elapsed.is_empty() {
+            parts.push(elapsed);
         }
-        _ => {
-            if has_metadata {
-                // Structured header: {symbol} {command}: {total_lines} lines → exit {code} ({elapsed}s)
-                let mut meta_parts = Vec::new();
-                if let Some(total) = input.total_lines {
-                    meta_parts.push(format!("{} lines", total));
-                }
-                let exit_part = format!("exit {}", input.exit_code);
-                let elapsed_part = if let Some(elapsed) = input.elapsed_secs {
-                    format!(" ({}s)", elapsed)
-                } else {
-                    String::new()
-                };
 
-                let meta_str = if meta_parts.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} \u{2192} ", meta_parts.join(", "))
-                };
+        parts.push(input.category.clone());
 
-                lines.push(format!(
-                    "{} {}: {}{}{}",
-                    symbol, input.command, meta_str, exit_part, elapsed_part
-                ));
-
-                // Body lines indented with 2 spaces
-                if !input.body.is_empty() {
-                    for body_line in input.body.lines() {
-                        lines.push(format!("  {}", body_line));
-                    }
-                }
+        if let Some(total) = input.total_lines {
+            let shown = if input.body.is_empty() {
+                0
             } else {
-                // Simple format: {symbol} {body}
+                input.body.lines().count()
+            };
+            parts.push(format!("({}\u{2192}{})", total, shown));
+        }
+
+        lines.push(parts.join(" "));
+
+        // Body lines — no indentation
+        if !input.body.is_empty() {
+            for body_line in input.body.lines() {
+                lines.push(body_line.to_string());
+            }
+        }
+    } else {
+        match input.category.as_str() {
+            "passthrough" => {
+                lines.push(input.body.clone());
+            }
+            _ => {
                 lines.push(format!("{} {}", symbol, input.body));
             }
         }
     }
 
-    // Outcome lines
+    // Outcome lines (no indent)
     for outcome in &input.outcomes {
-        lines.push(format!("  + {}", outcome));
+        lines.push(format!("+ {}", outcome));
     }
 
-    // Hazard lines
+    // Hazard lines (no indent)
     for hazard in &input.hazards {
         let prefix = if hazard.severity == "error" { "!" } else { "~" };
-        lines.push(format!("  {} {}", prefix, hazard.text));
+        lines.push(format!("{} {}", prefix, hazard.text));
     }
 
-    // Enrichment lines (indented under the main output)
+    // Enrichment lines: ~ kind message
     for e in &input.enrichment {
-        lines.push(format!("  {}: {}", e.kind, e.message));
+        lines.push(format!("~ {} {}", e.kind, e.message));
     }
 
-    // Recommendation lines (only on success — no point suggesting flags if command failed)
+    // Recommendation lines (only on success)
     if input.exit_code == 0 && !input.recommendations.is_empty() {
         for r in &input.recommendations {
-            lines.push(format!("  ~ next time: consider {} ({})", r.flag, r.reason));
+            lines.push(format!("\u{2192} consider {} ({})", r.flag, r.reason));
         }
     }
 
@@ -576,8 +597,8 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("source:"),
-            "should include enrichment kind: {}",
+            output.contains("~ source"),
+            "should include enrichment with ~ prefix: {}",
             output
         );
         assert!(
@@ -623,7 +644,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 12: Human with metadata header
+    // Test 12: Human with metadata header (compact format)
     // -----------------------------------------------------------------------
     #[test]
     fn test_human_with_metadata_header() {
@@ -639,33 +660,33 @@ mod tests {
         let output = format_result(&input, OutputMode::Human);
         let first_line = output.lines().next().unwrap();
 
-        // Header: + npm install: 1400 lines → exit 0 (12.3s)
+        // Compact header: + exit:0 12.3s condense (1400→1)
         assert!(
-            first_line.starts_with("+ npm install:"),
-            "header should start with symbol and command: {}",
+            first_line.starts_with("+ exit:0"),
+            "header should start with symbol and exit code: {}",
             first_line
         );
         assert!(
-            first_line.contains("1400 lines"),
-            "header should contain line count: {}",
-            first_line
-        );
-        assert!(
-            first_line.contains("exit 0"),
-            "header should contain exit code: {}",
-            first_line
-        );
-        assert!(
-            first_line.contains("(12.3s)"),
+            first_line.contains("12.3s"),
             "header should contain elapsed time: {}",
             first_line
         );
+        assert!(
+            first_line.contains("condense"),
+            "header should contain category: {}",
+            first_line
+        );
+        assert!(
+            first_line.contains("(1400\u{2192}1)"),
+            "header should contain line ratio: {}",
+            first_line
+        );
 
-        // Body should be indented on subsequent lines
+        // Body should NOT be indented
         let second_line = output.lines().nth(1).unwrap();
         assert!(
-            second_line.starts_with("  "),
-            "body should be indented: {}",
+            !second_line.starts_with("  "),
+            "body should not be indented: {}",
             second_line
         );
         assert!(
@@ -676,7 +697,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 13: Human with outcomes
+    // Test 13: Human with outcomes (no indent)
     // -----------------------------------------------------------------------
     #[test]
     fn test_human_with_outcomes() {
@@ -688,19 +709,19 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("  + 147 packages installed"),
-            "should show outcome with + prefix: {}",
+            output.contains("\n+ 147 packages installed"),
+            "should show outcome with + prefix (no indent): {}",
             output
         );
         assert!(
-            output.contains("  + 0 vulnerabilities"),
-            "should show second outcome: {}",
+            output.contains("\n+ 0 vulnerabilities"),
+            "should show second outcome (no indent): {}",
             output
         );
     }
 
     // -----------------------------------------------------------------------
-    // Test 14: Human with hazards (error + warning)
+    // Test 14: Human with hazards (no indent)
     // -----------------------------------------------------------------------
     #[test]
     fn test_human_with_hazards() {
@@ -718,13 +739,13 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("  ! 2 vulnerabilities found"),
-            "should show error hazard with ! prefix: {}",
+            output.contains("\n! 2 vulnerabilities found"),
+            "should show error hazard with ! prefix (no indent): {}",
             output
         );
         assert!(
-            output.contains("  ~ npm warn deprecated"),
-            "should show warning hazard with ~ prefix: {}",
+            output.contains("\n~ npm warn deprecated"),
+            "should show warning hazard with ~ prefix (no indent): {}",
             output
         );
     }
@@ -907,7 +928,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 21: Human compound results with metadata
+    // Test 21: Human compound results with metadata (compact format)
     // -----------------------------------------------------------------------
     #[test]
     fn test_human_compound_results() {
@@ -924,10 +945,10 @@ mod tests {
 
         let output = format_results(&[input1, input2], OutputMode::Human);
 
-        // First result: metadata header
+        // First result: compact header
         assert!(
-            output.contains("+ npm install: 1400 lines"),
-            "first result should have metadata header: {}",
+            output.contains("+ exit:0 12.3s condense (1400"),
+            "first result should have compact header: {}",
             output
         );
         // Second result: error symbol
@@ -936,16 +957,16 @@ mod tests {
             "second result should show error: {}",
             output
         );
-        // Second result: hazard
+        // Second result: hazard (no indent)
         assert!(
-            output.contains("  ! test suite failure"),
-            "second result should show hazard: {}",
+            output.contains("\n! test suite failure"),
+            "second result should show hazard (no indent): {}",
             output
         );
     }
 
     // -----------------------------------------------------------------------
-    // Test 22: Human format — recommendations on success
+    // Test 22: Human format — recommendations on success (→ consider)
     // -----------------------------------------------------------------------
     #[test]
     fn test_human_format_recommendations_on_success() {
@@ -953,19 +974,19 @@ mod tests {
         input.recommendations = vec![
             RecommendationEntry {
                 flag: "--prefer-offline".to_string(),
-                reason: "Consider adding --prefer-offline for quieter output".to_string(),
+                reason: "quieter output".to_string(),
             },
         ];
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("~ next time: consider --prefer-offline"),
-            "should show recommendation with ~ prefix: {}",
+            output.contains("\u{2192} consider --prefer-offline"),
+            "should show recommendation with \u{2192} prefix: {}",
             output
         );
         assert!(
-            output.contains("Consider adding --prefer-offline"),
-            "should include reason text: {}",
+            output.contains("(quieter output)"),
+            "should include reason in parens: {}",
             output
         );
     }
@@ -979,13 +1000,13 @@ mod tests {
         input.recommendations = vec![
             RecommendationEntry {
                 flag: "--prefer-offline".to_string(),
-                reason: "Consider adding --prefer-offline for quieter output".to_string(),
+                reason: "quieter output".to_string(),
             },
         ];
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            !output.contains("next time"),
+            !output.contains("consider"),
             "recommendations should NOT appear on failure: {}",
             output
         );
@@ -1081,12 +1102,12 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("~ next time: consider --no-progress"),
+            output.contains("\u{2192} consider --no-progress"),
             "should show first recommendation: {}",
             output
         );
         assert!(
-            output.contains("~ next time: consider --prefer-offline"),
+            output.contains("\u{2192} consider --prefer-offline"),
             "should show second recommendation: {}",
             output
         );
@@ -1100,9 +1121,27 @@ mod tests {
         let input = make_input("echo hello", 0, "condense", "hello");
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            !output.contains("next time"),
+            !output.contains("consider"),
             "no recommendations means no recommendation lines: {}",
             output
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 29: format_elapsed helper
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_format_elapsed() {
+        assert_eq!(format_elapsed(None), "");
+        assert_eq!(format_elapsed(Some(0.023)), "23ms");
+        assert_eq!(format_elapsed(Some(0.150)), "150ms");
+        assert_eq!(format_elapsed(Some(0.999)), "999ms");
+        assert_eq!(format_elapsed(Some(1.0)), "1s");
+        assert_eq!(format_elapsed(Some(5.2)), "5.2s");
+        assert_eq!(format_elapsed(Some(12.3)), "12.3s");
+        assert_eq!(format_elapsed(Some(59.9)), "59.9s");
+        assert_eq!(format_elapsed(Some(60.0)), "1m");
+        assert_eq!(format_elapsed(Some(90.0)), "2m");
+        assert_eq!(format_elapsed(Some(120.0)), "2m");
     }
 }

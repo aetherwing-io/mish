@@ -204,15 +204,12 @@ impl McpDispatcher {
 
         match tool_result {
             Ok((result_value, digest)) => {
-                // MCP tools/call responses use the content[] array format.
-                // We serialize our structured result + process digest as a
-                // single text content block so Claude Code can display it.
-                let payload = json!({
-                    "result": result_value,
-                    "processes": digest,
-                });
-                let text = serde_json::to_string_pretty(&payload)
-                    .unwrap_or_else(|_| payload.to_string());
+                // Format as compact text (symbol-prefixed, token-efficient).
+                let text = crate::mcp::format::format_tool_response(
+                    &tool_name,
+                    &result_value,
+                    &digest,
+                );
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id,
@@ -242,6 +239,13 @@ impl McpDispatcher {
             pt.digest(DigestMode::Full)
         };
 
+        let digest_text = crate::mcp::format::format_digest(&digest);
+        let data = if digest_text.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::String(digest_text))
+        };
+
         JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id,
@@ -249,7 +253,7 @@ impl McpDispatcher {
             error: Some(JsonRpcError {
                 code,
                 message: message.into(),
-                data: Some(json!({ "processes": digest })),
+                data,
             }),
         }
     }
@@ -453,12 +457,11 @@ mod tests {
         d
     }
 
-    /// Extract the tool payload from a content-wrapped MCP tools/call response.
-    /// The response has: result.content[0].text = JSON string with {result, processes}.
-    fn extract_tool_payload(result: &serde_json::Value) -> serde_json::Value {
-        let text = result["content"][0]["text"].as_str()
-            .expect("tools/call response should have content[0].text");
-        serde_json::from_str(text).expect("content text should be valid JSON")
+    /// Extract the compact text from a content-wrapped MCP tools/call response.
+    fn extract_tool_text(result: &serde_json::Value) -> String {
+        result["content"][0]["text"].as_str()
+            .expect("tools/call response should have content[0].text")
+            .to_string()
     }
 
     fn make_request(id: serde_json::Value, method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
@@ -613,10 +616,10 @@ mod tests {
         assert!(err.message.contains("sh_bogus"));
     }
 
-    // ── Test 7: tools/call with sh_help returns result + processes ──
+    // ── Test 7: tools/call with sh_help returns compact text ──
 
     #[tokio::test]
-    async fn tools_call_sh_help_returns_result_with_processes() {
+    async fn tools_call_sh_help_returns_compact_text() {
         let dispatcher = test_dispatcher();
         let req = make_request(
             json!(20),
@@ -628,11 +631,10 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
-        let payload = extract_tool_payload(&result);
-        // sh_help returns tools, watch_presets, etc.
-        assert!(payload["result"]["tools"].is_array());
-        // Every tools/call response has a processes field
-        assert!(payload["processes"].is_array());
+        let text = extract_tool_text(&result);
+        assert!(text.contains("# mish reference card"), "should have reference card: {}", text);
+        assert!(text.contains("## tools"), "should have tools section: {}", text);
+        assert!(text.contains("sh_run"), "should list sh_run: {}", text);
     }
 
     // ── Test 8: tools/call with missing name returns invalid-params ──
@@ -651,7 +653,7 @@ mod tests {
         assert_eq!(err.code, ERR_INVALID_PARAMS);
     }
 
-    // ── Test 9: Error responses still include processes digest ──
+    // ── Test 9: Error responses include digest in data (or None if empty) ──
 
     #[tokio::test]
     async fn error_responses_include_process_digest() {
@@ -664,9 +666,12 @@ mod tests {
 
         let resp = dispatcher.dispatch(req).await.unwrap();
         let err = resp.error.as_ref().unwrap();
-        // Error data should contain processes array
-        let data = err.data.as_ref().unwrap();
-        assert!(data["processes"].is_array());
+        // With no processes running, data is None (empty digest).
+        // If processes were running, data would be a string like "[procs] ..."
+        // Either way, we just check it doesn't crash.
+        if let Some(data) = &err.data {
+            assert!(data.is_string(), "digest data should be text: {:?}", data);
+        }
     }
 
     // ── Test 10: tools/call sh_run executes a real command ──
@@ -694,11 +699,9 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
-        let payload = extract_tool_payload(&result);
-        assert!(payload["processes"].is_array());
-        let inner = &payload["result"];
-        assert_eq!(inner["exit_code"], 0);
-        assert!(inner["output"].as_str().unwrap().contains("hello_dispatch"));
+        let text = extract_tool_text(&result);
+        assert!(text.contains("exit:0"), "should show exit:0: {}", text);
+        assert!(text.contains("hello_dispatch"), "should contain echo output: {}", text);
 
         sm.close_all().await;
     }
@@ -728,10 +731,9 @@ mod tests {
         assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
 
         let result = resp.result.unwrap();
-        let payload = extract_tool_payload(&result);
-        let sessions = &payload["result"]["sessions"];
-        assert!(sessions.is_array());
-        assert!(sessions.as_array().unwrap().len() >= 1);
+        let text = extract_tool_text(&result);
+        assert!(text.contains("+ session list"), "should have session list header: {}", text);
+        assert!(text.contains("main"), "should list main session: {}", text);
 
         sm.close_all().await;
     }
@@ -761,8 +763,8 @@ mod tests {
         let resp = dispatcher.dispatch(req).await.unwrap();
         let err = resp.error.unwrap();
         assert_eq!(err.code, ERR_INVALID_PARAMS);
-        // Error should still have processes digest
-        assert!(err.data.unwrap()["processes"].is_array());
+        // With no running processes, error.data is None (empty digest)
+        // or a string if processes were running.
     }
 
     // ── Test 14: sh_interact schema actions match handler ──
@@ -906,8 +908,9 @@ mod tests {
 
         // Wait for spawn to finish (timeout after 2s).
         let spawn_resp = spawn_handle.await.unwrap().unwrap();
-        let spawn_payload = extract_tool_payload(&spawn_resp.result.unwrap());
-        assert_eq!(spawn_payload["result"]["wait_matched"], false);
+        let spawn_text = extract_tool_text(&spawn_resp.result.unwrap());
+        // Spawn with unmatched wait_for should show ~ (warning) prefix
+        assert!(spawn_text.starts_with("~ spawned slow"), "spawn should show timeout: {}", spawn_text);
 
         sm.close_all().await;
     }
