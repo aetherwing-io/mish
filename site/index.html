@@ -4,14 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>mish — The LLM-native shell</title>
-<meta name="description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<meta name="description" content="Five MCP tools that give your agent structured output, error diagnostics, and process control. One binary. No dependencies.">
 <meta property="og:title" content="mish — The LLM-native shell">
-<meta property="og:description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<meta property="og:description" content="Five MCP tools that give your agent structured output, error diagnostics, and process control. One binary. No dependencies.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://ohitsmish.com">
+<meta property="og:image" content="https://ohitsmish.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="mish — The LLM-native shell">
-<meta name="twitter:description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<meta name="twitter:description" content="Five MCP tools that give your agent structured output, error diagnostics, and process control. One binary. No dependencies.">
+<meta name="twitter:image" content="https://ohitsmish.com/og.png">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2316161d'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='64' y2='64' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%234f8fff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ctext x='32' y='43' text-anchor='middle' font-family='monospace' font-size='24' font-weight='700' fill='url(%23g)'%3E%CE%BC%7Csh%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -199,10 +204,16 @@
     color: var(--bright);
     font-weight: 500;
   }
+  .spec-table .tool-desc {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--secondary);
+    font-weight: 300;
+  }
 
   /* Hero */
   .hero {
-    padding: 160px 48px 120px;
+    padding: 140px 48px 100px;
     text-align: center;
     position: relative;
     overflow: hidden;
@@ -266,7 +277,22 @@
     color: var(--text);
     line-height: 1.7;
     max-width: 480px;
-    margin: 0 auto 48px;
+    margin: 0 auto 36px;
+  }
+  .hero-terminal {
+    display: inline-block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 28px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.8;
+    text-align: left;
+    margin-bottom: 36px;
+    white-space: pre;
+    max-width: 100%;
+    overflow-x: auto;
   }
   .hero-cta {
     display: flex;
@@ -464,12 +490,23 @@
   }
   .footer-links a:hover { color: var(--bright); }
 
+  /* Platform note */
+  .platform-note {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 20px;
+    text-align: center;
+    letter-spacing: 0.3px;
+  }
+
   /* Responsive */
   @media (max-width: 768px) {
     .hero { padding: 100px 24px 80px; }
     .hero-wordmark { font-size: 52px; letter-spacing: -2px; }
     .hero-tag { font-size: 11px; letter-spacing: 2px; }
     .hero-desc { font-size: 15px; }
+    .hero-terminal { font-size: 11px; padding: 12px 16px; }
     .container { padding: 0 24px; }
     .section { margin-bottom: 72px; }
     .section-title { font-size: 22px; }
@@ -491,56 +528,122 @@
   <div class="hero-inner">
     <div class="hero-wordmark"><span class="mu">&#x3BC;</span>ish</div>
     <div class="hero-tag">the llm-native shell</div>
-    <p class="hero-desc">Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.</p>
+    <p class="hero-desc">Five MCP tools that give your agent structured output, error diagnostics, and process control. One binary. No dependencies.</p>
+    <div class="hero-terminal"><span class="tp">$</span> <span class="tc">curl -fsSL https://ohitsmish.com/install.sh | sh</span>
+<span class="tp">$</span> <span class="tc">claude mcp add mish -- mish serve</span></div>
     <div class="hero-cta">
-      <a href="https://github.com/mish-sh/mish" class="btn btn-ghost">Source</a>
-      <a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md" class="btn btn-text">Benchmarks &#8594;</a>
+      <a href="https://github.com/aetherwing-io/mish" class="btn btn-ghost">Source</a>
+      <a href="#get-started" class="btn btn-text">Get started &#8594;</a>
     </div>
   </div>
 </header>
 
 <main class="container">
 
-  <!-- 01 THE PROBLEM -->
+  <!-- 01 GET STARTED -->
+  <section id="get-started" class="section">
+    <div class="section-num">01 GET STARTED</div>
+    <h2 class="section-title">Two commands to <strong>five tools</strong></h2>
+    <p class="section-desc">Install the binary, register it as an MCP server, restart your client. That's it.</p>
+
+    <div class="term">
+      <div class="term-bar">
+        <div class="td"></div><div class="td"></div><div class="td"></div>
+        <div class="term-title">install</div>
+      </div>
+      <div class="term-body"><span class="tm"># macOS (Apple Silicon + Intel) and Linux</span>
+<span class="tp">$</span> <span class="tc">curl -fsSL https://ohitsmish.com/install.sh | sh</span>
+
+<span class="tm"># or from source</span>
+<span class="tp">$</span> <span class="tc">cargo install --git https://github.com/aetherwing-io/mish</span></div>
+    </div>
+
+    <div class="term" style="margin-top: 16px;">
+      <div class="term-bar">
+        <div class="td"></div><div class="td"></div><div class="td"></div>
+        <div class="term-title">connect as MCP server</div>
+      </div>
+      <div class="term-body"><span class="tm"># Claude Code</span>
+<span class="tp">$</span> <span class="tc">claude mcp add mish -- mish serve</span>
+
+<span class="tm"># or any MCP client &#8212; add to your config:</span>
+<span class="tf">"mish"</span>: { <span class="tf">"command"</span>: <span class="ta">"mish"</span>, <span class="tf">"args"</span>: [<span class="ta">"serve"</span>] }</div>
+    </div>
+
+    <p class="install-note">Restart your client. <strong>Five tools appear:</strong></p>
+
+    <table class="spec-table" style="margin-top: 20px;">
+      <thead>
+        <tr><th>Tool</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="val">sh_run</td>
+          <td class="tool-desc">Run a command. Output is squashed, categorized, and enriched with diagnostics on failure.</td>
+        </tr>
+        <tr>
+          <td class="val">sh_spawn</td>
+          <td class="tool-desc">Start a background process. Wait-for-ready patterns, aliases, output spools.</td>
+        </tr>
+        <tr>
+          <td class="val">sh_interact</td>
+          <td class="tool-desc">Send input, read tail, signal, or kill a running process.</td>
+        </tr>
+        <tr>
+          <td class="val">sh_session</td>
+          <td class="tool-desc">Named PTY sessions with full lifecycle control.</td>
+        </tr>
+        <tr>
+          <td class="val">sh_help</td>
+          <td class="tool-desc">Self-documenting reference card. Your agent reads it, never needs a manual.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="platform-note">macOS + Linux &#183; Works with Claude Code, Cursor, Windsurf, or any MCP-compatible client</p>
+  </section>
+
+  <!-- 02 CAPABILITIES -->
   <section class="section">
-    <div class="section-num">01 THE PROBLEM</div>
-    <h2 class="section-title">Agents talk to your OS through a <strong>straw</strong></h2>
-    <p class="section-desc">Every tool call consumes tokens. Raw shell gives your agent walls of text, no metadata, and zero help when things break.</p>
-    <div class="card-grid">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-symbol" style="color: var(--error);">!</span>
-          <h3>Verbose</h3>
-        </div>
-        <p>Test suites dump thousands of lines into context. The only one that matters is at the bottom.</p>
+    <div class="section-num">02 CAPABILITIES</div>
+    <h2 class="section-title">What <strong>one binary</strong> gives your agent</h2>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-label">Metadata</div>
+        <h3>Structured on every response</h3>
+        <p>Exit code, timing, and command category. Your agent never parses raw text to know what happened.</p>
       </div>
-      <div class="card">
-        <div class="card-header">
-          <span class="card-symbol" style="color: var(--error);">!</span>
-          <h3>Blind</h3>
-        </div>
-        <p>Commands fail with a bare error. Your agent burns four more calls just figuring out why.</p>
+      <div class="feature-card">
+        <div class="feature-label">Compression</div>
+        <h3>Output squashing</h3>
+        <p>ANSI stripping, progress removal, dedup, Oreo truncation. The noisy middle disappears. Head and tail survive.</p>
       </div>
-      <div class="card">
-        <div class="card-header">
-          <span class="card-symbol" style="color: var(--warn);">?</span>
-          <h3>Silent</h3>
-        </div>
-        <p>Success returns empty string. No exit code. No timing. No confirmation it worked.</p>
+      <div class="feature-card">
+        <div class="feature-label">Diagnostics</div>
+        <h3>Error enrichment</h3>
+        <p>When commands fail, mish pre-walks paths, checks permissions, and lists nearby files &#8212; before your agent has to ask.</p>
       </div>
-      <div class="card">
-        <div class="card-header">
-          <span class="card-symbol" style="color: var(--warn);">&#x26A0;</span>
-          <h3>Unguarded</h3>
-        </div>
-        <p>Destructive commands execute without pause. No classification. No escalation. No safety net.</p>
+      <div class="feature-card">
+        <div class="feature-label">Filtering</div>
+        <h3>Watch patterns</h3>
+        <p>Regex filters at the source, not in the context window. A full test suite returns only the lines that match.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Lifecycle</div>
+        <h3>Process supervision</h3>
+        <p>Named handles, output spools, wait-for-ready. The process table rides along on every response for free.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Routing</div>
+        <h3>6-category classification</h3>
+        <p>condense, narrate, passthrough, structured, interactive, dangerous. Every command gets the handler it deserves.</p>
       </div>
     </div>
   </section>
 
-  <!-- 02 THE RECEIPTS -->
+  <!-- 03 THE RECEIPTS -->
   <section class="section">
-    <div class="section-num">02 THE RECEIPTS</div>
+    <div class="section-num">03 THE RECEIPTS</div>
     <h2 class="section-title">Measured, <strong>not promised</strong></h2>
     <p class="section-desc">Same commands. Same machine. Same session. mish vs bare shell on a real Rust codebase.</p>
     <table class="spec-table">
@@ -655,77 +758,7 @@
 
     </div>
 
-    <a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md" class="section-link">Full benchmark data &#8594;</a>
-  </section>
-
-  <!-- 03 CAPABILITIES -->
-  <section class="section">
-    <div class="section-num">03 CAPABILITIES</div>
-    <h2 class="section-title">What <strong>one binary</strong> gives your agent</h2>
-    <div class="feature-grid">
-      <div class="feature-card">
-        <div class="feature-label">Metadata</div>
-        <h3>Structured on every response</h3>
-        <p>Exit code, timing, and command category. Your agent never parses raw text to know what happened.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-label">Compression</div>
-        <h3>Output squashing</h3>
-        <p>ANSI stripping, progress removal, dedup, Oreo truncation. The noisy middle disappears. Head and tail survive.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-label">Diagnostics</div>
-        <h3>Error enrichment</h3>
-        <p>When commands fail, mish pre-walks paths, checks permissions, and lists nearby files &#8212; before your agent has to ask.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-label">Filtering</div>
-        <h3>Watch patterns</h3>
-        <p>Regex filters at the source, not in the context window. A full test suite returns only the lines that match.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-label">Lifecycle</div>
-        <h3>Process supervision</h3>
-        <p>Named handles, output spools, wait-for-ready. The process table rides along on every response for free.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-label">Routing</div>
-        <h3>6-category classification</h3>
-        <p>condense, narrate, passthrough, structured, interactive, dangerous. Every command gets the handler it deserves.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 04 INSTALL -->
-  <section class="section">
-    <div class="section-num">04 INSTALL</div>
-    <h2 class="section-title">Three steps to <strong>five tools</strong></h2>
-
-    <div class="term">
-      <div class="term-bar">
-        <div class="td"></div><div class="td"></div><div class="td"></div>
-        <div class="term-title">build + install</div>
-      </div>
-      <div class="term-body"><span class="tp">$</span> <span class="tc">cargo build --release</span>
-<span class="tp">$</span> <span class="tc">ln -sf</span> <span class="ta">"$(pwd)/target/release/mish"</span> <span class="tf">/usr/local/bin/mish</span></div>
-    </div>
-
-    <div class="term" style="margin-top: 16px;">
-      <div class="term-bar">
-        <div class="td"></div><div class="td"></div><div class="td"></div>
-        <div class="term-title">~/.claude/.mcp.json</div>
-      </div>
-      <div class="term-body">{
-  <span class="tf">"mcpServers"</span>: {
-    <span class="tf">"mish"</span>: {
-      <span class="tf">"command"</span>: <span class="ta">"mish"</span>,
-      <span class="tf">"args"</span>: [<span class="ta">"serve"</span>]
-    }
-  }
-}</div>
-    </div>
-
-    <p class="install-note">Restart Claude Code. <strong>Five tools appear.</strong></p>
+    <a href="https://github.com/aetherwing-io/mish/blob/main/docs/SHOWCASE.md" class="section-link">Full benchmark data &#8594;</a>
   </section>
 
 </main>
@@ -739,9 +772,9 @@
         <span class="footer-meta">MIT License</span>
       </div>
       <ul class="footer-links">
-        <li><a href="https://github.com/mish-sh/mish">GitHub</a></li>
-        <li><a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md">Showcase</a></li>
-        <li><a href="https://github.com/mish-sh/mish/blob/main/docs/ARCHITECTURE.md">Docs</a></li>
+        <li><a href="https://github.com/aetherwing-io/mish">GitHub</a></li>
+        <li><a href="https://github.com/aetherwing-io/mish/blob/main/docs/SHOWCASE.md">Showcase</a></li>
+        <li><a href="https://github.com/aetherwing-io/mish/blob/main/docs/ARCHITECTURE.md">Docs</a></li>
       </ul>
     </div>
   </div>
