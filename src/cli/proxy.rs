@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crate::config_loader::load_runtime_config;
 use crate::core::format::{
-    self, EnrichmentLine, FormatInput, HazardEntry, OutputMode,
+    self, EnrichmentLine, FormatInput, HazardEntry, OutputMode, RecommendationEntry,
 };
 use crate::core::pty::PtyCapture;
 use crate::handlers::structured::StructuredData;
@@ -239,6 +239,7 @@ fn run_pipeline(args: &[String], mode: OutputMode) -> Result<i32, Box<dyn std::e
         outcomes: vec![],
         hazards: vec![],
         enrichment: vec![],
+        recommendations: vec![],
     };
 
     let formatted = format::format_result(&result, mode);
@@ -508,60 +509,66 @@ fn router_result_to_format_input(result: &RouterResult, command: &[String]) -> F
     let cmd_str = command.join(" ");
     let category = result.category.to_string();
 
-    let (body, raw_output, outcomes, hazards) = match &result.output {
+    let (body, raw_output, outcomes, hazards, category_override) = match &result.output {
         HandlerOutput::Condensed(summary) => {
-            // Assemble body from summary parts
-            let mut body_parts = vec![summary.header.clone()];
-            body_parts.extend(summary.summary_lines.iter().cloned());
-            body_parts.extend(summary.hazard_lines.iter().cloned());
-            let body = body_parts.join("\n");
+            if summary.interactive_session {
+                // Interactive transition: output was shown live, use session summary
+                let body = format!("{}: session ended", cmd_str);
+                (body, None, vec![], vec![], Some("interactive".to_string()))
+            } else {
+                // Standard condensed: assemble body from summary parts
+                let mut body_parts = vec![summary.header.clone()];
+                body_parts.extend(summary.summary_lines.iter().cloned());
+                body_parts.extend(summary.hazard_lines.iter().cloned());
+                let body = body_parts.join("\n");
 
-            let outcomes: Vec<String> = summary
-                .summary_lines
-                .iter()
-                .filter_map(|l| l.strip_prefix(" + ").map(|s| s.to_string()))
-                .collect();
+                let outcomes: Vec<String> = summary
+                    .summary_lines
+                    .iter()
+                    .filter_map(|l| l.strip_prefix(" + ").map(|s| s.to_string()))
+                    .collect();
 
-            let hazards: Vec<HazardEntry> = summary
-                .hazard_lines
-                .iter()
-                .map(|l| {
-                    if let Some(text) = l.strip_prefix(" ! ") {
-                        HazardEntry {
-                            severity: "error".to_string(),
-                            text: text.to_string(),
+                let hazards: Vec<HazardEntry> = summary
+                    .hazard_lines
+                    .iter()
+                    .map(|l| {
+                        if let Some(text) = l.strip_prefix(" ! ") {
+                            HazardEntry {
+                                severity: "error".to_string(),
+                                text: text.to_string(),
+                            }
+                        } else if let Some(text) = l.strip_prefix(" ~ ") {
+                            HazardEntry {
+                                severity: "warning".to_string(),
+                                text: text.to_string(),
+                            }
+                        } else {
+                            HazardEntry {
+                                severity: "info".to_string(),
+                                text: l.to_string(),
+                            }
                         }
-                    } else if let Some(text) = l.strip_prefix(" ~ ") {
-                        HazardEntry {
-                            severity: "warning".to_string(),
-                            text: text.to_string(),
-                        }
-                    } else {
-                        HazardEntry {
-                            severity: "info".to_string(),
-                            text: l.to_string(),
-                        }
-                    }
-                })
-                .collect();
+                    })
+                    .collect();
 
-            (body, None, outcomes, hazards)
+                (body, None, outcomes, hazards, None)
+            }
         }
-        HandlerOutput::Narrated(nr) => (nr.message.clone(), None, vec![], vec![]),
+        HandlerOutput::Narrated(nr) => (nr.message.clone(), None, vec![], vec![], None),
         HandlerOutput::Passthrough(pr) => {
             let body = format!("{}\n\u{2500}\u{2500} {} \u{2500}\u{2500}", pr.output, pr.footer);
-            (body, Some(pr.output.clone()), vec![], vec![])
+            (body, Some(pr.output.clone()), vec![], vec![], None)
         }
         HandlerOutput::Structured(sr) => {
             let body = format_structured_data(&sr.parsed);
-            (body, None, vec![], vec![])
+            (body, None, vec![], vec![], None)
         }
         HandlerOutput::Interactive(ir) => {
             let secs = ir.duration.as_secs();
             let body = format!("{}: session ended ({}s)", cmd_str, secs);
-            (body, None, vec![], vec![])
+            (body, None, vec![], vec![], None)
         }
-        HandlerOutput::Dangerous(dr) => (dr.warning.clone(), None, vec![], vec![]),
+        HandlerOutput::Dangerous(dr) => (dr.warning.clone(), None, vec![], vec![], None),
     };
 
     let enrichment = result
@@ -578,10 +585,24 @@ fn router_result_to_format_input(result: &RouterResult, command: &[String]) -> F
         })
         .unwrap_or_default();
 
+    let recommendations = result
+        .preflight
+        .as_ref()
+        .map(|pf| {
+            pf.recommendations
+                .iter()
+                .map(|r| RecommendationEntry {
+                    flag: r.flag.clone(),
+                    reason: r.reason.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     FormatInput {
         command: cmd_str,
         exit_code: result.exit_code,
-        category: category.to_string(),
+        category: category_override.unwrap_or(category),
         body,
         raw_output,
         total_lines: None,
@@ -589,6 +610,7 @@ fn router_result_to_format_input(result: &RouterResult, command: &[String]) -> F
         outcomes,
         hazards,
         enrichment,
+        recommendations,
     }
 }
 

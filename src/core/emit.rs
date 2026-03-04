@@ -68,6 +68,10 @@ pub struct Summary {
     pub summary_lines: Vec<String>,
     pub hazard_lines: Vec<String>,
     pub exit_code: i32,
+    /// Whether the condense handler transitioned to interactive passthrough.
+    /// When true, output was already shown live — formatting should use
+    /// a session-ended summary instead of the full condensed body.
+    pub interactive_session: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +307,7 @@ impl EmitBuffer {
             summary_lines,
             hazard_lines: self.output,
             exit_code,
+            interactive_session: false,
         }
     }
 

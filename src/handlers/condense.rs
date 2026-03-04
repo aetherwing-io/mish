@@ -8,10 +8,13 @@
 /// This is the primary handler for verbose command output. It spawns a command
 /// in a PTY, feeds output through both paths, and returns the combined result.
 
+use std::io::Write;
+use std::os::unix::io::AsFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
@@ -86,6 +89,56 @@ impl Drop for SignalGuard {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TerminalGuard — RAII restore of terminal state after interactive transition
+// ---------------------------------------------------------------------------
+
+/// Saves the original termios and restores it on drop.
+///
+/// When the condense handler transitions to interactive mode, it puts the
+/// user's terminal into raw mode (cfmakeraw) and sets stdin to non-blocking.
+/// This guard ensures restoration even on panic or early `?` return.
+struct TerminalGuard {
+    original_termios: nix::sys::termios::Termios,
+    original_stdin_flags: nix::fcntl::OFlag,
+}
+
+impl TerminalGuard {
+    /// Save the current terminal state. Call before modifying termios/flags.
+    fn save() -> Result<Self, Box<dyn std::error::Error>> {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        use nix::sys::termios::tcgetattr;
+        use std::io;
+
+        let stdin_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
+        let original_termios = tcgetattr(&stdin_fd)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("tcgetattr: {e}")))?;
+
+        let flags = fcntl(libc::STDIN_FILENO, FcntlArg::F_GETFL)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("fcntl F_GETFL: {e}")))?;
+        let original_stdin_flags = OFlag::from_bits_truncate(flags);
+
+        Ok(Self {
+            original_termios,
+            original_stdin_flags,
+        })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        use nix::fcntl::{fcntl, FcntlArg};
+        use nix::sys::termios::{tcsetattr, SetArg};
+
+        // Restore termios
+        let stdin_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
+        let _ = tcsetattr(&stdin_fd, SetArg::TCSANOW, &self.original_termios);
+
+        // Restore stdin flags (remove O_NONBLOCK if we added it)
+        let _ = fcntl(libc::STDIN_FILENO, FcntlArg::F_SETFL(self.original_stdin_flags));
+    }
+}
+
 /// Query the current terminal dimensions (cols, rows).
 ///
 /// Falls back to (80, 24) if the ioctl fails.
@@ -112,6 +165,8 @@ pub struct CondenseResult {
     pub pipeline_output: Vec<String>,
     /// Metrics from the squasher pipeline pass.
     pub pipeline_metrics: PipelineMetrics,
+    /// Whether the command transitioned to interactive mode (raw PTY detected).
+    pub transitioned_to_interactive: bool,
 }
 
 /// Post-process raw output lines through the squasher pipeline.
@@ -156,6 +211,11 @@ pub fn handle(
     let mut last_activity = now;
     let mut last_flush = now;
 
+    // Interactive mode state — for raw mode detection and passthrough
+    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
+    let mut interactive_mode = false;
+    let mut _terminal_guard: Option<TerminalGuard> = None;
+
     loop {
         // Check signal flags
         if SIGINT_RECEIVED.swap(false, Ordering::SeqCst) {
@@ -174,7 +234,40 @@ pub fn handle(
         if n > 0 {
             last_activity = Instant::now();
 
-            // Feed raw bytes into LineBuffer to produce lines
+            // Raw mode detection: one-way transition to interactive passthrough
+            if !interactive_mode && stdin_is_tty && pty.is_raw_mode() {
+                // Save terminal state and switch to raw mode for passthrough
+                if let Ok(guard) = TerminalGuard::save() {
+                    use nix::sys::termios::{cfmakeraw, tcsetattr, SetArg};
+
+                    // Put user's terminal into raw mode
+                    let stdin_fd = unsafe {
+                        std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO)
+                    };
+                    if let Ok(mut raw_termios) = nix::sys::termios::tcgetattr(&stdin_fd) {
+                        cfmakeraw(&mut raw_termios);
+                        let _ = tcsetattr(&stdin_fd, SetArg::TCSANOW, &raw_termios);
+                    }
+
+                    // Set stdin to non-blocking for poll-based forwarding
+                    if let Ok(flags) = fcntl(libc::STDIN_FILENO, FcntlArg::F_GETFL) {
+                        let mut oflags = OFlag::from_bits_truncate(flags);
+                        oflags.insert(OFlag::O_NONBLOCK);
+                        let _ = fcntl(libc::STDIN_FILENO, FcntlArg::F_SETFL(oflags));
+                    }
+
+                    _terminal_guard = Some(guard);
+                    interactive_mode = true;
+                }
+            }
+
+            // Forward PTY output to stdout when in interactive mode
+            if interactive_mode {
+                let _ = std::io::stdout().write_all(&buf[..n]);
+                let _ = std::io::stdout().flush();
+            }
+
+            // Feed raw bytes into LineBuffer to produce lines (classification continues)
             let lines = line_buffer.ingest(&buf[..n]);
             for line in lines {
                 // Collect raw lines for batch pipeline processing
@@ -186,6 +279,17 @@ pub fn handle(
                 while let Some(deferred) = classifier.drain_deferred() {
                     emit_buffer.accept(deferred);
                 }
+            }
+        }
+
+        // Forward stdin to child when in interactive mode
+        if interactive_mode {
+            let mut stdin_buf = [0u8; 1024];
+            match nix::unistd::read(libc::STDIN_FILENO, &mut stdin_buf) {
+                Ok(n) if n > 0 => {
+                    let _ = pty.write_stdin(&stdin_buf[..n]);
+                }
+                _ => {} // EAGAIN (no data) or error — ignore
             }
         }
 
@@ -235,8 +339,20 @@ pub fn handle(
             }
         }
 
-        // Sleep briefly to avoid busy-looping
-        thread::sleep(Duration::from_millis(10));
+        // Use poll when interactive (responsive I/O), sleep when not (save CPU)
+        if interactive_mode {
+            use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+            let mut pfds = [
+                PollFd::new(pty.master_fd().as_fd(), PollFlags::POLLIN),
+                PollFd::new(
+                    unsafe { std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO) },
+                    PollFlags::POLLIN,
+                ),
+            ];
+            let _ = poll(&mut pfds, PollTimeout::from(10u16));
+        } else {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     // 4. Drain remaining bytes from PTY
@@ -277,6 +393,7 @@ pub fn handle(
         summary,
         pipeline_output,
         pipeline_metrics,
+        transitioned_to_interactive: interactive_mode,
     })
 }
 
@@ -831,6 +948,37 @@ failure = "! compile failed"
             "expected at least 1 intermediate flush marker from silence gap, \
              hazard_lines: {:?}",
             result.summary.hazard_lines
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Interactive mode detection tests
+    // -----------------------------------------------------------------------
+
+    // Test 13: Non-interactive command does not transition
+    #[test]
+    #[serial(pty)]
+    fn test_non_interactive_no_transition() {
+        let args = sh_cmd("echo hello");
+        let result = handle(&args, None, None).unwrap();
+
+        assert!(
+            !result.transitioned_to_interactive,
+            "echo should not trigger interactive transition"
+        );
+        assert_eq!(result.summary.exit_code, 0);
+    }
+
+    // Test 14: CondenseResult has transitioned_to_interactive field defaulting false
+    #[test]
+    #[serial(pty)]
+    fn test_condense_result_has_interactive_flag() {
+        let args = sh_cmd("true");
+        let result = handle(&args, None, None).unwrap();
+
+        assert!(
+            !result.transitioned_to_interactive,
+            "transitioned_to_interactive should default to false"
         );
     }
 }

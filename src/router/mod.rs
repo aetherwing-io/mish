@@ -140,8 +140,9 @@ fn dispatch(
 ) -> Result<(HandlerOutput, i32), Box<dyn std::error::Error>> {
     match category {
         Category::Condense => {
-            let result = crate::handlers::condense::handle(cmd, grammar, action)?;
+            let mut result = crate::handlers::condense::handle(cmd, grammar, action)?;
             let exit_code = result.summary.exit_code;
+            result.summary.interactive_session = result.transitioned_to_interactive;
             Ok((HandlerOutput::Condensed(result.summary), exit_code))
         }
         Category::Narrate => {

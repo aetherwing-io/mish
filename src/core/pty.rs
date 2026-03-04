@@ -314,6 +314,19 @@ impl PtyCapture {
         self.master_fd.as_raw_fd()
     }
 
+    /// Check if the child has switched the PTY to raw mode.
+    ///
+    /// Detects raw mode by checking whether the ICANON flag is absent
+    /// from the PTY's termios settings. Interactive programs (python REPL,
+    /// vim, node) switch to raw mode for character-at-a-time input.
+    pub fn is_raw_mode(&self) -> bool {
+        use nix::sys::termios::{tcgetattr, LocalFlags};
+        match tcgetattr(&self.master_fd) {
+            Ok(termios) => !termios.local_flags.contains(LocalFlags::ICANON),
+            Err(_) => false,
+        }
+    }
+
     /// Time elapsed since spawn.
     pub fn elapsed(&self) -> std::time::Duration {
         self.start_time.elapsed()
@@ -764,6 +777,53 @@ mod tests {
 
         let status = pty.wait_async().await.expect("wait_async failed");
         assert_eq!(status.code, Some(7));
+    }
+
+    // Test: is_raw_mode returns false for normal commands (canonical mode)
+    #[test]
+    #[serial(pty)]
+    fn test_is_raw_mode_default_false() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo ready".to_string(),
+        ])
+        .expect("spawn failed");
+
+        // Check immediately — default PTY should be in canonical mode
+        assert!(
+            !pty.is_raw_mode(),
+            "expected is_raw_mode() == false for normal command"
+        );
+
+        // Let child finish naturally
+        let _output = read_all(&pty, Duration::from_secs(5));
+        let status = pty.wait().expect("wait failed");
+        assert!(status.success());
+    }
+
+    // Test: is_raw_mode returns true after child switches to raw mode
+    #[test]
+    #[serial(pty)]
+    fn test_is_raw_mode_after_stty_raw() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "stty raw && echo raw_set && sleep 0.5".to_string(),
+        ])
+        .expect("spawn failed");
+
+        // Give stty time to change terminal settings
+        thread::sleep(Duration::from_millis(200));
+
+        assert!(
+            pty.is_raw_mode(),
+            "expected is_raw_mode() == true after stty raw"
+        );
+
+        // Let child exit naturally (sleep 0.5)
+        let _output = read_all(&pty, Duration::from_secs(5));
+        let _ = pty.wait();
     }
 
     // Test pager env vars are suppressed in child
