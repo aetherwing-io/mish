@@ -150,29 +150,24 @@ pub struct ShRunResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_lines: Option<Vec<String>>,
     pub lines: LineCount,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metrics: Option<ShRunMetrics>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enrichment: Option<Vec<EnrichmentEntry>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recommendations: Vec<ShRunRecommendation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub enrichment: Vec<ShRunEnrichmentLine>,
 }
 
-/// A diagnostic entry from error enrichment, surfaced in sh_run responses.
+/// A preflight recommendation surfaced in the response.
 #[derive(Debug, Clone, Serialize)]
-pub struct EnrichmentEntry {
+pub struct ShRunRecommendation {
+    pub flag: String,
+    pub reason: String,
+}
+
+/// An error enrichment diagnostic line.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShRunEnrichmentLine {
     pub kind: String,
     pub message: String,
-}
-
-/// Squasher metrics exposed to MCP clients in sh_run responses.
-#[derive(Debug, Clone, Serialize)]
-pub struct ShRunMetrics {
-    pub compression_ratio: f64,
-    pub raw_bytes: u64,
-    pub squashed_bytes: u64,
-    pub lines_in: u64,
-    pub lines_out: u64,
-    pub wall_ms: u64,
-    pub squash_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -434,8 +429,8 @@ mod tests {
                 total: 2,
                 shown: 2,
             },
-            metrics: None,
-            enrichment: None,
+            recommendations: vec![],
+            enrichment: vec![],
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -464,8 +459,8 @@ mod tests {
                 total: 100,
                 shown: 2,
             },
-            metrics: None,
-            enrichment: None,
+            recommendations: vec![],
+            enrichment: vec![],
         };
 
         let json = serde_json::to_value(&resp).unwrap();
@@ -715,12 +710,56 @@ mod tests {
                 total: 1,
                 shown: 1,
             },
-            metrics: None,
-            enrichment: None,
+            recommendations: vec![],
+            enrichment: vec![],
         };
 
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("matched_lines").is_none());
+        // Empty recommendations should also be omitted.
+        assert!(
+            json.get("recommendations").is_none(),
+            "empty recommendations should be omitted from JSON"
+        );
+        // Empty enrichment should also be omitted.
+        assert!(
+            json.get("enrichment").is_none(),
+            "empty enrichment should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn sh_run_response_with_recommendations() {
+        let resp = ShRunResponse {
+            exit_code: 0,
+            duration_ms: 100,
+            cwd: "/tmp".to_string(),
+            category: "condense".to_string(),
+            output: "installed 147 packages".to_string(),
+            matched_lines: None,
+            lines: LineCount {
+                total: 50,
+                shown: 5,
+            },
+            recommendations: vec![
+                ShRunRecommendation {
+                    flag: "--prefer-offline".to_string(),
+                    reason: "Consider adding --prefer-offline for quieter output".to_string(),
+                },
+                ShRunRecommendation {
+                    flag: "--no-progress".to_string(),
+                    reason: "Consider adding --no-progress for quieter output".to_string(),
+                },
+            ],
+            enrichment: vec![],
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        let recs = json["recommendations"].as_array().unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0]["flag"], "--prefer-offline");
+        assert_eq!(recs[1]["flag"], "--no-progress");
+        assert!(recs[0]["reason"].as_str().unwrap().contains("--prefer-offline"));
     }
 
     #[test]
@@ -868,8 +907,8 @@ mod tests {
                 total: 1,
                 shown: 1,
             },
-            metrics: None,
-            enrichment: None,
+            recommendations: vec![],
+            enrichment: vec![],
         };
 
         let tool_resp = ToolResponse {
@@ -1145,68 +1184,5 @@ mod tests {
         let cloned = entry.clone();
         assert_eq!(cloned.alias, "test");
         assert_eq!(cloned.pid, 42);
-    }
-
-    // ---- Test: ShRunMetrics serialization ----
-
-    #[test]
-    fn sh_run_response_with_metrics_serialization() {
-        let resp = ShRunResponse {
-            exit_code: 0,
-            duration_ms: 200,
-            cwd: "/tmp".to_string(),
-            category: "condense".to_string(),
-            output: "squashed output".to_string(),
-            matched_lines: None,
-            lines: LineCount {
-                total: 100,
-                shown: 10,
-            },
-            metrics: Some(ShRunMetrics {
-                compression_ratio: 0.1,
-                raw_bytes: 5000,
-                squashed_bytes: 500,
-                lines_in: 100,
-                lines_out: 10,
-                wall_ms: 200,
-                squash_ms: 15,
-            }),
-            enrichment: None,
-        };
-
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(json.get("metrics").is_some(), "metrics field should be present");
-        let m = &json["metrics"];
-        assert!((m["compression_ratio"].as_f64().unwrap() - 0.1).abs() < f64::EPSILON);
-        assert_eq!(m["raw_bytes"], 5000);
-        assert_eq!(m["squashed_bytes"], 500);
-        assert_eq!(m["lines_in"], 100);
-        assert_eq!(m["lines_out"], 10);
-        assert_eq!(m["wall_ms"], 200);
-        assert_eq!(m["squash_ms"], 15);
-    }
-
-    #[test]
-    fn sh_run_response_without_metrics_omits_field() {
-        let resp = ShRunResponse {
-            exit_code: 0,
-            duration_ms: 50,
-            cwd: "/tmp".to_string(),
-            category: "passthrough".to_string(),
-            output: "hello".to_string(),
-            matched_lines: None,
-            lines: LineCount {
-                total: 1,
-                shown: 1,
-            },
-            metrics: None,
-            enrichment: None,
-        };
-
-        let json = serde_json::to_value(&resp).unwrap();
-        assert!(
-            json.get("metrics").is_none(),
-            "metrics field should be omitted when None"
-        );
     }
 }

@@ -54,6 +54,46 @@ impl VteStripper {
     }
 }
 
+/// Strip ANSI escape sequences from a multi-line string, line by line.
+///
+/// Returns clean text without any terminal escape codes. Used by sh_run,
+/// sh_spawn, and sh_interact to sanitize output before returning to LLMs.
+pub fn strip_ansi(raw: &str) -> String {
+    raw.lines()
+        .map(|line| VteStripper::strip(line.as_bytes()).clean_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Strip trailing zsh PROMPT_SP no-newline indicator lines from output.
+///
+/// When command output doesn't end with a newline, zsh emits PROMPT_EOL_MARK
+/// (default "%") followed by spaces and a CR. This is a TTY cosmetic feature
+/// that shouldn't appear in structured output.
+///
+/// This function removes trailing lines that match the PROMPT_SP pattern:
+/// - A line that is only whitespace (empty PROMPT_EOL_MARK case)
+/// - A line that is "%" or "#" followed by only whitespace (default PROMPT_EOL_MARK)
+pub fn strip_prompt_sp(raw: &str) -> String {
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let mut end = lines.len();
+
+    while end > 0 {
+        let line = lines[end - 1].replace('\r', "");
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            end -= 1;
+        } else if (trimmed == "%" || trimmed == "#") && line.len() > 2 {
+            // PROMPT_SP marker: single char + spaces (line > 2 chars = not just "%")
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+
+    lines[..end].join("\n")
+}
+
 #[derive(Default)]
 struct StripCollector {
     text: String,
@@ -238,5 +278,95 @@ mod tests {
         let result = VteStripper::strip(input);
         assert_eq!(result.clean_text, "refreshed content");
         assert!(result.has_erase);
+    }
+
+    // ── strip_ansi (multi-line public function) ──────────────────────
+
+    #[test]
+    fn test_strip_ansi_multiline() {
+        let input = "\x1b[32mok\x1b[0m\n\x1b[31merror\x1b[0m\nplain";
+        let result = strip_ansi(input);
+        assert_eq!(result, "ok\nerror\nplain");
+    }
+
+    #[test]
+    fn test_strip_ansi_preserves_plain() {
+        let input = "hello\nworld";
+        assert_eq!(strip_ansi(input), "hello\nworld");
+    }
+
+    #[test]
+    fn test_strip_ansi_empty() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    // ── strip_prompt_sp ──────────────────────────────────────────────
+
+    #[test]
+    fn test_strip_prompt_sp_percent_with_spaces() {
+        // Zsh PROMPT_SP: "%" followed by spaces (default PROMPT_EOL_MARK)
+        let input = "hello\n%                                        ";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_percent_with_spaces_and_cr() {
+        // Zsh PROMPT_SP with CR: "%" + spaces + "\r"
+        let input = "hello\n%                                        \r";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_hash_with_spaces() {
+        // Root PROMPT_SP: "#" followed by spaces
+        let input = "hello\n#                                        ";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_empty_eol_mark() {
+        // Empty PROMPT_EOL_MARK: just spaces
+        let input = "hello\n                                        ";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_preserves_content() {
+        // Normal output with "%" in content should be preserved
+        let input = "progress: 50%\ndone";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "progress: 50%\ndone");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_preserves_single_percent() {
+        // A bare "%" without trailing spaces (not PROMPT_SP) should be preserved
+        let input = "hello\n%";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello\n%");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_empty_input() {
+        assert_eq!(strip_prompt_sp(""), "");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_no_prompt_sp() {
+        let input = "line 1\nline 2\nline 3";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "line 1\nline 2\nline 3");
+    }
+
+    #[test]
+    fn test_strip_prompt_sp_multiple_trailing_empty_lines() {
+        // Multiple trailing empty/whitespace lines after PROMPT_SP
+        let input = "hello\n%                    \n\n";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, "hello");
     }
 }

@@ -1,0 +1,11 @@
+=== RUN   TestAdd
+--- PASS: TestAdd (0.00s)
+=== RUN   TestSubtract
+--- PASS: TestSubtract (0.00s)
+=== RUN   TestDivide
+--- FAIL: TestDivide (0.00s)
+    math_test.go:25: expected 2.5, got 2
+=== RUN   TestMultiply
+--- PASS: TestMultiply (0.00s)
+FAIL
+FAIL	github.com/user/mathlib	0.012s

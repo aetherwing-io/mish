@@ -110,6 +110,18 @@ impl PtyCapture {
                     libc::setenv(b"PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
                     libc::setenv(b"GIT_PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
                     libc::setenv(b"MANPAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
+
+                    // Suppress zsh PROMPT_SP no-newline indicator.
+                    // When command output doesn't end with a newline, zsh prints
+                    // PROMPT_EOL_MARK (default "%") + spaces + CR before the prompt.
+                    // This is a TTY cosmetic feature that leaks into structured output.
+                    // Setting PROMPT_EOL_MARK="" makes the marker invisible.
+                    let empty = CString::new("").unwrap();
+                    libc::setenv(
+                        b"PROMPT_EOL_MARK\0".as_ptr().cast(),
+                        empty.as_ptr(),
+                        1,
+                    );
                 }
 
                 let program =
@@ -875,6 +887,34 @@ mod tests {
         assert!(
             !output.is_empty(),
             "git log should produce output without hanging on pager"
+        );
+    }
+
+    // Test PROMPT_EOL_MARK env var is set to empty in child
+    #[test]
+    #[serial(pty)]
+    fn test_prompt_eol_mark_suppressed() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo PROMPT_EOL_MARK=$PROMPT_EOL_MARK".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let all_bytes = read_all(&pty, Duration::from_secs(5));
+        let output = String::from_utf8_lossy(&all_bytes);
+
+        // PROMPT_EOL_MARK should be set to empty string
+        assert!(
+            output.contains("PROMPT_EOL_MARK="),
+            "expected PROMPT_EOL_MARK= in output, got: {:?}",
+            output
+        );
+        // It should be empty (not "%" which is zsh's default)
+        assert!(
+            !output.contains("PROMPT_EOL_MARK=%"),
+            "PROMPT_EOL_MARK should be empty, not '%', got: {:?}",
+            output
         );
     }
 }

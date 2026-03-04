@@ -1,0 +1,9 @@
+==> Fetching dependencies for node: icu4c and libnghttp2
+==> Fetching icu4c
+==> Downloading https://ghcr.io/v2/homebrew/core/icu4c/blobs/sha256:abc123
+Already downloaded: /Users/user/Library/Caches/Homebrew/downloads/abc123--icu4c-74.2.bottle.tar.gz
+==> Fetching node
+==> Downloading https://ghcr.io/v2/homebrew/core/node/blobs/sha256:def456
+==> Pouring icu4c--74.2.arm64_sonoma.bottle.tar.gz
+==> Pouring node--21.6.0.arm64_sonoma.bottle.tar.gz
+🍺  /opt/homebrew/Cellar/node/21.6.0: 2,123 files, 62.3MB

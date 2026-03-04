@@ -93,6 +93,11 @@ pub struct AuditConfig {
     pub log_commands: bool,
     pub log_policy_decisions: bool,
     pub log_handoff_events: bool,
+    /// Raw output sidecar retention.  `"none"` disables sidecar creation.
+    /// Any other value (e.g. `"7d"`, `"30d"`) enables it; retention
+    /// enforcement is handled externally — this field controls only whether
+    /// raw sidecar files are written at all.
+    pub raw_retention: String,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +210,7 @@ impl Default for AuditConfig {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         }
     }
 }
@@ -350,6 +356,7 @@ struct RawAuditConfig {
     log_commands: bool,
     log_policy_decisions: bool,
     log_handoff_events: bool,
+    raw_retention: String,
 }
 
 impl Default for RawAuditConfig {
@@ -361,6 +368,7 @@ impl Default for RawAuditConfig {
             log_commands: d.log_commands,
             log_policy_decisions: d.log_policy_decisions,
             log_handoff_events: d.log_handoff_events,
+            raw_retention: d.raw_retention,
         }
     }
 }
@@ -492,6 +500,7 @@ impl From<RawAuditConfig> for AuditConfig {
             log_commands: r.log_commands,
             log_policy_decisions: r.log_policy_decisions,
             log_handoff_events: r.log_handoff_events,
+            raw_retention: r.raw_retention,
         }
     }
 }
@@ -837,6 +846,7 @@ max_memory_mb = 512
         assert_eq!(config.audit.log_path, "/tmp/mish.log");
         assert_eq!(config.audit.log_level, "debug");
         assert!(!config.audit.log_commands);
+        assert_eq!(config.audit.raw_retention, "none"); // default when not specified
 
         let sandbox = config.sandbox.as_ref().unwrap();
         assert!(sandbox.enabled);
@@ -1276,5 +1286,21 @@ max_sessions = 5
         assert_eq!(expand_tilde("/absolute/path"), "/absolute/path");
         assert_eq!(expand_tilde("relative/path"), "relative/path");
         assert_eq!(expand_tilde("~"), home);
+    }
+
+    /// raw_retention parses from TOML and defaults to "none"
+    #[test]
+    fn raw_retention_parses_and_defaults() {
+        // Explicit value
+        let toml = r#"
+[audit]
+raw_retention = "7d"
+"#;
+        let config = parse_and_validate(toml).expect("should parse");
+        assert_eq!(config.audit.raw_retention, "7d");
+
+        // Default when not specified
+        let config = parse_and_validate("").expect("should parse");
+        assert_eq!(config.audit.raw_retention, "none");
     }
 }

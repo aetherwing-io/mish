@@ -1,0 +1,9 @@
+In file included from /usr/include/stdio.h:27,
+                 from main.c:1:
+/usr/include/features.h:461:12: note: expanded from macro '__GLIBC_USE'
+main.c:15:5: warning: implicit declaration of function 'gets' [-Wimplicit-function-declaration]
+   15 |     gets(buffer);
+      |     ^~~~
+main.c:23:12: warning: unused variable 'count' [-Wunused-variable]
+   23 |     int    count = 0;
+      |            ^~~~~

@@ -1,0 +1,13 @@
+main.c:10:5: error: use of undeclared identifier 'foo'
+   10 |     foo();
+      |     ^
+main.c:15:20: error: expected ';' after expression
+   15 |     int x = 42
+      |                    ^
+      |                    ;
+/usr/bin/ld: /tmp/ccAbCdEf.o: in function `main':
+main.c:(.text+0x1a): undefined reference to `bar'
+collect2: error: ld returned 1 exit status
+main.c:3:10: fatal error: 'missing.h' file not found
+    3 | #include "missing.h"
+      |          ^~~~~~~~~~~

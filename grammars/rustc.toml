@@ -1,0 +1,39 @@
+[tool]
+name = "rustc"
+detect = ["rustc"]
+inherit = ["ansi-progress"]
+
+# ---- fallback (rustc has no subcommands) ----
+
+[fallback]
+
+[[fallback.hazard]]
+# Compiler error with code: error[E0425]
+pattern = '^error\[(?P<code>E\d+)\]'
+severity = "error"
+action = "keep"
+captures = ["code"]
+multiline = 5
+
+[[fallback.hazard]]
+# Warning with code: warning[E...]
+pattern = '^warning\['
+severity = "warning"
+action = "keep"
+
+[[fallback.hazard]]
+# Cannot find (various resolution errors)
+pattern = 'cannot find'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Aborting summary line
+pattern = '^error: aborting due to'
+severity = "error"
+action = "keep"
+
+[fallback.summary]
+success = "+ compiled"
+failure = "! rustc failed (exit {exit_code})"
+partial = "... compiling ({lines} lines)"

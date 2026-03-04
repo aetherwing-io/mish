@@ -1,0 +1,11 @@
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+E: Unable to locate package nonexistent-pkg
+W: Target Packages (main/binary-amd64/Packages) is configured multiple times
+E: Package 'libfoo-dev' has no installation candidate
+dpkg: error processing package broken-pkg (--configure):
+ dependency problems - leaving unconfigured
+Err:1 http://archive.ubuntu.com/ubuntu jammy/main amd64 missing-pkg amd64 1.0
+  404  Not Found
+E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/m/missing-pkg_1.0_amd64.deb  404  Not Found

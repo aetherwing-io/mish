@@ -83,7 +83,8 @@ fn detect_intent(command: &[String]) -> CommandIntent {
     }
     let cmd = base_command(&command[0]);
     match cmd {
-        "cp" | "mv" | "ln" | "rm" | "touch" | "chmod" | "chown" => CommandIntent::FileOp,
+        "cp" | "mv" | "ln" | "rm" | "touch" | "chmod" | "chown" | "cat" | "head" | "tail"
+        | "less" | "more" => CommandIntent::FileOp,
         "mkdir" | "cd" | "ls" | "rmdir" => CommandIntent::DirOp,
         "curl" | "wget" | "ssh" => CommandIntent::NetworkOp,
         "cargo" | "npm" | "npx" | "python" | "python3" | "go" | "make" | "node" | "rustc"

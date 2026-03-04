@@ -1,0 +1,15 @@
+● nginx.service - A high performance web server
+     Loaded: loaded (/lib/systemd/system/nginx.service; enabled; vendor preset: enabled)
+     Active: active (running) since Mon 2026-03-03 10:15:30 UTC; 2h 30min ago
+       Docs: man:nginx(8)
+    Process: 1234 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=0/SUCCESS)
+   Main PID: 1235 (nginx)
+      Tasks: 5 (limit: 4915)
+     Memory: 12.3M
+        CPU: 1.234s
+     CGroup: /system.slice/nginx.service
+             ├─1235 "nginx: master process /usr/sbin/nginx"
+             └─1236 "nginx: worker process"
+
+Mar 03 10:15:30 server systemd[1]: Starting A high performance web server...
+Mar 03 10:15:30 server systemd[1]: Started A high performance web server.

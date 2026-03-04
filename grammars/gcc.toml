@@ -1,0 +1,56 @@
+[tool]
+name = "gcc"
+detect = ["gcc", "g++", "cc", "c++"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# "In file included from" chains
+pattern = '^In file included from'
+action = "strip"
+
+[[global_noise]]
+# Compiler note lines (context for warnings/errors)
+pattern = '^\S+:\d+:\d+: note:'
+action = "strip"
+
+# ---- compile action (default) ----
+
+[actions.compile]
+detect = ["-c", "-o", "-S"]
+
+[[actions.compile.noise]]
+# Included-from continuation lines
+pattern = '^\s+from\s+\S+:\d+'
+action = "strip"
+
+[[actions.compile.hazard]]
+pattern = '\berror:'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[actions.compile.hazard]]
+pattern = '\bwarning:'
+severity = "warning"
+action = "keep"
+
+[[actions.compile.hazard]]
+pattern = 'undefined reference to'
+severity = "error"
+action = "keep"
+
+[[actions.compile.hazard]]
+pattern = '\bfatal error:'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[actions.compile.summary]
+success = "+ compiled"
+failure = "! gcc failed (exit {exit_code})"
+partial = "... compiling ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["-w"]

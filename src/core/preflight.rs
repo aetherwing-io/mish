@@ -97,15 +97,17 @@ pub fn preflight(
         }
     }
 
-    // Generate recommendations (never injected)
+    // Generate recommendations (never injected, skip if already present)
     for flag in recommend {
-        result.recommendations.push(Recommendation {
-            flag: flag.clone(),
-            reason: format!(
-                "Consider adding {} for quieter output",
-                flag
-            ),
-        });
+        if !command.contains(flag) {
+            result.recommendations.push(Recommendation {
+                flag: flag.clone(),
+                reason: format!(
+                    "Consider adding {} for quieter output",
+                    flag
+                ),
+            });
+        }
     }
 
     result
@@ -499,5 +501,29 @@ recommend = []
         let result = preflight(&mut command, &grammar, None, OutputMode::Context);
 
         assert_eq!(result.injected, vec!["--no-progress"]);
+    }
+
+    // Test 16: recommendation skipped if flag already present in command
+    #[test]
+    fn test_recommendation_skipped_if_flag_already_present() {
+        let toml_str = r#"
+[tool]
+name = "cargo"
+
+[quiet]
+safe_inject = []
+recommend = ["--message-format=json"]
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+
+        // User already added the recommended flag
+        let mut command = cmd(&["cargo", "build", "--message-format=json"]);
+        let result = preflight(&mut command, &grammar, None, OutputMode::Human);
+
+        assert!(
+            result.recommendations.is_empty(),
+            "should not recommend a flag the user already provided"
+        );
+        assert_eq!(command.len(), 3); // unchanged
     }
 }

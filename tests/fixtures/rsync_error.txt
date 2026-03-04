@@ -1,0 +1,5 @@
+sending incremental file list
+rsync: link_stat "/nonexistent/path" failed: No such file or directory (2)
+rsync error: some files/attrs were not transferred (code 23) at main.c(1207) [sender=3.2.7]
+rsync: connection unexpectedly closed (0 bytes received so far) [sender]
+rsync error: error in rsync protocol data stream (code 12) at io.c(226) [sender=3.2.7]

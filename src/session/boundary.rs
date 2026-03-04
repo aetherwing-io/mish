@@ -54,8 +54,17 @@ impl BoundaryDetector {
                 //
                 // We'll return both; each shell ignores the irrelevant one.
                 // PROMPT_COMMAND is bash-only; precmd() is zsh-only.
+                //
+                // PROMPT_EOL_MARK='' suppresses zsh's PROMPT_SP no-newline indicator.
+                // When command output doesn't end with a newline, zsh prints
+                // PROMPT_EOL_MARK (default "%") + spaces + CR. Setting it to empty
+                // prevents the "%" from appearing in captured output.
+                // In bash this is just a harmless variable assignment.
                 concat!(
+                    "PROMPT_EOL_MARK=''\n",
+                    "PS0=$'\\033]133;C\\033\\\\'\n",
                     "PROMPT_COMMAND='printf \"\\033]133;D;%d\\033\\\\\" $?; printf \"\\033]133;P;%s\\033\\\\\" \"$PWD\"'\n",
+                    "preexec() { printf '\\033]133;C\\033\\\\'; }\n",
                     "precmd() { printf '\\033]133;D;%d\\033\\\\' $?; printf '\\033]133;P;%s\\033\\\\' \"$PWD\"; }"
                 ).to_string()
             }
@@ -107,28 +116,60 @@ impl BoundaryDetector {
     }
 
     /// Detect OSC 133 boundary markers in buffer.
+    ///
+    /// Uses 133;C (command start) to precisely separate ZLE echo from real output:
+    ///   [ZLE echo garbage]\x1b]133;C\x1b\\[real output]\x1b]133;D;0\x1b\\\x1b]133;P;/path\x1b\\
+    ///
+    /// Falls back to current behavior (strip D/P, return everything) when no C marker present.
     fn detect_osc133(&self, buffer: &str) -> Option<BoundaryResult> {
-        // Match \x1b]133;D;<exit_code>\x1b\\
         let re_d = Regex::new(r"\x1b\]133;D;(-?\d+)\x1b\\").ok()?;
-        // Match \x1b]133;P;<cwd>\x1b\\
         let re_p = Regex::new(r"\x1b\]133;P;([^\x1b]+)\x1b\\").ok()?;
+        let re_c = Regex::new(r"\x1b\]133;C\x1b\\").ok()?;
 
-        let cap_d = re_d.captures(buffer)?;
-        let cap_p = re_p.captures(buffer)?;
+        // If 133;C marker exists, extract only content between C and D.
+        // This precisely discards ZLE echo that appears before C.
+        if let Some(c_match) = re_c.find(buffer) {
+            let after_c = c_match.end();
+            let tail = &buffer[after_c..];
 
-        let exit_code: i32 = cap_d.get(1)?.as_str().parse().ok()?;
-        let cwd = cap_p.get(1)?.as_str().to_string();
+            // Find D and P markers AFTER C (ignore any stale ones before C)
+            let cap_d = re_d.captures(tail)?;
+            let cap_p = re_p.captures(tail)?;
 
-        // Strip OSC 133 sequences from output
-        let cleaned = re_d.replace_all(buffer, "");
-        let cleaned = re_p.replace_all(&cleaned, "");
-        let output = cleaned.to_string();
+            let exit_code: i32 = cap_d.get(1)?.as_str().parse().ok()?;
+            let cwd = cap_p.get(1)?.as_str().to_string();
 
-        Some(BoundaryResult {
-            exit_code,
-            cwd,
-            output,
-        })
+            let d_match = re_d.find(tail)?;
+            let content = &tail[..d_match.start()];
+
+            // Strip any remaining 133 sequences from the extracted content
+            let cleaned = re_c.replace_all(content, "");
+            let cleaned = re_d.replace_all(&cleaned, "");
+            let cleaned = re_p.replace_all(&cleaned, "");
+
+            Some(BoundaryResult {
+                exit_code,
+                cwd,
+                output: cleaned.to_string(),
+            })
+        } else {
+            // No C marker — fallback: strip D/P and return everything.
+            // This handles sentinel-like situations or shells without preexec.
+            let cap_d = re_d.captures(buffer)?;
+            let cap_p = re_p.captures(buffer)?;
+
+            let exit_code: i32 = cap_d.get(1)?.as_str().parse().ok()?;
+            let cwd = cap_p.get(1)?.as_str().to_string();
+
+            let cleaned = re_d.replace_all(buffer, "");
+            let cleaned = re_p.replace_all(&cleaned, "");
+
+            Some(BoundaryResult {
+                exit_code,
+                cwd,
+                output: cleaned.to_string(),
+            })
+        }
     }
 
     /// Detect sentinel boundary markers in buffer.
@@ -390,6 +431,113 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.exit_code, 42);
         assert_eq!(result.cwd, "/home/user/project");
+        assert_eq!(result.output, "line1\nline2\nline3");
+    }
+
+    // Test 21: Shell hooks include PROMPT_EOL_MARK suppression for zsh
+    #[test]
+    fn test_shell_hooks_suppress_prompt_eol_mark() {
+        let detector = BoundaryDetector::new("zsh");
+        let hooks = detector.shell_hook_commands();
+        assert!(
+            hooks.contains("PROMPT_EOL_MARK=''"),
+            "hooks should set PROMPT_EOL_MARK='', got: {hooks}"
+        );
+    }
+
+    // Test 22: Shell hooks contain preexec (zsh 133;C emitter)
+    #[test]
+    fn test_shell_hooks_contain_preexec() {
+        let detector = BoundaryDetector::new("zsh");
+        let hooks = detector.shell_hook_commands();
+        assert!(
+            hooks.contains("preexec()"),
+            "hooks should contain preexec for 133;C emission, got: {hooks}"
+        );
+        assert!(
+            hooks.contains("133;C"),
+            "hooks should contain 133;C marker, got: {hooks}"
+        );
+    }
+
+    // Test 23: Shell hooks contain PS0 (bash 133;C emitter)
+    #[test]
+    fn test_shell_hooks_contain_ps0() {
+        let detector = BoundaryDetector::new("bash");
+        let hooks = detector.shell_hook_commands();
+        assert!(
+            hooks.contains("PS0="),
+            "hooks should contain PS0 for bash 133;C emission, got: {hooks}"
+        );
+        assert!(
+            hooks.contains("133;C"),
+            "hooks should contain 133;C marker, got: {hooks}"
+        );
+    }
+
+    // Test 24: detect_osc133 with C marker extracts only content between C and D
+    #[test]
+    fn test_detect_osc133_with_c_marker() {
+        let detector = BoundaryDetector::new("bash");
+        let buffer = "zle garbage\x1b]133;C\x1b\\real output\x1b]133;D;0\x1b\\\x1b]133;P;/tmp\x1b\\";
+        let result = detector.detect_boundary(buffer, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.cwd, "/tmp");
+        assert_eq!(result.output, "real output");
+    }
+
+    // Test 25: detect_osc133 with C marker strips ZLE echo before C
+    #[test]
+    fn test_detect_osc133_c_strips_echo() {
+        let detector = BoundaryDetector::new("bash");
+        // Simulate: ZLE echoes "lls -la" garbled, then 133;C, then real ls output
+        let buffer = "lls -la /path/pathls -la /path\x1b]133;C\x1b\\file1.txt\nfile2.txt\x1b]133;D;0\x1b\\\x1b]133;P;/home\x1b\\";
+        let result = detector.detect_boundary(buffer, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.output, "file1.txt\nfile2.txt");
+        assert!(!result.output.contains("lls"));
+    }
+
+    // Test 26: detect_osc133 without C marker falls back to current behavior
+    #[test]
+    fn test_detect_osc133_without_c_fallback() {
+        let detector = BoundaryDetector::new("bash");
+        // No C marker — should fall back to stripping D/P and returning everything
+        let buffer = "some output\x1b]133;D;0\x1b\\\x1b]133;P;/tmp\x1b\\";
+        let result = detector.detect_boundary(buffer, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.cwd, "/tmp");
+        assert_eq!(result.output, "some output");
+    }
+
+    // Test 27: stale D marker before C is ignored — only D after C matters
+    #[test]
+    fn test_detect_osc133_stale_d_before_c_ignored() {
+        let detector = BoundaryDetector::new("bash");
+        // Stale D from previous command, then C, then real output, then current D
+        let buffer = "\x1b]133;D;1\x1b\\\x1b]133;P;/old\x1b\\stale stuff\x1b]133;C\x1b\\real output\x1b]133;D;0\x1b\\\x1b]133;P;/new\x1b\\";
+        let result = detector.detect_boundary(buffer, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        // Should use the D after C (exit code 0), not the stale D (exit code 1)
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.cwd, "/new");
+        assert_eq!(result.output, "real output");
+    }
+
+    // Test 28: C marker with multiline output between C and D
+    #[test]
+    fn test_detect_osc133_c_multiline_output() {
+        let detector = BoundaryDetector::new("bash");
+        let buffer = "echo garbage\x1b]133;C\x1b\\line1\nline2\nline3\x1b]133;D;0\x1b\\\x1b]133;P;/tmp\x1b\\";
+        let result = detector.detect_boundary(buffer, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
         assert_eq!(result.output, "line1\nline2\nline3");
     }
 }

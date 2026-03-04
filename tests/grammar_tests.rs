@@ -1363,3 +1363,965 @@ fn test_terraform_apply_summary_format() {
     let result = format_summary(grammar, Some(action), &outcomes, 0);
     assert_eq!(result, vec!["+ applied: 1 added, 1 changed, 0 destroyed"]);
 }
+
+// ===========================================================================
+// gcc + go + rustc grammar tests (e4)
+// ===========================================================================
+
+#[test]
+fn test_gcc_grammar_parses() {
+    let grammar = load_tool_grammar("gcc");
+    assert_eq!(grammar.tool.name, "gcc");
+    assert!(grammar.detect.contains(&"gcc".to_string()));
+    assert!(grammar.detect.contains(&"g++".to_string()));
+    assert!(grammar.detect.contains(&"cc".to_string()));
+    assert!(grammar.detect.contains(&"c++".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.actions.contains_key("compile"));
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_detect_tool_gcc() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["gcc", "-o", "main", "main.c"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "gcc should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "gcc");
+    assert!(a.is_some(), "compile action should be resolved");
+}
+
+#[test]
+fn test_detect_tool_gpp() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["g++", "-c", "main.cpp"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "g++ should be detected as gcc");
+    assert_eq!(result.unwrap().0.tool.name, "gcc");
+}
+
+#[test]
+fn test_gcc_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("gcc").unwrap();
+    let compile = grammar.actions.get("compile").unwrap();
+
+    // Hazard: warning line
+    let warn_line = "main.c:15:5: warning: implicit declaration of function 'gets' [-Wimplicit-function-declaration]";
+    let warn_matched = compile.hazard.iter().any(|r| r.pattern.is_match(warn_line));
+    assert!(warn_matched, "gcc compile hazard should match 'warning:'");
+
+    // Global noise: "In file included from"
+    let incl_line = "In file included from /usr/include/stdio.h:27,";
+    let incl_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(incl_line));
+    assert!(incl_matched, "gcc global_noise should match 'In file included from'");
+
+    // Global noise: note line
+    let note_line = "/usr/include/features.h:461:12: note: expanded from macro '__GLIBC_USE'";
+    let note_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(note_line));
+    assert!(note_matched, "gcc global_noise should match note lines");
+
+    // Hazard: error line
+    let error_line = "main.c:10:5: error: use of undeclared identifier 'foo'";
+    let err_matched = compile.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "gcc compile hazard should match 'error:'");
+
+    // Hazard: undefined reference
+    let undef_line = "main.c:(.text+0x1a): undefined reference to `bar'";
+    let undef_matched = compile.hazard.iter().any(|r| r.pattern.is_match(undef_line));
+    assert!(undef_matched, "gcc compile hazard should match 'undefined reference'");
+
+    // Hazard: fatal error
+    let fatal_line = "main.c:3:10: fatal error: 'missing.h' file not found";
+    let fatal_matched = compile.hazard.iter().any(|r| r.pattern.is_match(fatal_line));
+    assert!(fatal_matched, "gcc compile hazard should match 'fatal error:'");
+}
+
+#[test]
+fn test_gcc_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("gcc").unwrap();
+    let compile = grammar.actions.get("compile").unwrap();
+
+    let fixture = load_fixture("gcc_build_error.txt");
+    let mut error_count = 0;
+    for line in fixture.lines() {
+        for rule in &compile.hazard {
+            if rule.pattern.is_match(line) {
+                if rule.severity == Some(Severity::Error) {
+                    error_count += 1;
+                }
+                break;
+            }
+        }
+    }
+    assert!(error_count >= 3, "gcc_build_error.txt should have at least 3 error-severity hazards, found {error_count}");
+}
+
+#[test]
+fn test_go_grammar_parses() {
+    let grammar = load_tool_grammar("go");
+    assert_eq!(grammar.tool.name, "go");
+    assert!(grammar.detect.contains(&"go".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.actions.contains_key("build"));
+    assert!(grammar.actions.contains_key("test"));
+    assert!(grammar.actions.contains_key("run"));
+    assert!(grammar.actions.contains_key("mod"));
+}
+
+#[test]
+fn test_detect_tool_go() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["go", "test", "./..."]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "go should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "go");
+    assert!(a.is_some(), "test action should be resolved");
+}
+
+#[test]
+fn test_go_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("go").unwrap();
+    let test_action = grammar.actions.get("test").unwrap();
+
+    // Noise: === RUN
+    let run_line = "=== RUN   TestAdd";
+    let run_matched = test_action.noise.iter().any(|r| r.pattern.is_match(run_line));
+    assert!(run_matched, "go test noise should match '=== RUN'");
+
+    // Noise: --- PASS
+    let pass_line = "--- PASS: TestAdd (0.00s)";
+    let pass_matched = test_action.noise.iter().any(|r| r.pattern.is_match(pass_line));
+    assert!(pass_matched, "go test noise should match '--- PASS:'");
+
+    // Hazard: --- FAIL
+    let fail_line = "--- FAIL: TestDivide (0.00s)";
+    let fail_matched = test_action.hazard.iter().any(|r| r.pattern.is_match(fail_line));
+    assert!(fail_matched, "go test hazard should match '--- FAIL:'");
+
+    // Outcome: ok line
+    let ok_line = "ok\tgithub.com/user/mathlib\t0.012s";
+    let ok_matched = test_action.outcome.iter().any(|r| r.pattern.is_match(ok_line));
+    assert!(ok_matched, "go test outcome should match 'ok\\t...'");
+
+    // Outcome: FAIL line
+    let fail_pkg = "FAIL\tgithub.com/user/mathlib\t0.012s";
+    let fail_pkg_matched = test_action.outcome.iter().any(|r| r.pattern.is_match(fail_pkg));
+    assert!(fail_pkg_matched, "go test outcome should match 'FAIL\\t...'");
+
+    // Global noise: go: downloading
+    let dl_line = "go: downloading github.com/gin-gonic/gin v1.9.1";
+    let dl_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(dl_line));
+    assert!(dl_matched, "go global_noise should match 'go: downloading'");
+}
+
+#[test]
+fn test_go_test_outcome_captures() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("go").unwrap();
+    let test_action = grammar.actions.get("test").unwrap();
+
+    let ok_line = "ok\tgithub.com/user/mathlib\t0.012s";
+    let mut captured = HashMap::new();
+    for rule in &test_action.outcome {
+        if let Some(caps) = rule.pattern.captures(ok_line) {
+            for name in &rule.captures {
+                if let Some(m) = caps.name(name) {
+                    captured.insert(name.clone(), m.as_str().to_string());
+                }
+            }
+        }
+    }
+    assert_eq!(captured.get("pkg").map(|s| s.as_str()), Some("github.com/user/mathlib"));
+    assert_eq!(captured.get("time").map(|s| s.as_str()), Some("0.012s"));
+}
+
+#[test]
+fn test_rustc_grammar_parses() {
+    let grammar = load_tool_grammar("rustc");
+    assert_eq!(grammar.tool.name, "rustc");
+    assert!(grammar.detect.contains(&"rustc".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+}
+
+#[test]
+fn test_detect_tool_rustc() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["rustc", "main.rs"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "rustc should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "rustc");
+    assert!(a.is_some(), "fallback action should be resolved for rustc");
+}
+
+#[test]
+fn test_rustc_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rustc").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Hazard: error[E...]
+    let error_line = "error[E0425]: cannot find value `foo` in this scope";
+    let err_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "rustc hazard should match 'error[E...]'");
+
+    // Hazard: warning[...]
+    let warn_line = "warning[E0unused]: unused variable: `z`";
+    let warn_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(warn_line));
+    assert!(warn_matched, "rustc hazard should match 'warning[...]'");
+
+    // Hazard: cannot find
+    let cannot_line = "error[E0425]: cannot find value `foo` in this scope";
+    let cannot_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(cannot_line));
+    assert!(cannot_matched, "rustc hazard should match 'cannot find'");
+
+    // Hazard: aborting due to
+    let abort_line = "error: aborting due to 2 previous errors; 1 warning emitted";
+    let abort_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(abort_line));
+    assert!(abort_matched, "rustc hazard should match 'error: aborting due to'");
+}
+
+#[test]
+fn test_rustc_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rustc").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("rustc_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &fallback.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 3, "rustc_error.txt should have at least 3 hazard matches, found {hazard_count}");
+}
+
+#[test]
+fn test_rustc_error_code_captures() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rustc").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let error_line = "error[E0425]: cannot find value `foo` in this scope";
+    let mut captured = HashMap::new();
+    for rule in &fallback.hazard {
+        if let Some(caps) = rule.pattern.captures(error_line) {
+            for name in &rule.captures {
+                if let Some(m) = caps.name(name) {
+                    captured.insert(name.clone(), m.as_str().to_string());
+                }
+            }
+        }
+    }
+    assert_eq!(captured.get("code").map(|s| s.as_str()), Some("E0425"));
+}
+
+// ===========================================================================
+// rsync + ssh + systemctl + ansible grammar tests (e6)
+// ===========================================================================
+
+#[test]
+fn test_rsync_grammar_parses() {
+    let grammar = load_tool_grammar("rsync");
+    assert_eq!(grammar.tool.name, "rsync");
+    assert!(grammar.detect.contains(&"rsync".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_detect_tool_rsync() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["rsync", "-avz", "src/", "dest/"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "rsync should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "rsync");
+    assert!(a.is_some(), "fallback action should be resolved for rsync");
+}
+
+#[test]
+fn test_rsync_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rsync").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: individual file transfer lines (dedup)
+    let file_line = "src/main.rs";
+    let file_matched = fallback.noise.iter().any(|r| r.pattern.is_match(file_line));
+    assert!(file_matched, "rsync fallback noise should match individual file lines");
+
+    // Outcome: "sent X bytes received Y bytes" summary
+    let sent_line = "sent 12,345 bytes  received 234 bytes  25,158.00 bytes/sec";
+    let sent_matched = fallback.outcome.iter().any(|r| r.pattern.is_match(sent_line));
+    assert!(sent_matched, "rsync fallback outcome should match 'sent ... bytes'");
+
+    // Hazard: "rsync error:"
+    let error_line = "rsync error: some files/attrs were not transferred (code 23) at main.c(1207) [sender=3.2.7]";
+    let err_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "rsync fallback hazard should match 'rsync error:'");
+
+    // Global noise: "sending incremental file list"
+    let send_line = "sending incremental file list";
+    let send_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(send_line));
+    assert!(send_matched, "rsync global_noise should match 'sending incremental file list'");
+
+    // Global noise: progress percentage lines
+    let progress_line = "   45%  12.34MB/s   0:01:23";
+    let progress_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(progress_line));
+    assert!(progress_matched, "rsync global_noise should match progress percentage lines");
+}
+
+#[test]
+fn test_rsync_outcome_captures() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rsync").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("rsync_transfer.txt");
+    let mut captured = HashMap::new();
+
+    for line in fixture.lines() {
+        for rule in &fallback.outcome {
+            if let Some(caps) = rule.pattern.captures(line) {
+                for name in &rule.captures {
+                    if let Some(m) = caps.name(name) {
+                        captured.insert(name.clone(), m.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(captured.get("sent").map(|s| s.as_str()), Some("12,345"));
+    assert_eq!(captured.get("received").map(|s| s.as_str()), Some("234"));
+}
+
+#[test]
+fn test_rsync_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("rsync").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("rsync_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &fallback.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 2, "rsync_error.txt should have at least 2 hazard matches, found {hazard_count}");
+}
+
+#[test]
+fn test_ssh_grammar_parses() {
+    let grammar = load_tool_grammar("ssh");
+    assert_eq!(grammar.tool.name, "ssh");
+    assert!(grammar.detect.contains(&"ssh".to_string()));
+    assert!(grammar.detect.contains(&"scp".to_string()));
+    assert!(grammar.detect.contains(&"sftp".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+}
+
+#[test]
+fn test_detect_tool_ssh() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["ssh", "user@host", "ls"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "ssh should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "ssh");
+    assert!(a.is_some(), "fallback action should be resolved for ssh");
+}
+
+#[test]
+fn test_ssh_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("ssh").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Hazard: Connection refused
+    let refused_line = "ssh: connect to host example.com port 22: Connection refused";
+    let refused_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(refused_line));
+    assert!(refused_matched, "ssh fallback hazard should match 'Connection refused'");
+
+    // Hazard: Permission denied
+    let perm_line = "Permission denied (publickey,password).";
+    let perm_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(perm_line));
+    assert!(perm_matched, "ssh fallback hazard should match 'Permission denied'");
+
+    // Hazard: Could not resolve hostname
+    let resolve_line = "ssh: Could not resolve hostname nonexistent.host: nodename nor servname provided, or not known";
+    let resolve_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(resolve_line));
+    assert!(resolve_matched, "ssh fallback hazard should match 'Could not resolve hostname'");
+
+    // Hazard: Host key verification failed
+    let hostkey_line = "Host key verification failed.";
+    let hostkey_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(hostkey_line));
+    assert!(hostkey_matched, "ssh fallback hazard should match 'Host key verification failed'");
+
+    // Global noise: debug1:
+    let debug_line = "debug1: Connection established.";
+    let debug_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(debug_line));
+    assert!(debug_matched, "ssh global_noise should match 'debug1:'");
+
+    // Global noise: Authenticated to
+    let auth_line = "Authenticated to host (via publickey).";
+    let auth_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(auth_line));
+    assert!(auth_matched, "ssh global_noise should match 'Authenticated to'");
+}
+
+#[test]
+fn test_ssh_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("ssh").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("ssh_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &fallback.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 3, "ssh_error.txt should have at least 3 hazard matches, found {hazard_count}");
+}
+
+#[test]
+fn test_systemctl_grammar_parses() {
+    let grammar = load_tool_grammar("systemctl");
+    assert_eq!(grammar.tool.name, "systemctl");
+    assert!(grammar.detect.contains(&"systemctl".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.actions.contains_key("status"));
+    assert!(grammar.actions.contains_key("start"));
+    assert!(grammar.actions.contains_key("stop"));
+    assert!(grammar.actions.contains_key("restart"));
+    assert!(grammar.actions.contains_key("enable"));
+    assert!(grammar.actions.contains_key("disable"));
+}
+
+#[test]
+fn test_detect_tool_systemctl() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["systemctl", "status", "nginx"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "systemctl should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "systemctl");
+    assert!(a.is_some(), "status action should be resolved");
+}
+
+#[test]
+fn test_systemctl_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("systemctl").unwrap();
+    let status = grammar.actions.get("status").unwrap();
+
+    // Outcome: Active: active (running)
+    let active_line = "     Active: active (running) since Mon 2026-03-03 10:15:30 UTC; 2h 30min ago";
+    let active_matched = status.outcome.iter().any(|r| r.pattern.is_match(active_line));
+    assert!(active_matched, "systemctl status outcome should match 'Active: active (running)'");
+
+    // Noise: Loaded: line
+    let loaded_line = "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled; vendor preset: enabled)";
+    let loaded_matched = status.noise.iter().any(|r| r.pattern.is_match(loaded_line));
+    assert!(loaded_matched, "systemctl status noise should match 'Loaded:'");
+
+    // Noise: Docs: line
+    let docs_line = "       Docs: man:nginx(8)";
+    let docs_matched = status.noise.iter().any(|r| r.pattern.is_match(docs_line));
+    assert!(docs_matched, "systemctl status noise should match 'Docs:'");
+
+    // Noise: Process: line
+    let process_line = "    Process: 1234 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=0/SUCCESS)";
+    let process_matched = status.noise.iter().any(|r| r.pattern.is_match(process_line));
+    assert!(process_matched, "systemctl status noise should match 'Process:'");
+
+    // Noise: CGroup: line
+    let cgroup_line = "     CGroup: /system.slice/nginx.service";
+    let cgroup_matched = status.noise.iter().any(|r| r.pattern.is_match(cgroup_line));
+    assert!(cgroup_matched, "systemctl status noise should match 'CGroup:'");
+
+    // Noise: journal log lines (dedup)
+    let journal_line = "Mar 03 10:15:30 server systemd[1]: Starting A high performance web server...";
+    let journal_matched = status.noise.iter().any(|r| r.pattern.is_match(journal_line));
+    assert!(journal_matched, "systemctl status noise should match journal log lines");
+
+    // Hazard: Active: failed
+    let failed_line = "     Active: failed (Result: exit-code) since Mon 2026-03-03 10:15:30 UTC";
+    let failed_matched = status.hazard.iter().any(|r| r.pattern.is_match(failed_line));
+    assert!(failed_matched, "systemctl status hazard should match 'Active: failed'");
+
+    // Hazard: Active: inactive
+    let inactive_line = "     Active: inactive (dead) since Mon 2026-03-03 10:15:30 UTC";
+    let inactive_matched = status.hazard.iter().any(|r| r.pattern.is_match(inactive_line));
+    assert!(inactive_matched, "systemctl status hazard should match 'Active: inactive'");
+}
+
+#[test]
+fn test_ansible_grammar_parses() {
+    let grammar = load_tool_grammar("ansible");
+    assert_eq!(grammar.tool.name, "ansible");
+    assert!(grammar.detect.contains(&"ansible".to_string()));
+    assert!(grammar.detect.contains(&"ansible-playbook".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+}
+
+#[test]
+fn test_detect_tool_ansible() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["ansible-playbook", "deploy.yml"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "ansible-playbook should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "ansible");
+    assert!(a.is_some(), "fallback action should be resolved for ansible");
+}
+
+#[test]
+fn test_ansible_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("ansible").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: ok: lines (dedup)
+    let ok_line = "ok: [web1.example.com]";
+    let ok_matched = fallback.noise.iter().any(|r| r.pattern.is_match(ok_line));
+    assert!(ok_matched, "ansible fallback noise should match 'ok:' lines");
+
+    // Noise: skipping: lines (dedup)
+    let skip_line = "skipping: [web1.example.com]";
+    let skip_matched = fallback.noise.iter().any(|r| r.pattern.is_match(skip_line));
+    assert!(skip_matched, "ansible fallback noise should match 'skipping:' lines");
+
+    // Hazard: fatal: line
+    let fatal_line = "fatal: [web2.example.com]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Failed to connect\"}";
+    let fatal_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(fatal_line));
+    assert!(fatal_matched, "ansible fallback hazard should match 'fatal:' lines");
+
+    // Hazard: ERROR!
+    let error_line = "ERROR! the playbook: missing.yml could not be found";
+    let error_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(error_matched, "ansible fallback hazard should match 'ERROR!'");
+
+    // Hazard: WARNING
+    let warn_line = "WARNING]: provided hosts list is empty";
+    let warn_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(warn_line));
+    assert!(warn_matched, "ansible fallback hazard should match 'WARNING'");
+
+    // Outcome: PLAY RECAP line with captures
+    let recap_line = "web1.example.com           : ok=3    changed=1    unreachable=0    failed=0    skipped=0";
+    let recap_matched = fallback.outcome.iter().any(|r| r.pattern.is_match(recap_line));
+    assert!(recap_matched, "ansible fallback outcome should match PLAY RECAP host line");
+
+    // Global noise: Gathering Facts
+    let gather_line = "TASK [Gathering Facts] ********************************************************";
+    let gather_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(gather_line));
+    assert!(gather_matched, "ansible global_noise should match 'Gathering Facts'");
+}
+
+#[test]
+fn test_ansible_outcome_captures() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("ansible").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("ansible_playbook.txt");
+    let mut all_captured: Vec<HashMap<String, String>> = Vec::new();
+
+    for line in fixture.lines() {
+        for rule in &fallback.outcome {
+            if let Some(caps) = rule.pattern.captures(line) {
+                let mut captured = HashMap::new();
+                for name in &rule.captures {
+                    if let Some(m) = caps.name(name) {
+                        captured.insert(name.clone(), m.as_str().to_string());
+                    }
+                }
+                if !captured.is_empty() {
+                    all_captured.push(captured);
+                }
+            }
+        }
+    }
+
+    assert_eq!(all_captured.len(), 2, "should capture 2 PLAY RECAP lines");
+    assert_eq!(all_captured[0].get("host").map(|s| s.as_str()), Some("web1.example.com"));
+    assert_eq!(all_captured[0].get("ok").map(|s| s.as_str()), Some("3"));
+    assert_eq!(all_captured[0].get("changed").map(|s| s.as_str()), Some("1"));
+    assert_eq!(all_captured[0].get("failed").map(|s| s.as_str()), Some("0"));
+    assert_eq!(all_captured[1].get("host").map(|s| s.as_str()), Some("web2.example.com"));
+    assert_eq!(all_captured[1].get("changed").map(|s| s.as_str()), Some("0"));
+}
+
+#[test]
+fn test_ansible_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("ansible").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("ansible_playbook_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &fallback.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 1, "ansible_playbook_error.txt should have at least 1 hazard match (fatal/unreachable), found {hazard_count}");
+}
+
+// ===========================================================================
+// apt + brew + curl grammar tests (e5)
+// ===========================================================================
+
+#[test]
+fn test_apt_grammar_parses() {
+    let grammar = load_tool_grammar("apt");
+    assert_eq!(grammar.tool.name, "apt");
+    assert!(grammar.detect.contains(&"apt".to_string()));
+    assert!(grammar.detect.contains(&"apt-get".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.actions.contains_key("install"));
+    assert!(grammar.actions.contains_key("update"));
+    assert!(grammar.actions.contains_key("upgrade"));
+    assert!(grammar.actions.contains_key("remove"));
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_detect_tool_apt() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["apt", "install", "vim"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "apt should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "apt");
+    assert!(a.is_some(), "install action should be resolved");
+}
+
+#[test]
+fn test_detect_tool_apt_get() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["apt-get", "update"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "apt-get should be detected as apt");
+    assert_eq!(result.unwrap().0.tool.name, "apt");
+}
+
+#[test]
+fn test_apt_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("apt").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    // Global noise: Reading package lists
+    let reading_line = "Reading package lists... Done";
+    let reading_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(reading_line));
+    assert!(reading_matched, "apt global_noise should match 'Reading package lists'");
+
+    // Global noise: Building dependency tree
+    let building_line = "Building dependency tree... Done";
+    let building_matched = grammar.global_noise.iter().any(|r| r.pattern.is_match(building_line));
+    assert!(building_matched, "apt global_noise should match 'Building dependency tree'");
+
+    // Noise: Get: download lines
+    let get_line = "Get:1 http://archive.ubuntu.com/ubuntu jammy/main amd64 libbar2 amd64 2.1.0-1 [234 kB]";
+    let get_matched = install.noise.iter().any(|r| r.pattern.is_match(get_line));
+    assert!(get_matched, "apt install noise should match 'Get:' lines");
+
+    // Noise: Setting up
+    let setup_line = "Setting up libbar2:amd64 (2.1.0-1) ...";
+    let setup_matched = install.noise.iter().any(|r| r.pattern.is_match(setup_line));
+    assert!(setup_matched, "apt install noise should match 'Setting up'");
+
+    // Noise: Unpacking
+    let unpack_line = "Unpacking libbar2:amd64 (2.1.0-1) ...";
+    let unpack_matched = install.noise.iter().any(|r| r.pattern.is_match(unpack_line));
+    assert!(unpack_matched, "apt install noise should match 'Unpacking'");
+
+    // Hazard: E: error
+    let error_line = "E: Unable to locate package nonexistent-pkg";
+    let err_matched = install.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "apt install hazard should match 'E:' error");
+
+    // Hazard: dpkg: error
+    let dpkg_line = "dpkg: error processing package broken-pkg (--configure):";
+    let dpkg_matched = install.hazard.iter().any(|r| r.pattern.is_match(dpkg_line));
+    assert!(dpkg_matched, "apt install hazard should match 'dpkg: error'");
+
+    // Outcome: newly installed count
+    let outcome_line = "0 upgraded, 2 newly installed, 0 to remove and 15 not upgraded.";
+    let outcome_matched = install.outcome.iter().any(|r| r.pattern.is_match(outcome_line));
+    assert!(outcome_matched, "apt install outcome should match 'newly installed' count");
+}
+
+#[test]
+fn test_apt_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("apt").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    let fixture = load_fixture("apt_install_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &install.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 3, "apt_install_error.txt should have at least 3 hazard matches, found {hazard_count}");
+
+    // Verify specific hazard types are detected
+    let fixture_text = load_fixture("apt_install_error.txt");
+    let has_e_error = fixture_text.lines().any(|line| {
+        install.hazard.iter().any(|r| r.pattern.is_match(line) && line.starts_with("E:"))
+    });
+    assert!(has_e_error, "should detect E: error lines");
+
+    let has_dpkg = fixture_text.lines().any(|line| {
+        install.hazard.iter().any(|r| r.pattern.is_match(line) && line.starts_with("dpkg: error"))
+    });
+    assert!(has_dpkg, "should detect dpkg: error lines");
+}
+
+#[test]
+fn test_apt_update_rules() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("apt").unwrap();
+    let update = grammar.actions.get("update").unwrap();
+
+    // Noise: Get/Hit/Ign lines (dedup)
+    let get_line = "Get:1 http://archive.ubuntu.com/ubuntu jammy InRelease [270 kB]";
+    let get_matched = update.noise.iter().any(|r| r.pattern.is_match(get_line));
+    assert!(get_matched, "apt update noise should match 'Get:' lines");
+
+    let hit_line = "Hit:2 http://security.ubuntu.com/ubuntu jammy-security InRelease";
+    let hit_matched = update.noise.iter().any(|r| r.pattern.is_match(hit_line));
+    assert!(hit_matched, "apt update noise should match 'Hit:' lines");
+
+    // Outcome: All packages are up to date
+    let uptodate = "All packages are up to date.";
+    let uptodate_matched = update.outcome.iter().any(|r| r.pattern.is_match(uptodate));
+    assert!(uptodate_matched, "apt update outcome should match 'All packages are up to date'");
+}
+
+#[test]
+fn test_brew_grammar_parses() {
+    let grammar = load_tool_grammar("brew");
+    assert_eq!(grammar.tool.name, "brew");
+    assert!(grammar.detect.contains(&"brew".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.actions.contains_key("install"));
+    assert!(grammar.actions.contains_key("update"));
+    assert!(grammar.actions.contains_key("upgrade"));
+    assert!(grammar.actions.contains_key("search"));
+}
+
+#[test]
+fn test_detect_tool_brew() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["brew", "install", "node"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "brew should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "brew");
+    assert!(a.is_some(), "install action should be resolved");
+}
+
+#[test]
+fn test_brew_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("brew").unwrap();
+    let install = grammar.actions.get("install").unwrap();
+
+    // Noise: ==> Downloading
+    let dl_line = "==> Downloading https://ghcr.io/v2/homebrew/core/node/blobs/sha256:def456";
+    let dl_matched = install.noise.iter().any(|r| r.pattern.is_match(dl_line));
+    assert!(dl_matched, "brew install noise should match '==> Downloading'");
+
+    // Noise: ==> Fetching
+    let fetch_line = "==> Fetching node";
+    let fetch_matched = install.noise.iter().any(|r| r.pattern.is_match(fetch_line));
+    assert!(fetch_matched, "brew install noise should match '==> Fetching'");
+
+    // Noise: ==> Pouring
+    let pour_line = "==> Pouring node--21.6.0.arm64_sonoma.bottle.tar.gz";
+    let pour_matched = install.noise.iter().any(|r| r.pattern.is_match(pour_line));
+    assert!(pour_matched, "brew install noise should match '==> Pouring'");
+
+    // Noise: Already downloaded
+    let already_line = "Already downloaded: /Users/user/Library/Caches/Homebrew/downloads/abc123--icu4c-74.2.bottle.tar.gz";
+    let already_matched = install.noise.iter().any(|r| r.pattern.is_match(already_line));
+    assert!(already_matched, "brew install noise should match 'Already downloaded:'");
+
+    // Outcome: beer mug line
+    let beer_line = "\u{1f37a}  /opt/homebrew/Cellar/node/21.6.0: 2,123 files, 62.3MB";
+    let beer_matched = install.outcome.iter().any(|r| r.pattern.is_match(beer_line));
+    assert!(beer_matched, "brew install outcome should match beer mug line");
+
+    // Hazard: Error:
+    let error_line = "Error: No such file or directory @ rb_file_s_symlink";
+    let err_matched = install.hazard.iter().any(|r| r.pattern.is_match(error_line));
+    assert!(err_matched, "brew install hazard should match 'Error:'");
+
+    // Hazard: No available formula
+    let no_formula = "No available formula with the name \"nonexistent\"";
+    let nf_matched = install.hazard.iter().any(|r| r.pattern.is_match(no_formula));
+    assert!(nf_matched, "brew install hazard should match 'No available formula'");
+}
+
+#[test]
+fn test_brew_update_rules() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("brew").unwrap();
+    let update = grammar.actions.get("update").unwrap();
+
+    // Outcome: Already up-to-date
+    let uptodate = "Already up-to-date.";
+    let uptodate_matched = update.outcome.iter().any(|r| r.pattern.is_match(uptodate));
+    assert!(uptodate_matched, "brew update outcome should match 'Already up-to-date'");
+
+    // Outcome: Updated Homebrew
+    let updated = "Updated Homebrew from abc123 to def456.";
+    let updated_matched = update.outcome.iter().any(|r| r.pattern.is_match(updated));
+    assert!(updated_matched, "brew update outcome should match 'Updated Homebrew'");
+}
+
+#[test]
+fn test_curl_grammar_parses() {
+    let grammar = load_tool_grammar("curl");
+    assert_eq!(grammar.tool.name, "curl");
+    assert!(grammar.detect.contains(&"curl".to_string()));
+    assert_eq!(grammar.inherit, vec!["ansi-progress"]);
+    assert!(grammar.fallback.is_some());
+    assert!(grammar.actions.is_empty());
+    assert!(grammar.quiet.is_some());
+}
+
+#[test]
+fn test_detect_tool_curl() {
+    let grammars = build_grammars_map();
+    let args: Vec<String> = vec!["curl", "-sS", "https://example.com"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let result = detect_tool(&args, &grammars);
+    assert!(result.is_some(), "curl should be detected");
+    let (g, a) = result.unwrap();
+    assert_eq!(g.tool.name, "curl");
+    assert!(a.is_some(), "fallback action should be resolved for curl");
+}
+
+#[test]
+fn test_curl_rules_match_fixture() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("curl").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    // Noise: progress meter header
+    let header_line = "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current";
+    let header_matched = fallback.noise.iter().any(|r| r.pattern.is_match(header_line));
+    assert!(header_matched, "curl noise should match progress meter header");
+
+    // Noise: Dload/Upload column header
+    let dload_line = "                                 Dload  Upload   Total   Spent    Left  Speed";
+    let dload_matched = fallback.noise.iter().any(|r| r.pattern.is_match(dload_line));
+    assert!(dload_matched, "curl noise should match Dload/Upload header");
+
+    // Noise: progress data line
+    let progress_line = "  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0";
+    let progress_matched = fallback.noise.iter().any(|r| r.pattern.is_match(progress_line));
+    assert!(progress_matched, "curl noise should match progress data line");
+
+    // Hazard: curl error code
+    let curl_err = "curl: (6) Could not resolve host: nonexistent.example.com";
+    let curl_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(curl_err));
+    assert!(curl_matched, "curl hazard should match 'curl: (6)'");
+
+    // Hazard: Connection refused
+    let conn_line = "curl: (7) Failed to connect to localhost port 9999: Connection refused";
+    let conn_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(conn_line));
+    assert!(conn_matched, "curl hazard should match 'Connection refused'");
+
+    // Hazard: SSL certificate problem
+    let ssl_line = "curl: (60) SSL certificate problem: unable to get local issuer certificate";
+    let ssl_matched = fallback.hazard.iter().any(|r| r.pattern.is_match(ssl_line));
+    assert!(ssl_matched, "curl hazard should match 'SSL certificate problem'");
+}
+
+#[test]
+fn test_curl_error_fixture_hazards() {
+    let grammars = build_grammars_map();
+    let grammar = grammars.get("curl").unwrap();
+    let fallback = grammar.fallback.as_ref().unwrap();
+
+    let fixture = load_fixture("curl_error.txt");
+    let mut hazard_count = 0;
+    for line in fixture.lines() {
+        for rule in &fallback.hazard {
+            if rule.pattern.is_match(line) {
+                hazard_count += 1;
+                break;
+            }
+        }
+    }
+    assert!(hazard_count >= 2, "curl_error.txt should have at least 2 hazard matches, found {hazard_count}");
+}

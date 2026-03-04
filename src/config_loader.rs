@@ -25,6 +25,22 @@ const BUNDLED_DOCKER: &str = include_str!("../grammars/docker.toml");
 const BUNDLED_GIT: &str = include_str!("../grammars/git.toml");
 const BUNDLED_MAKE: &str = include_str!("../grammars/make.toml");
 const BUNDLED_NPM: &str = include_str!("../grammars/npm.toml");
+const BUNDLED_PIP: &str = include_str!("../grammars/pip.toml");
+const BUNDLED_PYTEST: &str = include_str!("../grammars/pytest.toml");
+const BUNDLED_JEST: &str = include_str!("../grammars/jest.toml");
+const BUNDLED_WEBPACK: &str = include_str!("../grammars/webpack.toml");
+const BUNDLED_KUBECTL: &str = include_str!("../grammars/kubectl.toml");
+const BUNDLED_TERRAFORM: &str = include_str!("../grammars/terraform.toml");
+const BUNDLED_GCC: &str = include_str!("../grammars/gcc.toml");
+const BUNDLED_GO: &str = include_str!("../grammars/go.toml");
+const BUNDLED_RUSTC: &str = include_str!("../grammars/rustc.toml");
+const BUNDLED_APT: &str = include_str!("../grammars/apt.toml");
+const BUNDLED_RSYNC: &str = include_str!("../grammars/rsync.toml");
+const BUNDLED_SSH: &str = include_str!("../grammars/ssh.toml");
+const BUNDLED_BREW: &str = include_str!("../grammars/brew.toml");
+const BUNDLED_SYSTEMCTL: &str = include_str!("../grammars/systemctl.toml");
+const BUNDLED_ANSIBLE: &str = include_str!("../grammars/ansible.toml");
+const BUNDLED_CURL: &str = include_str!("../grammars/curl.toml");
 
 const BUNDLED_CATEGORIES: &str = include_str!("../grammars/_meta/categories.toml");
 const BUNDLED_DANGEROUS: &str = include_str!("../grammars/_meta/dangerous.toml");
@@ -36,6 +52,22 @@ const BUNDLED_GRAMMARS: &[(&str, &str)] = &[
     ("git", BUNDLED_GIT),
     ("make", BUNDLED_MAKE),
     ("npm", BUNDLED_NPM),
+    ("pip", BUNDLED_PIP),
+    ("pytest", BUNDLED_PYTEST),
+    ("jest", BUNDLED_JEST),
+    ("webpack", BUNDLED_WEBPACK),
+    ("kubectl", BUNDLED_KUBECTL),
+    ("terraform", BUNDLED_TERRAFORM),
+    ("gcc", BUNDLED_GCC),
+    ("go", BUNDLED_GO),
+    ("rustc", BUNDLED_RUSTC),
+    ("apt", BUNDLED_APT),
+    ("rsync", BUNDLED_RSYNC),
+    ("ssh", BUNDLED_SSH),
+    ("brew", BUNDLED_BREW),
+    ("systemctl", BUNDLED_SYSTEMCTL),
+    ("ansible", BUNDLED_ANSIBLE),
+    ("curl", BUNDLED_CURL),
 ];
 
 // ---------------------------------------------------------------------------
@@ -256,28 +288,18 @@ mod tests {
     fn test_default_has_bundled_grammars() {
         let rc = default_runtime_config();
 
-        // All 5 bundled grammars should be present
-        assert!(
-            rc.grammars.contains_key("cargo"),
-            "missing bundled grammar: cargo"
-        );
-        assert!(
-            rc.grammars.contains_key("docker"),
-            "missing bundled grammar: docker"
-        );
-        assert!(
-            rc.grammars.contains_key("git"),
-            "missing bundled grammar: git"
-        );
-        assert!(
-            rc.grammars.contains_key("make"),
-            "missing bundled grammar: make"
-        );
-        assert!(
-            rc.grammars.contains_key("npm"),
-            "missing bundled grammar: npm"
-        );
-        assert_eq!(rc.grammars.len(), 5);
+        // All 21 bundled grammars should be present
+        for name in &[
+            "cargo", "docker", "git", "make", "npm", "pip", "pytest", "jest",
+            "webpack", "kubectl", "terraform", "gcc", "go", "rustc", "apt",
+            "rsync", "ssh", "brew", "systemctl", "ansible", "curl",
+        ] {
+            assert!(
+                rc.grammars.contains_key(*name),
+                "missing bundled grammar: {name}"
+            );
+        }
+        assert_eq!(rc.grammars.len(), 21);
     }
 
     // -----------------------------------------------------------------------
@@ -521,7 +543,7 @@ detect = ["good"]
             result.err()
         );
         let rc = result.unwrap();
-        assert_eq!(rc.grammars.len(), 5);
+        assert_eq!(rc.grammars.len(), 21);
     }
 
     // -----------------------------------------------------------------------

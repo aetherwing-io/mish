@@ -1,0 +1,6 @@
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+curl: (6) Could not resolve host: nonexistent.example.com
+curl: (7) Failed to connect to localhost port 9999: Connection refused
+curl: (60) SSL certificate problem: unable to get local issuer certificate

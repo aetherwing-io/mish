@@ -42,6 +42,13 @@ pub struct EnrichmentLine {
     pub message: String,
 }
 
+/// A recommendation from preflight analysis (flag the user could add next time).
+#[derive(Debug, Clone, Serialize)]
+pub struct RecommendationEntry {
+    pub flag: String,
+    pub reason: String,
+}
+
 /// A command result ready to be formatted.
 ///
 /// Constructed by the proxy from a `RouterResult` — decoupled from router types
@@ -58,6 +65,7 @@ pub struct FormatInput {
     pub outcomes: Vec<String>,
     pub hazards: Vec<HazardEntry>,
     pub enrichment: Vec<EnrichmentLine>,
+    pub recommendations: Vec<RecommendationEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +186,13 @@ fn format_human(input: &FormatInput) -> String {
         lines.push(format!("  {}: {}", e.kind, e.message));
     }
 
+    // Recommendation lines (only on success — no point suggesting flags if command failed)
+    if input.exit_code == 0 && !input.recommendations.is_empty() {
+        for r in &input.recommendations {
+            lines.push(format!("  ~ next time: consider {} ({})", r.flag, r.reason));
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -203,6 +218,8 @@ fn format_json(input: &FormatInput) -> String {
         hazards: &'a [HazardEntry],
         #[serde(skip_serializing_if = "Vec::is_empty")]
         enrichment: Vec<JsonEnrichment<'a>>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        recommendations: Vec<&'a RecommendationEntry>,
     }
 
     let enrichment: Vec<JsonEnrichment> = input
@@ -214,6 +231,13 @@ fn format_json(input: &FormatInput) -> String {
         })
         .collect();
 
+    // Only include recommendations on success
+    let recommendations: Vec<&RecommendationEntry> = if input.exit_code == 0 {
+        input.recommendations.iter().collect()
+    } else {
+        vec![]
+    };
+
     let out = JsonOutput {
         command: &input.command,
         exit_code: input.exit_code,
@@ -224,6 +248,7 @@ fn format_json(input: &FormatInput) -> String {
         outcomes: &input.outcomes,
         hazards: &input.hazards,
         enrichment,
+        recommendations,
     };
 
     serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
@@ -245,6 +270,13 @@ fn format_passthrough(input: &FormatInput) -> String {
     for hazard in &input.hazards {
         let prefix = if hazard.severity == "error" { "!" } else { "~" };
         summary_lines.push(format!("  {} {}", prefix, hazard.text));
+    }
+
+    // Recommendation lines in summary section (only on success)
+    if input.exit_code == 0 {
+        for r in &input.recommendations {
+            summary_lines.push(format!("  ~ next time: consider {} ({})", r.flag, r.reason));
+        }
     }
 
     format!(
@@ -324,6 +356,7 @@ mod tests {
             outcomes: vec![],
             hazards: vec![],
             enrichment: vec![],
+            recommendations: vec![],
         }
     }
 
@@ -907,6 +940,168 @@ mod tests {
         assert!(
             output.contains("  ! test suite failure"),
             "second result should show hazard: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 22: Human format — recommendations on success
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_format_recommendations_on_success() {
+        let mut input = make_input("npm install", 0, "condense", "147 packages installed");
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--prefer-offline".to_string(),
+                reason: "Consider adding --prefer-offline for quieter output".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            output.contains("~ next time: consider --prefer-offline"),
+            "should show recommendation with ~ prefix: {}",
+            output
+        );
+        assert!(
+            output.contains("Consider adding --prefer-offline"),
+            "should include reason text: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 23: Human format — recommendations suppressed on failure
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_human_format_recommendations_suppressed_on_failure() {
+        let mut input = make_input("npm install", 1, "condense", "install failed");
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--prefer-offline".to_string(),
+                reason: "Consider adding --prefer-offline for quieter output".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            !output.contains("next time"),
+            "recommendations should NOT appear on failure: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 24: JSON format — recommendations included on success
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_json_format_recommendations_on_success() {
+        let mut input = make_input("npm install", 0, "condense", "147 packages installed");
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--no-progress".to_string(),
+                reason: "reduces noise for LLM consumption".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Json);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("should be valid JSON");
+
+        assert!(parsed["recommendations"].is_array());
+        let recs = parsed["recommendations"].as_array().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0]["flag"], "--no-progress");
+        assert_eq!(recs[0]["reason"], "reduces noise for LLM consumption");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 25: JSON format — recommendations omitted on failure
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_json_format_recommendations_omitted_on_failure() {
+        let mut input = make_input("npm install", 1, "condense", "install failed");
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--no-progress".to_string(),
+                reason: "reduces noise".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Json);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("should be valid JSON");
+
+        // recommendations should be absent (empty vec is skipped by skip_serializing_if)
+        assert!(
+            parsed.get("recommendations").is_none(),
+            "recommendations should be omitted on failure: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 26: Passthrough format — recommendations in summary on success
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_passthrough_format_recommendations_on_success() {
+        let mut input = make_input("npm install", 0, "condense", "raw output here");
+        input.raw_output = Some("raw output here\n".to_string());
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--silent".to_string(),
+                reason: "Consider adding --silent for quieter output".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Passthrough);
+        assert!(
+            output.contains("~ next time: consider --silent"),
+            "passthrough summary should include recommendation: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 27: Multiple recommendations rendered
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_multiple_recommendations() {
+        let mut input = make_input("npm install", 0, "condense", "installed");
+        input.recommendations = vec![
+            RecommendationEntry {
+                flag: "--no-progress".to_string(),
+                reason: "reduces noise".to_string(),
+            },
+            RecommendationEntry {
+                flag: "--prefer-offline".to_string(),
+                reason: "faster when packages cached".to_string(),
+            },
+        ];
+
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            output.contains("~ next time: consider --no-progress"),
+            "should show first recommendation: {}",
+            output
+        );
+        assert!(
+            output.contains("~ next time: consider --prefer-offline"),
+            "should show second recommendation: {}",
+            output
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 28: Empty recommendations — no extra output
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_empty_recommendations_no_output() {
+        let input = make_input("echo hello", 0, "condense", "hello");
+        let output = format_result(&input, OutputMode::Human);
+        assert!(
+            !output.contains("next time"),
+            "no recommendations means no recommendation lines: {}",
             output
         );
     }

@@ -1,0 +1,58 @@
+[tool]
+name = "curl"
+detect = ["curl"]
+inherit = ["ansi-progress"]
+
+# ---- fallback (curl has no subcommands) ----
+
+[fallback]
+
+[[fallback.noise]]
+# Progress meter header line
+pattern = '^\s*% Total\s+% Received'
+action = "strip"
+
+[[fallback.noise]]
+# Progress meter column headers (Dload/Upload)
+pattern = '^\s*Dload\s+Upload'
+action = "strip"
+
+[[fallback.noise]]
+# Progress meter data lines (numeric progress)
+pattern = '^\s*\d+\s+\d+.*--:--:--'
+action = "strip"
+
+[[fallback.hazard]]
+# curl error codes: curl: (N) message
+pattern = 'curl: \(\d+\)'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Could not resolve host
+pattern = 'Could not resolve host'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# Connection refused
+pattern = 'Connection refused'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+# SSL certificate problems
+pattern = 'SSL certificate problem'
+severity = "error"
+action = "keep"
+
+[fallback.summary]
+success = "+ curl completed"
+failure = "! curl failed (exit {exit_code})"
+partial = "... transferring ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["-s"]
+recommend = ["-sS"]

@@ -1,0 +1,21 @@
+error[E0425]: cannot find value `foo` in this scope
+ --> src/main.rs:5:13
+  |
+5 |     let x = foo;
+  |             ^^^ not found in this scope
+
+error[E0308]: mismatched types
+  --> src/main.rs:10:20
+   |
+10 |     let y: i32 = "hello";
+   |            ---   ^^^^^^^ expected `i32`, found `&str`
+   |            |
+   |            expected due to this
+
+warning[E0unused]: unused variable: `z`
+ --> src/main.rs:15:9
+  |
+15|     let z = 42;
+  |         ^ help: if this is intentional, prefix it with an underscore: `_z`
+
+error: aborting due to 2 previous errors; 1 warning emitted

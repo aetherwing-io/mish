@@ -1,0 +1,116 @@
+[tool]
+name = "go"
+detect = ["go"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Module download lines (common across build/test/mod)
+pattern = '^go: downloading\s+'
+action = "dedup"
+
+# ---- build action ----
+
+[actions.build]
+detect = ["build"]
+
+[[actions.build.hazard]]
+pattern = '\berror:'
+severity = "error"
+action = "keep"
+
+[[actions.build.hazard]]
+pattern = 'cannot find package'
+severity = "error"
+action = "keep"
+
+[actions.build.summary]
+success = "+ built"
+failure = "! go build failed (exit {exit_code})"
+partial = "... building ({lines} lines)"
+
+# ---- test action ----
+
+[actions.test]
+detect = ["test"]
+
+[[actions.test.noise]]
+# Individual test run announcements
+pattern = '^=== RUN\s+'
+action = "dedup"
+
+[[actions.test.noise]]
+# Passing tests
+pattern = '^\s*--- PASS:'
+action = "dedup"
+
+[[actions.test.hazard]]
+# Failing tests
+pattern = '^\s*--- FAIL:'
+severity = "error"
+action = "keep"
+multiline = 5
+
+[[actions.test.hazard]]
+# Panic during test
+pattern = '^panic:'
+severity = "error"
+action = "keep"
+multiline = 10
+
+[[actions.test.outcome]]
+# Package passed: "ok  github.com/user/pkg  0.012s"
+pattern = '^ok\s+(?P<pkg>\S+)\s+(?P<time>\S+)'
+action = "promote"
+captures = ["pkg", "time"]
+
+[[actions.test.outcome]]
+# Package failed: "FAIL  github.com/user/pkg"
+pattern = '^FAIL\s+(?P<pkg>\S+)'
+action = "promote"
+captures = ["pkg"]
+
+[actions.test.summary]
+success = "+ tests passed ({pkg} in {time})"
+failure = "! tests failed ({pkg})"
+partial = "... testing ({lines} lines)"
+
+# ---- run action ----
+
+[actions.run]
+detect = ["run"]
+
+[[actions.run.hazard]]
+pattern = '\berror:'
+severity = "error"
+action = "keep"
+
+[[actions.run.hazard]]
+pattern = '^panic:'
+severity = "error"
+action = "keep"
+multiline = 10
+
+[actions.run.summary]
+success = "+ ran"
+failure = "! go run failed (exit {exit_code})"
+partial = "... running ({lines} lines)"
+
+# ---- mod action ----
+
+[actions.mod]
+detect = ["mod"]
+
+[[actions.mod.noise]]
+# Finding module versions
+pattern = '^go: finding\s+'
+action = "dedup"
+
+[[actions.mod.noise]]
+# Downloading modules
+pattern = '^go: downloading\s+'
+action = "dedup"
+
+[actions.mod.summary]
+success = "+ mod complete"
+failure = "! go mod failed (exit {exit_code})"
+partial = "... resolving ({lines} lines)"

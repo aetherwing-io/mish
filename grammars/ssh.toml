@@ -1,0 +1,58 @@
+[tool]
+name = "ssh"
+detect = ["ssh", "scp", "sftp"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# ssh -v debug output lines
+pattern = '^debug1:'
+action = "strip"
+
+[[global_noise]]
+# Authenticated confirmation
+pattern = '^Authenticated to'
+action = "strip"
+
+# ---- fallback (ssh has no subcommand grammar) ----
+
+[fallback]
+
+[[fallback.hazard]]
+pattern = 'Permission denied'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Connection refused'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Connection timed out'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Host key verification failed'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Could not resolve hostname'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Connection closed by'
+severity = "warning"
+action = "keep"
+
+[fallback.summary]
+success = "+ ssh completed"
+failure = "! ssh failed (exit {exit_code})"
+partial = "... connecting ({lines} lines)"

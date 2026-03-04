@@ -15,10 +15,11 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::MishConfig;
 use crate::core::enrich;
-use crate::core::grammar::Grammar;
+use crate::core::grammar::{detect_tool, Grammar};
+use crate::core::preflight::{self, OutputMode};
 use crate::mcp::types::{
-    EnrichmentEntry, LineCount, ProcessDigestEntry, ShRunMetrics, ShRunParams, ShRunResponse,
-    ERR_COMMAND_BLOCKED,
+    LineCount, ProcessDigestEntry, ShRunEnrichmentLine, ShRunParams, ShRunRecommendation,
+    ShRunResponse, ERR_COMMAND_BLOCKED,
 };
 use crate::router::categories::{CategoriesConfig, Category, DangerousPattern};
 use crate::router::categorize_command_str;
@@ -29,6 +30,7 @@ use crate::session::manager::SessionManager;
 use crate::squasher::pattern::{PatternMatcher, Presets};
 use crate::squasher::pipeline::{Pipeline, PipelineConfig};
 use crate::squasher::truncate::TruncateConfig;
+use crate::squasher::vte_strip;
 use crate::core::line_buffer::Line;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,7 @@ pub async fn handle(
     }
 
     // 1c. Categorize the command via the router.
+    let tokens: Vec<String> = cmd.split_whitespace().map(String::from).collect();
     let category = categorize_command_str(cmd, grammars, categories_config, dangerous_patterns);
 
     // 1d. Block dangerous-category commands.
@@ -87,6 +90,21 @@ pub async fn handle(
             "command blocked: dangerous category",
         ));
     }
+
+    // 1e. Detect grammar for preflight + enrichment.
+    let detected = detect_tool(&tokens, grammars);
+    let detected_grammar = detected.as_ref().map(|(g, _)| *g);
+
+    // Run preflight to gather recommendations (advisory only in MCP mode).
+    let preflight_recommendations = {
+        if let Some((grammar, action)) = detected {
+            let mut cmd_tokens = tokens.clone();
+            let pf = preflight::preflight(&mut cmd_tokens, grammar, action, OutputMode::Context);
+            pf.recommendations
+        } else {
+            vec![]
+        }
+    };
 
     // 2. Resolve session name (default "main").
     let session_name = DEFAULT_SESSION;
@@ -100,66 +118,27 @@ pub async fn handle(
         .await
         .map_err(ToolError::from_session_error)?;
 
-    // 5. Post-process via unified pipeline (category-aware dispatch).
+    // 5. Post-process based on category.
     let raw_output = &result.output;
     let total_lines = raw_output.lines().count() as u64;
 
-    let squash_start = std::time::Instant::now();
-    let pipeline_config = PipelineConfig {
-        truncate: TruncateConfig {
-            head: config.squasher.oreo_head,
-            tail: config.squasher.oreo_tail,
-        },
-        dedup_all: true,
-    };
-    let mut pipeline = Pipeline::new(pipeline_config);
-    let raw_lines: Vec<Line> = raw_output
-        .lines()
-        .map(|l| Line::Complete(l.to_string()))
-        .collect();
-    let pipeline_result = pipeline.process(raw_lines, category);
-    let squash_ms = squash_start.elapsed().as_millis() as u64;
-
-    let processed_output = pipeline_result.output.join("\n");
-    let shown_lines = pipeline_result.metrics.lines_out;
-    let raw_bytes = raw_output.len() as u64;
-    let squashed_bytes = processed_output.len() as u64;
-    let compression_ratio = if raw_bytes == 0 {
-        1.0
-    } else {
-        squashed_bytes as f64 / raw_bytes as f64
-    };
-    let run_metrics = Some(ShRunMetrics {
-        compression_ratio,
-        raw_bytes,
-        squashed_bytes,
-        lines_in: pipeline_result.metrics.lines_in,
-        lines_out: pipeline_result.metrics.lines_out,
-        wall_ms: result.duration.as_millis() as u64,
-        squash_ms,
-    });
-
-    // 5b. Error enrichment on non-zero exit.
-    let enrichment = if result.exit_code != 0 {
-        let cmd_parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
-        let enrichment_result = enrich::enrich(&cmd_parts, result.exit_code, "", None);
-        if enrichment_result.diagnostics.is_empty() {
-            None
-        } else {
-            Some(
-                enrichment_result
-                    .diagnostics
-                    .into_iter()
-                    .map(|d| EnrichmentEntry {
-                        kind: d.key,
-                        message: d.value,
-                    })
-                    .collect(),
-            )
+    let (processed_output, shown_lines) = match category {
+        Category::Condense => {
+            // Full squasher pipeline: VTE strip, progress removal, dedup, truncation.
+            let squashed = squash_output(raw_output, config);
+            let shown = squashed.lines().count() as u64;
+            (squashed, shown)
         }
-    } else {
-        None
+        _ => {
+            // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
+            let stripped = strip_ansi(raw_output);
+            let shown = stripped.lines().count() as u64;
+            (stripped, shown)
+        }
     };
+
+    // 5b. Strip zsh PROMPT_SP no-newline indicator (defense in depth).
+    let processed_output = vte_strip::strip_prompt_sp(&processed_output);
 
     // 6. Apply watch pattern filtering if requested.
     let (final_output, matched_lines) = apply_watch_filter(
@@ -171,7 +150,34 @@ pub async fn handle(
 
     let final_shown = final_output.lines().count() as u64;
 
-    // 7. Build response.
+    // 7. Build response (include recommendations only on success).
+    let recommendations = if result.exit_code == 0 {
+        preflight_recommendations
+            .iter()
+            .map(|r| ShRunRecommendation {
+                flag: r.flag.clone(),
+                reason: r.reason.clone(),
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // 7b. Error enrichment on failure (exit_code != 0).
+    let enrichment = if result.exit_code != 0 {
+        let enrich_result = enrich::enrich(&tokens, result.exit_code, &result.output, detected_grammar);
+        enrich_result
+            .diagnostics
+            .into_iter()
+            .map(|d| ShRunEnrichmentLine {
+                kind: d.key,
+                message: d.value,
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
     let response = ShRunResponse {
         exit_code: result.exit_code,
         duration_ms: result.duration.as_millis() as u64,
@@ -187,7 +193,7 @@ pub async fn handle(
                 shown_lines
             },
         },
-        metrics: run_metrics,
+        recommendations,
         enrichment,
     };
 
@@ -230,9 +236,8 @@ fn resolve_timeout(params: &ShRunParams, cmd: &str, config: &MishConfig) -> Dura
 }
 
 /// Run output through the squasher pipeline (VTE strip, progress removal,
-/// dedup, truncation). Returns the squashed output and pipeline metrics.
-#[cfg(test)]
-fn squash_output(raw: &str, config: &MishConfig) -> (String, crate::squasher::pipeline::PipelineMetrics) {
+/// dedup, truncation).
+fn squash_output(raw: &str, config: &MishConfig) -> String {
     let pipeline_config = PipelineConfig {
         truncate: TruncateConfig {
             head: config.squasher.oreo_head,
@@ -247,8 +252,8 @@ fn squash_output(raw: &str, config: &MishConfig) -> (String, crate::squasher::pi
         pipeline.feed(Line::Complete(line.to_string()));
     }
 
-    let (lines, metrics) = pipeline.finalize_with_metrics();
-    (lines.join("\n"), metrics)
+    let lines = pipeline.finalize();
+    lines.join("\n")
 }
 
 /// Resolve a watch pattern string to a compiled PatternMatcher.
@@ -317,13 +322,10 @@ fn apply_watch_filter(
 }
 
 /// Strip ANSI escape sequences from output, line by line.
-#[cfg(test)]
+/// Used for non-condense categories where we want clean text
+/// without the full squasher pipeline (no dedup, no truncation).
 fn strip_ansi(raw: &str) -> String {
-    use crate::squasher::vte_strip::VteStripper;
-    raw.lines()
-        .map(|line| VteStripper::strip(line.as_bytes()).clean_text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    vte_strip::strip_ansi(raw)
 }
 
 
@@ -463,7 +465,7 @@ mod tests {
     fn test_squash_output_passthrough() {
         let config = default_config();
         let output = "hello\nworld";
-        let (squashed, _metrics) = squash_output(output, &config);
+        let squashed = squash_output(output, &config);
         assert!(squashed.contains("hello"));
         assert!(squashed.contains("world"));
     }
@@ -472,7 +474,7 @@ mod tests {
     fn test_squash_output_strips_ansi() {
         let config = default_config();
         let output = "\x1b[31merror: something\x1b[0m";
-        let (squashed, _metrics) = squash_output(output, &config);
+        let squashed = squash_output(output, &config);
         assert!(squashed.contains("error: something"));
         assert!(!squashed.contains("\x1b"));
     }
@@ -480,18 +482,8 @@ mod tests {
     #[test]
     fn test_squash_output_empty() {
         let config = default_config();
-        let (squashed, _metrics) = squash_output("", &config);
+        let squashed = squash_output("", &config);
         assert!(squashed.is_empty());
-    }
-
-    #[test]
-    fn test_squash_output_returns_metrics() {
-        let config = default_config();
-        let output = "line1\nline2\nline3";
-        let (squashed, metrics) = squash_output(output, &config);
-        assert!(!squashed.is_empty());
-        assert_eq!(metrics.lines_in, 3);
-        assert!(metrics.lines_out > 0);
     }
 
     // -- watch pattern filtering --------------------------------------------
@@ -1153,5 +1145,206 @@ mod tests {
         assert_eq!(Category::Structured.to_string(), "structured");
         assert_eq!(Category::Interactive.to_string(), "interactive");
         assert_eq!(Category::Dangerous.to_string(), "dangerous");
+    }
+
+    // -- preflight recommendation surfacing ---------------------------------
+
+    #[tokio::test]
+    async fn test_handle_recommendations_on_success() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // npm grammars have recommend = ["--silent"] globally.
+        // Use "npm --version" which should succeed and produce recommendations.
+        // However, npm may not be installed in CI, so we test via a
+        // simulated echo command that happens to match a grammar with recommend.
+        // Instead, we just verify the recommendation logic unit:
+        // run echo (no grammar -> no recommendations -> field absent).
+        let params = ShRunParams {
+            cmd: "echo recommendation_test".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        assert_eq!(result["exit_code"], 0);
+        // No grammar for echo -> no recommendations field in JSON.
+        assert!(
+            result.get("recommendations").is_none(),
+            "echo has no grammar so recommendations should be absent: {:?}",
+            result
+        );
+
+        teardown(&mgr).await;
+    }
+
+    #[test]
+    fn test_preflight_recommendations_detected_for_npm() {
+        // Unit test: verify that detect_tool + preflight produces recommendations
+        // for a command that matches the npm grammar.
+        let rc = default_runtime_config();
+        let tokens: Vec<String> = "npm install express"
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+
+        let detected = detect_tool(&tokens, &rc.grammars);
+        assert!(detected.is_some(), "npm should be detected by grammar");
+
+        let (grammar, action) = detected.unwrap();
+        let mut cmd_tokens = tokens.clone();
+        let pf = preflight::preflight(
+            &mut cmd_tokens,
+            grammar,
+            action,
+            OutputMode::Context,
+        );
+
+        // npm install action has recommend = ["--prefer-offline"]
+        assert!(
+            !pf.recommendations.is_empty(),
+            "npm install should produce recommendations, got: {:?}",
+            pf.recommendations
+        );
+        assert!(
+            pf.recommendations.iter().any(|r| r.flag == "--prefer-offline"),
+            "expected --prefer-offline recommendation, got: {:?}",
+            pf.recommendations
+        );
+    }
+
+    #[test]
+    fn test_preflight_recommendations_not_for_unknown_commands() {
+        // Verify that commands without a grammar produce no recommendations.
+        let rc = default_runtime_config();
+        let tokens: Vec<String> = "some-unknown-tool --flag"
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+
+        let detected = detect_tool(&tokens, &rc.grammars);
+        assert!(detected.is_none(), "unknown tool should not have a grammar");
+    }
+
+    // -- enrichment on failure ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_handle_enrichment_on_failure() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // cp with nonexistent source → exit code 1, FileOp intent triggers enrichment
+        let params = ShRunParams {
+            cmd: "cp /nonexistent/source/file.txt /tmp/dest.txt".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed even if command fails");
+
+        assert_ne!(result["exit_code"], 0, "cp of nonexistent file should fail");
+        assert!(
+            result.get("enrichment").is_some(),
+            "enrichment should be present on failure, got response: {}",
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+        let enrichment = result["enrichment"].as_array().unwrap();
+        assert!(
+            !enrichment.is_empty(),
+            "enrichment should have at least one diagnostic"
+        );
+        // Each enrichment line should have kind and message
+        for line in enrichment {
+            assert!(
+                line.get("kind").is_some(),
+                "enrichment line should have 'kind' field: {:?}",
+                line
+            );
+            assert!(
+                line.get("message").is_some(),
+                "enrichment line should have 'message' field: {:?}",
+                line
+            );
+        }
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_enrichment_exit_127_command_not_found() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // Use a subshell to get exit code 127 without killing the session shell
+        let params = ShRunParams {
+            cmd: "(exit 127)".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed even if command fails");
+
+        assert_eq!(result["exit_code"], 127);
+        assert!(
+            result.get("enrichment").is_some(),
+            "enrichment should be present for exit 127, got response: {}",
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+        let enrichment = result["enrichment"].as_array().unwrap();
+        // Exit 127 always maps to "command not found" signal diagnostic
+        let has_signal = enrichment.iter().any(|e| {
+            e["kind"].as_str() == Some("signal")
+                && e["message"]
+                    .as_str()
+                    .map(|m| m.contains("command not found"))
+                    .unwrap_or(false)
+        });
+        assert!(
+            has_signal,
+            "exit 127 should produce 'command not found' signal diagnostic, got: {:?}",
+            enrichment
+        );
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_no_enrichment_on_success() {
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        let params = ShRunParams {
+            cmd: "echo success".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        assert_eq!(result["exit_code"], 0);
+        // Empty enrichment should be omitted from JSON (skip_serializing_if = "Vec::is_empty")
+        assert!(
+            result.get("enrichment").is_none(),
+            "enrichment should be absent on success (empty vec is omitted)"
+        );
+
+        teardown(&mgr).await;
     }
 }

@@ -1,0 +1,145 @@
+[tool]
+name = "systemctl"
+detect = ["systemctl"]
+inherit = ["ansi-progress"]
+
+# ---- status action ----
+
+[actions.status]
+detect = ["status"]
+
+[[actions.status.noise]]
+# Loaded: line
+pattern = '^\s+Loaded:'
+action = "strip"
+
+[[actions.status.noise]]
+# Docs: line
+pattern = '^\s+Docs:'
+action = "strip"
+
+[[actions.status.noise]]
+# Process: line
+pattern = '^\s+Process:'
+action = "strip"
+
+[[actions.status.noise]]
+# CGroup: line
+pattern = '^\s+CGroup:'
+action = "strip"
+
+[[actions.status.noise]]
+# Individual journal log lines (dedup)
+pattern = '^\w{3}\s+\d+\s+\d+:\d+:\d+\s+'
+action = "dedup"
+
+[[actions.status.hazard]]
+pattern = 'Active: failed'
+severity = "error"
+action = "keep"
+
+[[actions.status.hazard]]
+pattern = 'Active: inactive'
+severity = "warning"
+action = "keep"
+
+[[actions.status.outcome]]
+pattern = 'Active: active \(running\)'
+action = "promote"
+
+[[actions.status.outcome]]
+pattern = 'Active: active \(exited\)'
+action = "promote"
+
+[actions.status.summary]
+success = "+ service active (running)"
+failure = "! service failed"
+partial = "... checking status ({lines} lines)"
+
+# ---- start action ----
+
+[actions.start]
+detect = ["start"]
+
+[[actions.start.hazard]]
+pattern = 'Failed to'
+severity = "error"
+action = "keep"
+
+[[actions.start.hazard]]
+pattern = 'Job for .* failed'
+severity = "error"
+action = "keep"
+
+[actions.start.summary]
+success = "+ service started"
+failure = "! service start failed (exit {exit_code})"
+partial = "... starting ({lines} lines)"
+
+# ---- stop action ----
+
+[actions.stop]
+detect = ["stop"]
+
+[[actions.stop.hazard]]
+pattern = 'Failed to'
+severity = "error"
+action = "keep"
+
+[[actions.stop.hazard]]
+pattern = 'Job for .* failed'
+severity = "error"
+action = "keep"
+
+[actions.stop.summary]
+success = "+ service stopped"
+failure = "! service stop failed (exit {exit_code})"
+partial = "... stopping ({lines} lines)"
+
+# ---- restart action ----
+
+[actions.restart]
+detect = ["restart"]
+
+[[actions.restart.hazard]]
+pattern = 'Failed to'
+severity = "error"
+action = "keep"
+
+[[actions.restart.hazard]]
+pattern = 'Job for .* failed'
+severity = "error"
+action = "keep"
+
+[actions.restart.summary]
+success = "+ service restarted"
+failure = "! service restart failed (exit {exit_code})"
+partial = "... restarting ({lines} lines)"
+
+# ---- enable action ----
+
+[actions.enable]
+detect = ["enable"]
+
+[[actions.enable.outcome]]
+pattern = 'Created symlink'
+action = "promote"
+
+[actions.enable.summary]
+success = "+ service enabled"
+failure = "! service enable failed (exit {exit_code})"
+partial = "... enabling ({lines} lines)"
+
+# ---- disable action ----
+
+[actions.disable]
+detect = ["disable"]
+
+[[actions.disable.outcome]]
+pattern = 'Removed'
+action = "promote"
+
+[actions.disable.summary]
+success = "+ service disabled"
+failure = "! service disable failed (exit {exit_code})"
+partial = "... disabling ({lines} lines)"

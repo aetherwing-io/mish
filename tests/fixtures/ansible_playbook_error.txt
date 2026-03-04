@@ -1,0 +1,12 @@
+PLAY [webservers] *************************************************************
+
+TASK [Gathering Facts] ********************************************************
+ok: [web1.example.com]
+fatal: [web2.example.com]: UNREACHABLE! => {"changed": false, "msg": "Failed to connect to the host via ssh", "unreachable": true}
+
+TASK [Install nginx] **********************************************************
+changed: [web1.example.com]
+
+PLAY RECAP ********************************************************************
+web1.example.com           : ok=2    changed=1    unreachable=0    failed=0    skipped=0
+web2.example.com           : ok=0    changed=0    unreachable=1    failed=0    skipped=0

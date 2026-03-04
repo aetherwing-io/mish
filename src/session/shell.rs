@@ -110,6 +110,12 @@ impl ShellProcess {
             tracing::warn!("failed to resize PTY: {e}");
         }
 
+        // Disable PTY echo so commands written to master aren't echoed back.
+        // Without this, every command we write appears in the output and must
+        // be heuristically stripped, which is fragile (e.g. fails when a
+        // prompt prefix or line wrapping alters the echoed text).
+        Self::disable_pty_echo(&pty);
+
         let boundary = BoundaryDetector::new(shell_path);
 
         Ok(ShellProcess {
@@ -382,6 +388,30 @@ impl ShellProcess {
         }
     }
 
+    /// Disable the ECHO flag on the PTY's termios settings.
+    ///
+    /// By default, the PTY line discipline echoes every character written to the
+    /// master fd back as output. This means any command we send to the shell
+    /// appears in the captured output and must be stripped heuristically (matching
+    /// the first line against the sent command). That heuristic breaks when a
+    /// prompt prefix, ANSI codes, or line wrapping alters the echoed text.
+    ///
+    /// Disabling ECHO at the termios level eliminates the echo at the source.
+    /// The shell still processes commands normally — it reads from the slave fd
+    /// and writes its output there — but the line discipline no longer copies
+    /// input characters back to the master.
+    fn disable_pty_echo(pty: &PtyCapture) {
+        use nix::sys::termios::{tcgetattr, tcsetattr, SetArg, LocalFlags};
+
+        if let Ok(mut termios) = tcgetattr(pty.master_fd()) {
+            termios.local_flags.remove(LocalFlags::ECHO);
+            termios.local_flags.remove(LocalFlags::ECHOE);
+            termios.local_flags.remove(LocalFlags::ECHOK);
+            termios.local_flags.remove(LocalFlags::ECHONL);
+            let _ = tcsetattr(pty.master_fd(), SetArg::TCSANOW, &termios);
+        }
+    }
+
     /// Drain all currently available output from the PTY (discard it).
     async fn drain_output(&self) {
         let mut buf = [0u8; 4096];
@@ -399,6 +429,7 @@ impl ShellProcess {
     /// PTY echo means the command itself appears in the output. We strip:
     /// - The first line if it matches the command (PTY echo)
     /// - Trailing prompt lines (e.g., "bash-3.2$ ")
+    /// - Zsh PROMPT_SP no-newline indicators ("%" + spaces)
     /// - Leading/trailing whitespace and \r characters
     fn clean_command_output(raw: &str, cmd: &str) -> String {
         let lines: Vec<&str> = raw.split('\n').collect();
@@ -414,7 +445,9 @@ impl ShellProcess {
             }
         }
 
-        // Strip trailing empty lines and prompt lines
+        // Strip trailing empty lines, prompt lines, and PROMPT_SP markers.
+        // Zsh PROMPT_SP emits "%" + spaces + CR when output doesn't end with
+        // a newline. After \r removal, this is "%" + spaces (or just "%").
         while end > start {
             let last = lines[end - 1].replace('\r', "");
             let trimmed = last.trim();
@@ -425,6 +458,7 @@ impl ShellProcess {
                 || trimmed.ends_with("%")
                 || trimmed.ends_with("> ")
                 || trimmed.ends_with(">")
+                || Self::is_prompt_sp_line(&last)
             {
                 end -= 1;
             } else {
@@ -437,6 +471,25 @@ impl ShellProcess {
             .map(|l| l.replace('\r', ""))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Detect zsh PROMPT_SP no-newline indicator lines.
+    ///
+    /// PROMPT_SP outputs: PROMPT_EOL_MARK (default "%" or "#") + spaces + CR.
+    /// After \r removal, the pattern is a single "%" or "#" followed by only spaces.
+    /// This also matches the empty-PROMPT_EOL_MARK case (just spaces).
+    fn is_prompt_sp_line(line: &str) -> bool {
+        let cleaned = line.replace('\r', "");
+        let trimmed = cleaned.trim();
+        // Empty after trim (spaces-only line from empty PROMPT_EOL_MARK)
+        if trimmed.is_empty() && !cleaned.is_empty() {
+            return true;
+        }
+        // Single "%" or "#" followed by spaces (default PROMPT_EOL_MARK)
+        if (trimmed == "%" || trimmed == "#") && cleaned.len() > 2 {
+            return true;
+        }
+        false
     }
 }
 
@@ -729,5 +782,316 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "Shells failed: {:?}", failures);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests for clean_command_output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_clean_output_strips_simple_echo() {
+        let raw = "echo hello\nhello\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_clean_output_strips_echo_with_cr() {
+        let raw = "echo hello\r\nhello\r\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_clean_output_strips_echo_with_prompt_prefix() {
+        let raw = "bash-3.2$ echo hello\r\nhello\r\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_clean_output_strips_echo_with_ansi_prompt() {
+        // Colored prompt followed by the command echo
+        let raw = "\x1b[32muser@host\x1b[0m$ echo hello\r\nhello\r\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_clean_output_strips_trailing_prompt() {
+        let raw = "echo hello\r\nhello\r\nbash-3.2$ \r\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_clean_output_no_match_preserves_all() {
+        // When the first line doesn't match the command, it should be preserved
+        let raw = "something else\nhello\n";
+        let result = ShellProcess::clean_command_output(raw, "echo hello");
+        assert_eq!(result, "something else\nhello");
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test: output must not contain echoed command
+    // -----------------------------------------------------------------------
+
+    /// Verify that sh_run output does not contain the echoed command.
+    /// This is the regression test for the "doubled first line" bug where
+    /// TTY echo bleeds into the captured output.
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_execute_output_no_echo_bleed() {
+        let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
+            .await
+            .expect("shell should spawn");
+        shell.initialize().await.expect("init should succeed");
+
+        // Use a command with a distinctive marker so we can detect echo
+        let result = shell
+            .execute("echo MISH_ECHO_TEST_MARKER", Duration::from_secs(5))
+            .await
+            .expect("execute should succeed");
+
+        assert_eq!(result.exit_code, 0);
+
+        // The output should contain the marker (actual output of echo)
+        assert!(
+            result.output.contains("MISH_ECHO_TEST_MARKER"),
+            "output should contain marker, got: {:?}",
+            result.output
+        );
+
+        // But the output should NOT start with or contain the full command
+        // "echo MISH_ECHO_TEST_MARKER" as a line — only the marker itself.
+        let lines: Vec<&str> = result.output.lines().collect();
+        for line in &lines {
+            let trimmed = line.trim();
+            assert!(
+                !trimmed.contains("echo MISH_ECHO_TEST_MARKER"),
+                "output line should not contain the echoed command 'echo MISH_ECHO_TEST_MARKER', \
+                 but found it in line: {:?}\nfull output: {:?}",
+                trimmed,
+                result.output
+            );
+        }
+
+        let _ = shell.kill();
+    }
+
+    /// Verify that PTY echo is disabled after spawn.
+    /// This is the root-cause fix: echo is disabled at the termios level
+    /// so commands written to the master fd are not echoed back.
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_pty_echo_disabled_after_spawn() {
+        let shell = ShellProcess::spawn(bash_path(), "/tmp")
+            .await
+            .expect("shell should spawn");
+
+        // Verify ECHO flag is off on the PTY master.
+        use nix::sys::termios::{tcgetattr, LocalFlags};
+        let termios = tcgetattr(shell.pty.master_fd())
+            .expect("tcgetattr should succeed");
+        assert!(
+            !termios.local_flags.contains(LocalFlags::ECHO),
+            "ECHO flag should be disabled after spawn, but it is still set"
+        );
+
+        let _ = shell.kill();
+    }
+
+    /// Verify echo stripping works across consecutive commands.
+    /// The second command's output should not contain echo from the first.
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_execute_consecutive_no_echo_bleed() {
+        let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
+            .await
+            .expect("shell should spawn");
+        shell.initialize().await.expect("init should succeed");
+
+        // Run first command
+        let result1 = shell
+            .execute("echo FIRST_CMD", Duration::from_secs(5))
+            .await
+            .expect("first execute should succeed");
+        assert_eq!(result1.exit_code, 0);
+        assert!(
+            result1.output.contains("FIRST_CMD"),
+            "first output should contain FIRST_CMD, got: {:?}",
+            result1.output
+        );
+
+        // Run second command - output should only contain SECOND_CMD
+        let result2 = shell
+            .execute("echo SECOND_CMD", Duration::from_secs(5))
+            .await
+            .expect("second execute should succeed");
+        assert_eq!(result2.exit_code, 0);
+        assert!(
+            result2.output.contains("SECOND_CMD"),
+            "second output should contain SECOND_CMD, got: {:?}",
+            result2.output
+        );
+        // Must NOT contain the first command or its echo
+        assert!(
+            !result2.output.contains("FIRST_CMD"),
+            "second output should NOT contain FIRST_CMD, got: {:?}",
+            result2.output
+        );
+        // Must NOT contain the echoed command itself
+        for line in result2.output.lines() {
+            assert!(
+                !line.trim().contains("echo SECOND_CMD"),
+                "second output should not contain echoed command, got line: {:?}\nfull output: {:?}",
+                line, result2.output
+            );
+        }
+
+        let _ = shell.kill();
+    }
+
+    /// Verify that ls output does not start with the echoed ls command.
+    /// This tests the specific scenario from the bug report.
+    #[tokio::test]
+    #[serial(pty)]
+    async fn test_execute_ls_no_echo_doubling() {
+        let mut shell = ShellProcess::spawn(bash_path(), "/tmp")
+            .await
+            .expect("shell should spawn");
+        shell.initialize().await.expect("init should succeed");
+
+        let result = shell
+            .execute("ls -la /tmp", Duration::from_secs(5))
+            .await
+            .expect("execute should succeed");
+
+        assert_eq!(result.exit_code, 0);
+
+        // The first character of the output should NOT be 'l' from "ls -la"
+        // echoed back, unless the actual ls output also starts with 'l'.
+        // More specifically: output should NOT contain the command itself.
+        let output = &result.output;
+        assert!(
+            !output.starts_with("ls -la"),
+            "output should not start with echoed 'ls -la' command, got: {:?}",
+            output
+        );
+
+        // Also check: no line should be the echoed command
+        for line in output.lines() {
+            let trimmed = line.trim();
+            assert!(
+                trimmed != "ls -la /tmp",
+                "output should not contain the echoed command as a line, \
+                 full output: {:?}",
+                output
+            );
+        }
+
+        let _ = shell.kill();
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests for PROMPT_SP detection and stripping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_prompt_sp_percent_with_spaces() {
+        // Zsh PROMPT_SP: "%" followed by many spaces
+        assert!(
+            ShellProcess::is_prompt_sp_line("%                                        "),
+            "should detect % + spaces as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_percent_with_cr_and_spaces() {
+        // Zsh PROMPT_SP with CR: "%" + spaces + "\r"
+        assert!(
+            ShellProcess::is_prompt_sp_line("%                                        \r"),
+            "should detect % + spaces + CR as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_hash_with_spaces() {
+        // Root PROMPT_SP: "#" followed by many spaces
+        assert!(
+            ShellProcess::is_prompt_sp_line("#                                        "),
+            "should detect # + spaces as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_spaces_only() {
+        // Empty PROMPT_EOL_MARK: just spaces (after setting PROMPT_EOL_MARK='')
+        assert!(
+            ShellProcess::is_prompt_sp_line("                                        "),
+            "should detect spaces-only line as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_not_normal_percent() {
+        // Normal content with "%" should NOT be detected
+        assert!(
+            !ShellProcess::is_prompt_sp_line("progress: 50%"),
+            "should not detect normal content with % as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_not_bare_percent() {
+        // Bare "%" without spaces (length <= 2) should NOT be detected
+        // (could be a legit prompt or content)
+        assert!(
+            !ShellProcess::is_prompt_sp_line("%"),
+            "should not detect bare % as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_is_prompt_sp_not_empty() {
+        assert!(
+            !ShellProcess::is_prompt_sp_line(""),
+            "should not detect empty string as PROMPT_SP"
+        );
+    }
+
+    #[test]
+    fn test_clean_output_strips_prompt_sp() {
+        // Simulate zsh PROMPT_SP appearing in output:
+        // command output followed by PROMPT_SP marker
+        let raw = "hello world\n%                                                                                                                        \r";
+        let result = ShellProcess::clean_command_output(raw, "echo -n hello world");
+        assert_eq!(
+            result, "hello world",
+            "PROMPT_SP marker should be stripped from output"
+        );
+    }
+
+    #[test]
+    fn test_clean_output_strips_prompt_sp_with_newline() {
+        // PROMPT_SP marker followed by empty lines
+        let raw = "hello world\n%                                        \r\n\n";
+        let result = ShellProcess::clean_command_output(raw, "echo -n hello world");
+        assert_eq!(
+            result, "hello world",
+            "PROMPT_SP marker + trailing empty lines should be stripped"
+        );
+    }
+
+    #[test]
+    fn test_clean_output_preserves_percent_in_content() {
+        // "%" in normal content should NOT be stripped
+        let raw = "usage: 50%\ndone\n";
+        let result = ShellProcess::clean_command_output(raw, "some_command");
+        assert!(
+            result.contains("50%"),
+            "% in content should be preserved, got: {:?}",
+            result
+        );
     }
 }

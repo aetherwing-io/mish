@@ -1,0 +1,70 @@
+[tool]
+name = "ansible"
+detect = ["ansible", "ansible-playbook"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# GATHERING FACTS boilerplate
+pattern = 'Gathering Facts'
+action = "strip"
+
+[[global_noise]]
+# included: lines
+pattern = '^included:'
+action = "strip"
+
+# ---- fallback (ansible-playbook detected via detect array) ----
+
+[fallback]
+
+[[fallback.noise]]
+# ok: lines (dedup — many tasks succeed)
+pattern = '^ok:'
+action = "dedup"
+
+[[fallback.noise]]
+# skipping: lines (dedup)
+pattern = '^skipping:'
+action = "dedup"
+
+[[fallback.noise]]
+# included: lines within playbook
+pattern = '^included:'
+action = "strip"
+
+[[fallback.hazard]]
+pattern = '^fatal:'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[fallback.hazard]]
+pattern = '\bfailed:'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = '^ERROR!'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = '\bWARNING\b'
+severity = "warning"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = '\bunreachable:'
+severity = "error"
+action = "keep"
+
+[[fallback.outcome]]
+# PLAY RECAP summary line per host
+pattern = '(?P<host>\S+)\s+:\s+ok=(?P<ok>\d+)\s+changed=(?P<changed>\d+)\s+unreachable=(?P<unreachable>\d+)\s+failed=(?P<failed>\d+)'
+action = "promote"
+captures = ["host", "ok", "changed", "unreachable", "failed"]
+
+[fallback.summary]
+success = "+ {host}: ok={ok} changed={changed}"
+failure = "! {host}: {failed} failed, {unreachable} unreachable"
+partial = "... running playbook ({lines} lines)"

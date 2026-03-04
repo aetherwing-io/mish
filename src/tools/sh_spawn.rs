@@ -19,6 +19,7 @@ use crate::safety;
 use crate::process::spool::OutputSpool;
 use crate::process::table::{ProcessTable, ProcessTableError};
 use crate::session::manager::SessionManager;
+use crate::squasher::vte_strip;
 
 use crate::policy::scope::extract_scope;
 
@@ -246,7 +247,8 @@ pub async fn wait_for_match(
         if start.elapsed() >= setup.timeout {
             let raw = setup.spool.read_all();
             let text = String::from_utf8_lossy(&raw);
-            let lines: Vec<&str> = text.lines().collect();
+            let stripped = vte_strip::strip_ansi(&text);
+            let lines: Vec<&str> = stripped.lines().collect();
             let tail_start = lines.len().saturating_sub(OUTPUT_TAIL_LINES);
             let output_tail = lines[tail_start..].join("\n");
 
@@ -354,22 +356,24 @@ fn clean_bg_output(output: &str) -> String {
         .join("\n")
 }
 
-/// Find the first line matching the regex and return it.
+/// Find the first line matching the regex and return it (ANSI-stripped).
 fn find_match_line(output: &str, regex: &Regex) -> Option<String> {
     for line in output.lines() {
-        if regex.is_match(line) {
-            return Some(line.to_string());
+        let clean = vte_strip::strip_ansi(line);
+        if regex.is_match(&clean) {
+            return Some(clean);
         }
     }
     None
 }
 
-/// Get the last N lines from a process's spool output.
+/// Get the last N lines from a process's spool output (ANSI-stripped).
 fn get_output_tail(table: &ProcessTable, alias: &str, max_lines: usize) -> String {
     if let Some(entry) = table.get(alias) {
         let raw = entry.spool.read_all();
         let text = String::from_utf8_lossy(&raw);
-        let lines: Vec<&str> = text.lines().collect();
+        let stripped = vte_strip::strip_ansi(&text);
+        let lines: Vec<&str> = stripped.lines().collect();
         let start = lines.len().saturating_sub(max_lines);
         lines[start..].join("\n")
     } else {
@@ -471,6 +475,34 @@ mod tests {
     }
 
     #[test]
+    fn find_match_line_strips_ansi_from_output() {
+        let regex = Regex::new("(?i)listening on").unwrap();
+        // Simulate ANSI-colored output: \x1b[32m = green, \x1b[0m = reset
+        let output = "Starting...\n\x1b[32mListening on port 3000\x1b[0m\nReady";
+        let matched = find_match_line(output, &regex);
+        assert_eq!(
+            matched,
+            Some("Listening on port 3000".to_string()),
+            "match_line should not contain ANSI escape sequences"
+        );
+        // Verify no escape characters leaked through.
+        assert!(
+            !matched.as_ref().unwrap().contains('\x1b'),
+            "match_line must not contain raw ANSI escapes"
+        );
+    }
+
+    #[test]
+    fn find_match_line_matches_text_inside_ansi() {
+        let regex = Regex::new("(?i)error").unwrap();
+        // The word "error" is wrapped in ANSI red: \x1b[31m...\x1b[0m
+        let output = "\x1b[31merror: something failed\x1b[0m";
+        let matched = find_match_line(output, &regex);
+        assert!(matched.is_some(), "should match 'error' inside ANSI codes");
+        assert!(!matched.as_ref().unwrap().contains('\x1b'));
+    }
+
+    #[test]
     fn get_output_tail_returns_last_n_lines() {
         let config = test_config();
         let mut table = ProcessTable::new(&config);
@@ -502,6 +534,21 @@ mod tests {
         let table = ProcessTable::new(&config);
         let tail = get_output_tail(&table, "nonexistent", 10);
         assert_eq!(tail, "");
+    }
+
+    #[test]
+    fn get_output_tail_strips_ansi() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+        table.register("test", "main", 100, None).unwrap();
+
+        let entry = table.get("test").unwrap();
+        // Write output containing ANSI color codes.
+        entry.spool.write(b"\x1b[32mline1\x1b[0m\n\x1b[31mline2\x1b[0m\n\x1b[33mline3\x1b[0m");
+
+        let tail = get_output_tail(&table, "test", 3);
+        assert_eq!(tail, "line1\nline2\nline3", "ANSI codes should be stripped");
+        assert!(!tail.contains('\x1b'), "output must not contain raw ANSI escapes");
     }
 
     // ── Alias auto-generation ─────────────────────────────────────────

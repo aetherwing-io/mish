@@ -10,6 +10,7 @@
 
 use crate::config::AuditConfig;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -184,6 +185,8 @@ pub enum AuditEvent {
         squashed_bytes: u64,
         compression_ratio: f64,
         safety_action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw_output_sha256: Option<String>,
     },
 }
 
@@ -214,6 +217,12 @@ pub struct SessionEndStats {
 pub struct AuditLogger {
     file: Option<File>,
     config: AuditConfig,
+    /// Directory where session JSONL and raw sidecar files live.
+    audit_dir: PathBuf,
+    /// Session identifier (used for the sidecar subdirectory).
+    session_id: String,
+    /// Sequence counter for raw sidecar files, incremented per `log_command_with_raw`.
+    seq: u32,
 }
 
 impl AuditLogger {
@@ -262,6 +271,9 @@ impl AuditLogger {
         Ok(Self {
             file,
             config: config.clone(),
+            audit_dir: audit_dir.clone(),
+            session_id: session_id.to_string(),
+            seq: 0,
         })
     }
 
@@ -378,6 +390,106 @@ impl AuditLogger {
         );
         self.log(entry);
     }
+
+    /// Whether raw sidecar writing is enabled (i.e. `raw_retention != "none"`).
+    pub fn raw_sidecar_enabled(&self) -> bool {
+        self.config.raw_retention != "none"
+    }
+
+    /// Log a `CommandRecord` with optional raw output sidecar.
+    ///
+    /// When `raw_retention` is enabled and `raw_output` is `Some`:
+    /// 1. Increments the internal sequence counter.
+    /// 2. Computes SHA-256 of the raw output bytes.
+    /// 3. Compresses with zstd and writes to
+    ///    `{audit_dir}/{session_id}/{seq:03}.raw.zst`.
+    /// 4. Sets `raw_output_sha256` on the `CommandRecord`.
+    ///
+    /// When disabled or `raw_output` is `None`, the entry is logged without
+    /// a sidecar and `raw_output_sha256` is `None`.
+    pub fn log_command_with_raw(
+        &mut self,
+        session: String,
+        tool: String,
+        command: Option<String>,
+        category: String,
+        grammar: Option<String>,
+        exit_code: i32,
+        wall_ms: u64,
+        raw_bytes: u64,
+        squashed_bytes: u64,
+        compression_ratio: f64,
+        safety_action: String,
+        raw_output: Option<&[u8]>,
+    ) {
+        let sha256 = if self.raw_sidecar_enabled() {
+            if let Some(data) = raw_output {
+                self.seq += 1;
+                match self.write_raw_sidecar(self.seq, data) {
+                    Ok(hash) => Some(hash),
+                    Err(e) => {
+                        eprintln!(
+                            "mish: warning: failed to write raw sidecar for seq {}: {e}",
+                            self.seq
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let entry = AuditEntry::new(
+            session,
+            tool,
+            command,
+            AuditEvent::CommandRecord {
+                category,
+                grammar,
+                exit_code,
+                wall_ms,
+                raw_bytes,
+                squashed_bytes,
+                compression_ratio,
+                safety_action,
+                raw_output_sha256: sha256,
+            },
+        );
+        self.log(entry);
+    }
+
+    /// Write a raw output sidecar file: `{audit_dir}/{session_id}/{seq:03}.raw.zst`.
+    ///
+    /// Returns the hex-encoded SHA-256 of the *uncompressed* raw output.
+    fn write_raw_sidecar(&self, seq: u32, data: &[u8]) -> Result<String, std::io::Error> {
+        // Compute SHA-256 of the uncompressed data.
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = format!("{:x}", hasher.finalize());
+
+        // Create the sidecar directory: {audit_dir}/{session_id}/
+        let sidecar_dir = self.audit_dir.join(&self.session_id);
+        if !sidecar_dir.exists() {
+            std::fs::create_dir_all(&sidecar_dir)?;
+        }
+
+        // Compress with zstd and write.
+        let sidecar_path = sidecar_dir.join(format!("{seq:03}.raw.zst"));
+        let compressed = zstd::encode_all(data, 3)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(&sidecar_path, &compressed)?;
+
+        Ok(hash)
+    }
+
+    /// Return the current sequence number (for testing).
+    #[cfg(test)]
+    pub fn seq(&self) -> u32 {
+        self.seq
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +560,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         }
     }
 
@@ -486,6 +599,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let _logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
         assert!(nested.join("audit").join(format!("{TEST_SESSION}.jsonl")).exists());
@@ -582,6 +696,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
 
         // new() should succeed even though the file can't be opened.
@@ -750,6 +865,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
@@ -807,6 +923,7 @@ mod tests {
             log_commands: false,       // suppress command events
             log_policy_decisions: false, // suppress policy events
             log_handoff_events: false,   // suppress handoff events
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
@@ -918,6 +1035,7 @@ mod tests {
             squashed_bytes: 5000,
             compression_ratio: 0.10,
             safety_action: "allow".into(),
+            raw_output_sha256: None,
         }
     }
 
@@ -950,6 +1068,7 @@ mod tests {
             squashed_bytes: 100,
             compression_ratio: 1.0,
             safety_action: "allow".into(),
+            raw_output_sha256: None,
         };
         let j = serde_json::to_value(&event).unwrap();
         assert_eq!(j["type"], "CommandRecord");
@@ -998,6 +1117,7 @@ mod tests {
             log_commands: false, // suppress command events
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
@@ -1036,6 +1156,7 @@ mod tests {
                 squashed_bytes: 8_000,
                 compression_ratio: 0.08,
                 safety_action: "allow".into(),
+                raw_output_sha256: None,
             },
         ));
         logger.flush();
@@ -1072,6 +1193,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
@@ -1192,6 +1314,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let sid = "subdir-test";
         let _logger = AuditLogger::new(&cfg, sid).unwrap();
@@ -1274,6 +1397,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
 
@@ -1399,6 +1523,7 @@ mod tests {
             log_commands: false,
             log_policy_decisions: false,
             log_handoff_events: false,
+            raw_retention: "none".into(),
         };
         let mut logger = AuditLogger::new(&cfg, "sess-cat").unwrap();
 
@@ -1416,5 +1541,333 @@ mod tests {
         let content = read_session_log(&dir, "sess-cat");
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2, "SessionStart and SessionEnd should always be logged regardless of category flags");
+    }
+
+    // --- Raw Output Sidecar tests ---
+
+    /// Helper: create AuditConfig with raw sidecar enabled.
+    fn config_with_raw(dir: &TempDir) -> AuditConfig {
+        AuditConfig {
+            log_path: dir.path().join("audit.log").to_string_lossy().to_string(),
+            log_level: "trace".into(),
+            log_commands: true,
+            log_policy_decisions: true,
+            log_handoff_events: true,
+            raw_retention: "7d".into(),
+        }
+    }
+
+    // 32. raw_sidecar_enabled returns false for "none"
+    #[test]
+    fn raw_sidecar_disabled_by_default() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir);
+        let logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
+        assert!(!logger.raw_sidecar_enabled());
+    }
+
+    // 33. raw_sidecar_enabled returns true for non-"none" values
+    #[test]
+    fn raw_sidecar_enabled_when_configured() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir);
+        let logger = AuditLogger::new(&cfg, TEST_SESSION).unwrap();
+        assert!(logger.raw_sidecar_enabled());
+    }
+
+    // 34. Sidecar file is created at correct path
+    #[test]
+    fn sidecar_file_created_at_correct_path() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir);
+        let mut logger = AuditLogger::new(&cfg, "sidecar-test").unwrap();
+
+        let raw = b"hello world raw output";
+        logger.log_command_with_raw(
+            "sidecar-test".into(),
+            "sh_run".into(),
+            Some("echo hello".into()),
+            "condense".into(),
+            None,
+            0,
+            50,
+            raw.len() as u64,
+            5,
+            0.23,
+            "allow".into(),
+            Some(raw),
+        );
+        logger.flush();
+
+        let sidecar_path = dir.path().join("audit").join("sidecar-test").join("001.raw.zst");
+        assert!(
+            sidecar_path.exists(),
+            "sidecar file should exist at {}",
+            sidecar_path.display()
+        );
+    }
+
+    // 35. SHA-256 in CommandRecord matches decompressed sidecar content
+    #[test]
+    fn sha256_matches_decompressed_content() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir);
+        let mut logger = AuditLogger::new(&cfg, "sha-test").unwrap();
+
+        let raw = b"this is the raw command output\nwith multiple lines\n";
+        logger.log_command_with_raw(
+            "sha-test".into(),
+            "sh_run".into(),
+            Some("cat file.txt".into()),
+            "condense".into(),
+            Some("cat".into()),
+            0,
+            100,
+            raw.len() as u64,
+            10,
+            0.20,
+            "allow".into(),
+            Some(raw),
+        );
+        logger.flush();
+
+        // Read the JSONL entry and extract raw_output_sha256
+        let content = read_session_log(&dir, "sha-test");
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        let sha256_from_log = parsed["event"]["raw_output_sha256"]
+            .as_str()
+            .expect("raw_output_sha256 should be present");
+
+        // Decompress the sidecar and verify SHA-256
+        let sidecar_path = dir.path().join("audit").join("sha-test").join("001.raw.zst");
+        let compressed = std::fs::read(&sidecar_path).unwrap();
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+        assert_eq!(
+            decompressed, raw,
+            "decompressed content should match original raw output"
+        );
+
+        // Compute SHA-256 of decompressed and compare
+        let mut hasher = Sha256::new();
+        hasher.update(&decompressed);
+        let computed_sha256 = format!("{:x}", hasher.finalize());
+        assert_eq!(
+            sha256_from_log, computed_sha256,
+            "SHA-256 in log should match decompressed content"
+        );
+    }
+
+    // 36. Disabled raw_retention skips sidecar creation
+    #[test]
+    fn disabled_config_skips_sidecar() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_in(&dir); // raw_retention = "none"
+        let mut logger = AuditLogger::new(&cfg, "no-sidecar").unwrap();
+
+        let raw = b"should not be written";
+        logger.log_command_with_raw(
+            "no-sidecar".into(),
+            "sh_run".into(),
+            Some("ls".into()),
+            "condense".into(),
+            None,
+            0,
+            10,
+            raw.len() as u64,
+            5,
+            0.25,
+            "allow".into(),
+            Some(raw),
+        );
+        logger.flush();
+
+        // No sidecar directory should exist
+        let sidecar_dir = dir.path().join("audit").join("no-sidecar");
+        assert!(
+            !sidecar_dir.exists(),
+            "sidecar directory should not exist when raw_retention=none"
+        );
+
+        // JSONL entry should not have raw_output_sha256
+        let content = read_session_log(&dir, "no-sidecar");
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert!(
+            parsed["event"]["raw_output_sha256"].is_null(),
+            "raw_output_sha256 should be null when disabled"
+        );
+    }
+
+    // 37. zstd roundtrip: compress then decompress matches original
+    #[test]
+    fn zstd_roundtrip() {
+        let original = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+            Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+            Repeated line for compression benefit.\n\
+            Repeated line for compression benefit.\n\
+            Repeated line for compression benefit.\n";
+
+        let compressed = zstd::encode_all(original.as_slice(), 3).unwrap();
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+
+        assert_eq!(decompressed, original.as_slice());
+        // Compressed should be smaller than original for repetitive data
+        assert!(
+            compressed.len() < original.len(),
+            "compressed ({}) should be smaller than original ({})",
+            compressed.len(),
+            original.len()
+        );
+    }
+
+    // 38. Multiple commands increment sequence numbers correctly
+    #[test]
+    fn multiple_commands_increment_seq() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir);
+        let mut logger = AuditLogger::new(&cfg, "seq-test").unwrap();
+
+        for i in 1..=3 {
+            let raw = format!("output from command {i}");
+            logger.log_command_with_raw(
+                "seq-test".into(),
+                "sh_run".into(),
+                Some(format!("cmd{i}")),
+                "condense".into(),
+                None,
+                0,
+                10 * i as u64,
+                raw.len() as u64,
+                5,
+                0.5,
+                "allow".into(),
+                Some(raw.as_bytes()),
+            );
+        }
+        logger.flush();
+
+        assert_eq!(logger.seq(), 3);
+
+        // Check that all three sidecar files exist
+        let sidecar_dir = dir.path().join("audit").join("seq-test");
+        assert!(sidecar_dir.join("001.raw.zst").exists());
+        assert!(sidecar_dir.join("002.raw.zst").exists());
+        assert!(sidecar_dir.join("003.raw.zst").exists());
+
+        // Verify contents of each
+        for i in 1..=3u32 {
+            let path = sidecar_dir.join(format!("{i:03}.raw.zst"));
+            let compressed = std::fs::read(&path).unwrap();
+            let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+            let expected = format!("output from command {i}");
+            assert_eq!(
+                String::from_utf8(decompressed).unwrap(),
+                expected,
+                "sidecar {i:03} should contain correct content"
+            );
+        }
+    }
+
+    // 39. log_command_with_raw with raw_output=None does not create sidecar
+    #[test]
+    fn raw_output_none_no_sidecar() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir); // enabled, but no raw_output
+        let mut logger = AuditLogger::new(&cfg, "no-raw").unwrap();
+
+        logger.log_command_with_raw(
+            "no-raw".into(),
+            "sh_run".into(),
+            Some("ls".into()),
+            "condense".into(),
+            None,
+            0,
+            10,
+            100,
+            50,
+            0.5,
+            "allow".into(),
+            None, // no raw output
+        );
+        logger.flush();
+
+        let sidecar_dir = dir.path().join("audit").join("no-raw");
+        assert!(
+            !sidecar_dir.exists(),
+            "sidecar directory should not exist when raw_output is None"
+        );
+
+        // Seq should not be incremented
+        assert_eq!(logger.seq(), 0);
+    }
+
+    // 40. Sidecar with empty raw output creates valid file
+    #[test]
+    fn sidecar_empty_raw_output() {
+        let dir = TempDir::new().unwrap();
+        let cfg = config_with_raw(&dir);
+        let mut logger = AuditLogger::new(&cfg, "empty-raw").unwrap();
+
+        let raw = b"";
+        logger.log_command_with_raw(
+            "empty-raw".into(),
+            "sh_run".into(),
+            Some("true".into()),
+            "condense".into(),
+            None,
+            0,
+            1,
+            0,
+            0,
+            0.0,
+            "allow".into(),
+            Some(raw),
+        );
+        logger.flush();
+
+        let sidecar_path = dir.path().join("audit").join("empty-raw").join("001.raw.zst");
+        assert!(sidecar_path.exists(), "sidecar should exist even for empty output");
+
+        let compressed = std::fs::read(&sidecar_path).unwrap();
+        let decompressed = zstd::decode_all(compressed.as_slice()).unwrap();
+        assert!(decompressed.is_empty(), "decompressed empty input should be empty");
+    }
+
+    // 41. raw_output_sha256 is omitted from JSON when None (skip_serializing_if)
+    #[test]
+    fn raw_output_sha256_omitted_when_none() {
+        let event = AuditEvent::CommandRecord {
+            category: "condense".into(),
+            grammar: None,
+            exit_code: 0,
+            wall_ms: 10,
+            raw_bytes: 100,
+            squashed_bytes: 50,
+            compression_ratio: 0.5,
+            safety_action: "allow".into(),
+            raw_output_sha256: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("raw_output_sha256"),
+            "raw_output_sha256 should be omitted when None"
+        );
+    }
+
+    // 42. raw_output_sha256 is present in JSON when Some
+    #[test]
+    fn raw_output_sha256_present_when_some() {
+        let event = AuditEvent::CommandRecord {
+            category: "condense".into(),
+            grammar: None,
+            exit_code: 0,
+            wall_ms: 10,
+            raw_bytes: 100,
+            squashed_bytes: 50,
+            compression_ratio: 0.5,
+            safety_action: "allow".into(),
+            raw_output_sha256: Some("abc123def456".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"raw_output_sha256\":\"abc123def456\""));
     }
 }

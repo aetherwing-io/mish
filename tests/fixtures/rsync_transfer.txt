@@ -1,0 +1,9 @@
+sending incremental file list
+src/main.rs
+src/lib.rs
+src/core/
+src/core/grammar.rs
+src/core/pty.rs
+
+sent 12,345 bytes  received 234 bytes  25,158.00 bytes/sec
+total size is 45,678  speedup is 3.63

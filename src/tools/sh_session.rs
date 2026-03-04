@@ -765,6 +765,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let session_id = "test-audit-sess";
         let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
@@ -781,6 +782,7 @@ mod tests {
                 squashed_bytes: 200,
                 compression_ratio: 5.0,
                 safety_action: "allow".into(),
+                raw_output_sha256: None,
             },
         ));
         logger.log(AuditEntry::new(
@@ -794,6 +796,7 @@ mod tests {
                 squashed_bytes: 500,
                 compression_ratio: 10.0,
                 safety_action: "allow".into(),
+                raw_output_sha256: None,
             },
         ));
         logger.flush();
@@ -832,6 +835,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let session_id = "test-audit-last";
         let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
@@ -848,6 +852,7 @@ mod tests {
                     squashed_bytes: 200,
                     compression_ratio: 5.0,
                     safety_action: "allow".into(),
+                    raw_output_sha256: None,
                 },
             ));
         }
@@ -886,6 +891,7 @@ mod tests {
             log_commands: true,
             log_policy_decisions: true,
             log_handoff_events: true,
+            raw_retention: "none".into(),
         };
         let session_id = "test-audit-summary";
         let mut logger = AuditLogger::new(&cfg, session_id).unwrap();
@@ -901,6 +907,7 @@ mod tests {
                 squashed_bytes: 200,
                 compression_ratio: 5.0,
                 safety_action: "allow".into(),
+                raw_output_sha256: None,
             },
         ));
         logger.log(AuditEntry::new(
@@ -914,6 +921,7 @@ mod tests {
                 squashed_bytes: 500,
                 compression_ratio: 10.0,
                 safety_action: "allow".into(),
+                raw_output_sha256: None,
             },
         ));
         logger.flush();

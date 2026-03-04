@@ -1,0 +1,180 @@
+[tool]
+name = "apt"
+detect = ["apt", "apt-get"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Reading package lists boilerplate
+pattern = '^Reading package lists'
+action = "strip"
+
+[[global_noise]]
+# Building dependency tree boilerplate
+pattern = '^Building dependency tree'
+action = "strip"
+
+[[global_noise]]
+# Reading state information boilerplate
+pattern = '^Reading state information'
+action = "strip"
+
+# ---- install action ----
+
+[actions.install]
+detect = ["install"]
+
+[[actions.install.noise]]
+# "The following NEW packages will be installed" header
+pattern = '^The following (NEW|additional) packages will be installed'
+action = "strip"
+
+[[actions.install.noise]]
+# "Need to get" size line
+pattern = '^Need to get'
+action = "strip"
+
+[[actions.install.noise]]
+# Get: download lines (numerous, dedup)
+pattern = '^Get:\d+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Fetched summary line
+pattern = '^Fetched\s+'
+action = "strip"
+
+[[actions.install.noise]]
+# Selecting previously unselected package
+pattern = '^Selecting previously unselected'
+action = "strip"
+
+[[actions.install.noise]]
+# Preparing to unpack
+pattern = '^Preparing to unpack'
+action = "strip"
+
+[[actions.install.noise]]
+# Unpacking lines (numerous, dedup)
+pattern = '^Unpacking\s+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Setting up lines (numerous, dedup)
+pattern = '^Setting up\s+'
+action = "dedup"
+
+[[actions.install.hazard]]
+# apt error lines
+pattern = '^E:\s+'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+# apt warning lines
+pattern = '^W:\s+'
+severity = "warning"
+action = "keep"
+
+[[actions.install.hazard]]
+# Fetch errors
+pattern = '^Err:\d+'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+# dpkg errors
+pattern = '^dpkg: error'
+severity = "error"
+action = "keep"
+multiline = 3
+
+[[actions.install.hazard]]
+# Unmet dependencies
+pattern = 'unmet dependencies'
+severity = "error"
+action = "keep"
+
+[[actions.install.outcome]]
+pattern = '^(?P<count>\d+) (newly installed|upgraded)'
+action = "promote"
+captures = ["count"]
+
+[actions.install.summary]
+success = "+ apt install complete ({count} packages)"
+failure = "! apt install failed (exit {exit_code})"
+partial = "... installing ({lines} lines)"
+
+# ---- update action ----
+
+[actions.update]
+detect = ["update"]
+
+[[actions.update.noise]]
+# Get/Hit/Ign lines (numerous, dedup)
+pattern = '^(Get|Hit|Ign):\d+'
+action = "dedup"
+
+[[actions.update.outcome]]
+pattern = '^All packages are up to date'
+action = "promote"
+
+[[actions.update.outcome]]
+pattern = '^Fetched (?P<size>.+) in'
+action = "promote"
+captures = ["size"]
+
+[actions.update.summary]
+success = "+ apt update complete"
+failure = "! apt update failed (exit {exit_code})"
+partial = "... updating ({lines} lines)"
+
+# ---- upgrade action ----
+
+[actions.upgrade]
+detect = ["upgrade", "dist-upgrade", "full-upgrade"]
+
+[[actions.upgrade.noise]]
+# Get: download lines
+pattern = '^Get:\d+'
+action = "dedup"
+
+[[actions.upgrade.noise]]
+# Unpacking lines
+pattern = '^Unpacking\s+'
+action = "dedup"
+
+[[actions.upgrade.noise]]
+# Setting up lines
+pattern = '^Setting up\s+'
+action = "dedup"
+
+[[actions.upgrade.outcome]]
+pattern = '^(?P<count>\d+) upgraded'
+action = "promote"
+captures = ["count"]
+
+[actions.upgrade.summary]
+success = "+ apt upgrade complete ({count} upgraded)"
+failure = "! apt upgrade failed (exit {exit_code})"
+partial = "... upgrading ({lines} lines)"
+
+# ---- remove action ----
+
+[actions.remove]
+detect = ["remove", "purge", "autoremove"]
+
+[[actions.remove.outcome]]
+pattern = '^(?P<count>\d+) to remove'
+action = "promote"
+captures = ["count"]
+
+[actions.remove.summary]
+success = "+ apt remove complete"
+failure = "! apt remove failed (exit {exit_code})"
+partial = "... removing ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["-q"]
+recommend = ["-qq"]

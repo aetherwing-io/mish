@@ -1,0 +1,63 @@
+[tool]
+name = "rsync"
+detect = ["rsync"]
+inherit = ["ansi-progress"]
+
+[[global_noise]]
+# Progress percentage lines (e.g. "  45%  12.34MB/s   0:01:23")
+pattern = '^\s+\d+%\s+'
+action = "strip"
+
+[[global_noise]]
+# "sending incremental file list" boilerplate
+pattern = '^sending incremental file list'
+action = "strip"
+
+# ---- fallback (rsync has no subcommands) ----
+
+[fallback]
+
+[[fallback.noise]]
+# Individual file transfer lines (when syncing many files)
+pattern = '^\S+.*[^/]$'
+action = "dedup"
+
+[[fallback.hazard]]
+pattern = 'rsync error:'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'rsync: link_stat'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'Permission denied'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'connection unexpectedly closed'
+severity = "error"
+action = "keep"
+
+[[fallback.hazard]]
+pattern = 'rsync warning:'
+severity = "warning"
+action = "keep"
+
+[[fallback.outcome]]
+pattern = '^sent\s+(?P<sent>[\d,]+)\s+bytes\s+received\s+(?P<received>[\d,]+)\s+bytes'
+action = "promote"
+captures = ["sent", "received"]
+
+[fallback.summary]
+success = "+ synced ({sent} bytes sent)"
+failure = "! rsync failed (exit {exit_code})"
+partial = "... syncing ({lines} lines)"
+
+# ---- quiet config ----
+
+[quiet]
+safe_inject = ["-q"]

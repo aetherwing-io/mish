@@ -14,6 +14,7 @@ use crate::mcp::types::{
 use crate::process::state::ProcessState;
 use crate::process::table::ProcessTable;
 use crate::session::manager::SessionManager;
+use crate::squasher::vte_strip;
 use super::ToolError;
 
 // ---------------------------------------------------------------------------
@@ -74,10 +75,11 @@ fn handle_read_tail(
 
     let lines_requested = params.lines.unwrap_or(50);
 
-    // Read raw bytes from spool, then extract last N lines.
+    // Read raw bytes from spool, strip ANSI, then extract last N lines.
     let raw = entry.spool.read_all();
     let text = String::from_utf8_lossy(&raw);
-    let all_lines: Vec<&str> = text.lines().collect();
+    let stripped = vte_strip::strip_ansi(&text);
+    let all_lines: Vec<&str> = stripped.lines().collect();
 
     let start = all_lines.len().saturating_sub(lines_requested);
     let tail_lines = &all_lines[start..];
@@ -109,7 +111,8 @@ fn handle_read_full(
         .ok_or_else(|| ToolError::alias_not_found(&params.alias))?;
 
     let raw = entry.spool.read_all();
-    let output = String::from_utf8_lossy(&raw).to_string();
+    let text = String::from_utf8_lossy(&raw);
+    let output = vte_strip::strip_ansi(&text);
     let lines_count = output.lines().count();
 
     let resp = ShInteractReadTailResponse {
@@ -463,6 +466,32 @@ mod tests {
         assert_eq!(err.code, ERR_ALIAS_NOT_FOUND);
     }
 
+    #[test]
+    fn read_tail_strips_ansi_escape_sequences() {
+        let table = make_table_with_running_process("server");
+        let entry = table.get("server").unwrap();
+        // Write ANSI-colored output: \x1b[33m = yellow, \x1b[39m = default fg
+        entry.spool.write(b"\x1b[33mwarning: something\x1b[39m\n\x1b[31merror: bad\x1b[0m\n");
+
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
+        assert!(result.is_ok());
+
+        let json = result.unwrap();
+        let output = json["output"].as_str().unwrap();
+        assert!(
+            output.contains("warning: something"),
+            "clean text should be preserved, got: {output}"
+        );
+        assert!(
+            output.contains("error: bad"),
+            "clean text should be preserved, got: {output}"
+        );
+        assert!(
+            !output.contains('\x1b'),
+            "read_tail output must not contain raw ANSI escapes, got: {output}"
+        );
+    }
+
     // ── read_full ─────────────────────────────────────────────────────
 
     #[test]
@@ -496,6 +525,26 @@ mod tests {
         let json = result.unwrap();
         assert_eq!(json["lines_returned"], 0);
         assert_eq!(json["output"], "");
+    }
+
+    #[test]
+    fn read_full_strips_ansi_escape_sequences() {
+        let table = make_table_with_running_process("server");
+        let entry = table.get("server").unwrap();
+        // Write ANSI-colored output
+        entry.spool.write(b"\x1b[32mok\x1b[0m\n\x1b[1;31mFATAL\x1b[0m\n");
+
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
+        assert!(result.is_ok());
+
+        let json = result.unwrap();
+        let output = json["output"].as_str().unwrap();
+        assert!(output.contains("ok"), "clean text should be preserved");
+        assert!(output.contains("FATAL"), "clean text should be preserved");
+        assert!(
+            !output.contains('\x1b'),
+            "read_full output must not contain raw ANSI escapes, got: {output}"
+        );
     }
 
     #[test]

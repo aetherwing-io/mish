@@ -1,0 +1,7 @@
+ssh: connect to host example.com port 22: Connection refused
+Permission denied (publickey,password).
+ssh: Could not resolve hostname nonexistent.host: nodename nor servname provided, or not known
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+Host key verification failed.

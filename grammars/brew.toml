@@ -1,0 +1,127 @@
+[tool]
+name = "brew"
+detect = ["brew"]
+inherit = ["ansi-progress"]
+
+# ---- install action ----
+
+[actions.install]
+detect = ["install", "reinstall"]
+
+[[actions.install.noise]]
+# Downloading lines (numerous, dedup)
+pattern = '^==> Downloading\s+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Fetching lines (numerous, dedup)
+pattern = '^==> Fetching\s+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Pouring bottles (numerous, dedup)
+pattern = '^==> Pouring\s+'
+action = "dedup"
+
+[[actions.install.noise]]
+# Already downloaded cache hits
+pattern = '^Already downloaded:'
+action = "strip"
+
+[[actions.install.hazard]]
+# Error lines
+pattern = '^Error:'
+severity = "error"
+action = "keep"
+
+[[actions.install.hazard]]
+# Warning lines
+pattern = '^Warning:'
+severity = "warning"
+action = "keep"
+
+[[actions.install.hazard]]
+# No available formula or cask
+pattern = 'No available formula'
+severity = "error"
+action = "keep"
+
+[[actions.install.outcome]]
+# Summary line
+pattern = '^==> Summary'
+action = "promote"
+
+[[actions.install.outcome]]
+# Beer mug completion line
+pattern = '🍺\s+(?P<path>.+)'
+action = "promote"
+captures = ["path"]
+
+[actions.install.summary]
+success = "+ brew install complete"
+failure = "! brew install failed (exit {exit_code})"
+partial = "... installing ({lines} lines)"
+
+# ---- update action ----
+
+[actions.update]
+detect = ["update"]
+
+[[actions.update.noise]]
+# Downloading updates (dedup)
+pattern = '^==> Downloading\s+'
+action = "dedup"
+
+[[actions.update.noise]]
+# Updated taps (dedup)
+pattern = '^Updated \d+ tap'
+action = "dedup"
+
+[[actions.update.outcome]]
+pattern = '^Already up-to-date'
+action = "promote"
+
+[[actions.update.outcome]]
+pattern = '^Updated Homebrew'
+action = "promote"
+
+[actions.update.summary]
+success = "+ brew update complete"
+failure = "! brew update failed (exit {exit_code})"
+partial = "... updating ({lines} lines)"
+
+# ---- upgrade action ----
+
+[actions.upgrade]
+detect = ["upgrade"]
+
+[[actions.upgrade.noise]]
+# Downloading (dedup)
+pattern = '^==> Downloading\s+'
+action = "dedup"
+
+[[actions.upgrade.noise]]
+# Pouring bottles (dedup)
+pattern = '^==> Pouring\s+'
+action = "dedup"
+
+[[actions.upgrade.outcome]]
+# Beer mug completion line
+pattern = '🍺\s+(?P<path>.+)'
+action = "promote"
+captures = ["path"]
+
+[actions.upgrade.summary]
+success = "+ brew upgrade complete"
+failure = "! brew upgrade failed (exit {exit_code})"
+partial = "... upgrading ({lines} lines)"
+
+# ---- search action ----
+
+[actions.search]
+detect = ["search"]
+
+[actions.search.summary]
+success = "+ brew search complete"
+failure = "! brew search failed (exit {exit_code})"
+partial = "... searching ({lines} lines)"
