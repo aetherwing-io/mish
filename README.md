@@ -1,77 +1,105 @@
 <p align="center">
-  <img src="docs/assets/mish-social-final.svg" alt="mish — the intent-aware proxy between AI agents and your OS" width="640" />
+  <img src="site/og.svg" alt="mish — the LLM-native shell" width="640" />
 </p>
 
 <p align="center">
-  <strong>LLM-native shell.</strong> One binary. Two interfaces. Zero noise.
+  <strong>Five MCP tools between your agent and the OS.</strong><br>
+  Structured output · error diagnostics · process control · one binary
+</p>
+
+<p align="center">
+  <a href="https://ohitsmish.com">ohitsmish.com</a> · <a href="https://github.com/aetherwing-io/mish/releases">Releases</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/SHOWCASE.md">Showcase</a>
 </p>
 
 ---
 
-mish sits between the shell and its caller — whether that's an LLM agent, a human developer, or both — and returns structured, context-efficient responses. It categorizes every command and applies the right handler: condensing verbose output, narrating silent operations, parsing structured data, and warning about dangerous commands. Pure heuristics, no LLM in the loop.
+## Install
 
-## The problem
+```bash
+# macOS (Apple Silicon + Intel) and Linux
+curl -fsSL https://ohitsmish.com/install.sh | sh
 
-LLMs interact with the shell through a Bash tool. The interface is lossy in both directions:
-
-- **Verbose commands** (npm install, cargo build) dump hundreds of lines into context where the signal is one line
-- **Silent commands** (cp, mkdir, chmod) return nothing — no confirmation of what happened
-- **Dangerous commands** (rm -rf, force push) execute without guardrails
-- **Interactive commands** (vim, psql) break the non-interactive tool model
-
-## Before / After
-
-```
-Before:  LLM → Bash("npm install")       → 1400 lines raw output
-After:   LLM → mish("npm install")       → "1400 lines → exit 0  + 147 packages"
-
-Before:  LLM → Bash("cp file backup/")   → "" (nothing)
-After:   LLM → mish("cp file backup/")   → "→ cp: file → backup/ (4.2KB)"
-
-Before:  LLM → Bash("rm -rf node_modules") → "" (nothing, 312MB gone)
-After:   LLM → mish("rm -rf node_modules") → "⚠ rm -rf: node_modules/ (47K files, 312MB) — destructive"
+# or from source
+cargo install --git https://github.com/aetherwing-io/mish
 ```
 
-## Two modes
+## Connect
 
-**CLI proxy** (`mish <command>`) — wraps individual commands with category-aware output. Works with any LLM tool today, or standalone for humans who want cleaner terminal output.
+```bash
+# Claude Code
+claude mcp add mish -- mish serve
 
-**MCP server** (`mish serve`) — a full process supervisor over JSON-RPC. Manages concurrent PTY sessions, provides ambient process state on every response, detects when processes need input, and hands off to human operators for authentication. Built for LLM agents that need temporal control over long-running processes.
+# Cursor / Windsurf / any MCP client — add to your config:
+"mish": { "command": "mish", "args": ["serve"] }
+```
+
+Restart your client. Five tools appear:
+
+| Tool | What it does |
+|------|-------------|
+| **sh_run** | Run a command. Output is squashed, categorized, and enriched with diagnostics on failure. |
+| **sh_spawn** | Start a background process. Wait-for-ready patterns, aliases, output spools. |
+| **sh_interact** | Send input, read tail, signal, or kill a running process. |
+| **sh_session** | Named PTY sessions with full lifecycle control. |
+| **sh_help** | Self-documenting reference card. Your agent reads it, never needs a manual. |
+
+## What it does
+
+mish sits between the shell and its caller — whether that's an LLM agent, a human, or both — and returns structured, context-efficient responses. It categorizes every command and applies the right handler. Pure heuristics, no LLM in the loop.
+
+```
+Before:  agent → Bash("cargo test")        → 1,319 lines raw output
+After:   agent → sh_run("cargo test")      → 201 lines (6.6× reduction)
+
+Before:  agent → Bash("cargo test") + watch → 1,319 lines raw output
+After:   agent → sh_run watch="warning"     → 3 lines (440× reduction)
+
+Before:  agent → Bash("cp missing dest/")  → "No such file" + 4 follow-up calls
+After:   agent → sh_run("cp missing dest/") → error + path walk + permissions + nearest dirs
+```
+
+Every response includes exit code, timing, and command category. On failure, mish pre-walks paths, checks permissions, and lists nearby files — before your agent has to ask.
+
+### Command routing
+
+Every command is classified into one of six categories:
 
 | Category | Commands | Behavior |
 |----------|----------|----------|
-| Condense | npm, cargo, docker, make, pytest | PTY capture → squash → condensed summary |
-| Narrate | cp, mv, mkdir, rm, chmod | Inspect → execute → narrate what happened |
-| Passthrough | cat, grep, ls, jq, diff | Output verbatim + metadata footer |
-| Structured | git status, docker ps | Machine-readable parse → condensed view |
-| Interactive | vim, htop, psql, node REPL | Transparent passthrough |
-| Dangerous | rm -rf, force push, reset --hard | Warn before executing |
+| **Condense** | npm, cargo, docker, make, pytest | PTY capture → ANSI strip → dedup → Oreo truncation |
+| **Narrate** | cp, mv, mkdir, rm, chmod | Inspect → execute → narrate what happened |
+| **Passthrough** | cat, grep, ls, jq, diff | Output verbatim + metadata |
+| **Structured** | git status, docker ps | Machine-readable parse |
+| **Interactive** | vim, htop, psql, node REPL | Transparent passthrough with raw mode detection |
+| **Dangerous** | rm -rf, force push, reset --hard | Warn before executing |
 
-## Quick start
+## Benchmarks
 
-```bash
-# Build
-cargo build --release
+Same commands, same machine, same session. mish vs bare shell on a real Rust codebase.
 
-# Symlink onto PATH
-ln -sf "$(pwd)/target/release/mish" /usr/local/bin/mish
+| Scenario | Reduction | How |
+|----------|-----------|-----|
+| Full test suite | **6.6×** | Dedup + Oreo truncation — head and tail kept, repetitive middle dropped |
+| Test suite + watch | **440×** | Only regex-matched lines return |
+| Failed command | **5→1 round trips** | Path walks, permissions, nearest dirs — pre-fetched on failure |
 
-# Add to Claude Code (~/.claude/.mcp.json)
-{
-  "mcpServers": {
-    "mish": {
-      "command": "mish",
-      "args": ["serve"]
-    }
-  }
-}
-```
+Full benchmark data: [SHOWCASE.md](docs/SHOWCASE.md)
 
-Restart Claude Code (or `/mcp` to reconnect). Five tools appear: `sh_run`, `sh_spawn`, `sh_interact`, `sh_session`, `sh_help`.
+## How it works
+
+mish is one binary with two interfaces:
+
+**MCP server** (`mish serve`) — a process supervisor over JSON-RPC with ambient process state on every response, watch patterns for regex filtering, and operator handoff for auth/MFA.
+
+**CLI proxy** (`mish <command>`) — wraps individual commands with category-aware structured output. Works standalone or with any LLM tool.
+
+Both share the same core: category router → squasher pipeline (VTE parse, progress removal, dedup, Oreo truncation) → error enrichment → grammar system (TOML tool grammars with dialect support).
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full execution model.
 
 ## Status
 
-Active development. Core pipeline (squasher, classifier, category router, error enrichment) is implemented with 600+ tests. MCP server mode is live and working in Claude Code. Not yet packaged for distribution.
+Active development. 1,400+ tests across unit, integration, CLI, grammar, fixture, and MCP layers. MCP server is live and battle-tested in daily use with Claude Code. macOS and Linux.
 
 ## License
 
