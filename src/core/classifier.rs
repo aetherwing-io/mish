@@ -1,7 +1,7 @@
-/// Three-tier classification engine.
-///
-/// Assigns a classification to each line: Hazard, Outcome, Noise, Prompt, or Unknown.
-/// Evaluates in order: Tier 1 (grammar rules) → Tier 2 (universal patterns) → Tier 3 (structural).
+//! Three-tier classification engine.
+//!
+//! Assigns a classification to each line: Hazard, Outcome, Noise, Prompt, or Unknown.
+//! Evaluates in order: Tier 1 (grammar rules) → Tier 2 (universal patterns) → Tier 3 (structural).
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -840,8 +840,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
     let mut prev = vec![0usize; n + 1];
     let mut curr = vec![0usize; n + 1];
 
-    for j in 0..=n {
-        prev[j] = j;
+    for (j, slot) in prev.iter_mut().enumerate().take(n + 1) {
+        *slot = j;
     }
 
     for i in 1..=m {
@@ -2677,7 +2677,7 @@ success = "ok"
         let grammars = load_all_grammars(&dir).unwrap();
 
         // Detect npm install
-        let args: Vec<String> = vec!["npm", "install"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["npm", "install"].iter().map(|s| s.to_string()).collect();
         let (grammar, action) = detect_tool(&args, &grammars).expect("npm should detect");
 
         let mut c = Classifier::new(Some(grammar), action);
@@ -2710,7 +2710,7 @@ success = "ok"
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
         let grammars = load_all_grammars(&dir).unwrap();
 
-        let args: Vec<String> = vec!["npm", "install"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["npm", "install"].iter().map(|s| s.to_string()).collect();
         let (grammar, action) = detect_tool(&args, &grammars).expect("npm should detect");
 
         let mut c = Classifier::new(Some(grammar), action);

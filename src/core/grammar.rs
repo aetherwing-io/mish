@@ -1,8 +1,8 @@
-/// Grammar loading and matching.
-///
-/// Loads TOML grammars, detects tools from command args, resolves actions.
-/// Uses intermediate "raw" serde structs for TOML deserialization, then
-/// converts to final types with compiled Regex fields.
+//! Grammar loading and matching.
+//!
+//! Loads TOML grammars, detects tools from command args, resolves actions.
+//! Uses intermediate "raw" serde structs for TOML deserialization, then
+//! converts to final types with compiled Regex fields.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -112,21 +112,11 @@ pub enum Severity {
     Warning,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SummaryTemplate {
     pub success: String,
     pub failure: String,
     pub partial: String,
-}
-
-impl Default for SummaryTemplate {
-    fn default() -> Self {
-        SummaryTemplate {
-            success: String::new(),
-            failure: String::new(),
-            partial: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

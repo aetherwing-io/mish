@@ -1,7 +1,7 @@
-/// Oreo truncation with enriched markers.
-///
-/// Keeps first N and last M lines, inserts a marker with suppressed line count
-/// and hazard summary from the truncated middle section.
+//! Oreo truncation with enriched markers.
+//!
+//! Keeps first N and last M lines, inserts a marker with suppressed line count
+//! and hazard summary from the truncated middle section.
 
 /// Max output bytes hard limit (64KB).
 pub const DEFAULT_MAX_BYTES: usize = 65536;
@@ -145,8 +145,8 @@ impl Truncator {
         let mut used_bytes: usize = 0;
 
         // Add lines from the head
-        for i in 0..n {
-            let line_bytes = lines[i].len() + 1;
+        for (i, line) in lines.iter().enumerate().take(n) {
+            let line_bytes = line.len() + 1;
             if used_bytes + line_bytes + marker_reserve > self.max_bytes {
                 break;
             }
@@ -470,7 +470,7 @@ mod tests {
         let t = Truncator::with_max_bytes(TruncateConfig { head: 10, tail: 10 }, 5000);
         let lines: Vec<String> = (0..50)
             .map(|i| {
-                if i < 5 || i >= 45 {
+                if !(5..45).contains(&i) {
                     big_line.clone()
                 } else {
                     format!("short line {}", i)

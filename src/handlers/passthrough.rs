@@ -1,7 +1,7 @@
-/// Passthrough handler — execute and pass output verbatim with metadata footer.
-///
-/// Commands like cat, head, tail, grep, ls, echo — the output is the point.
-/// We pass it through unchanged and append a small metadata footer.
+//! Passthrough handler — execute and pass output verbatim with metadata footer.
+//!
+//! Commands like cat, head, tail, grep, ls, echo -- the output is the point.
+//! We pass it through unchanged and append a small metadata footer.
 
 use std::process::Command;
 

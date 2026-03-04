@@ -188,11 +188,7 @@ impl BoundaryDetector {
         // Content starts after the start marker line
         let after_start = &buffer[start_pos + start_marker.len()..];
         // Skip the newline after the start marker
-        let content_start = if after_start.starts_with('\n') {
-            &after_start[1..]
-        } else {
-            after_start
-        };
+        let content_start = after_start.strip_prefix('\n').unwrap_or(after_start);
 
         // Find end marker position relative to content_start
         let content_start_abs = buffer.len() - after_start.len()

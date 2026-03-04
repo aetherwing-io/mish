@@ -1,4 +1,4 @@
-/// Shared utility functions.
+//! Shared utility functions.
 
 /// Expand `~` prefix to `$HOME` in a path string.
 pub fn expand_tilde(path: &str) -> String {

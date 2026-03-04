@@ -225,8 +225,7 @@ mod tests {
 
     /// Helper: create a detector with a very short timeout for testing.
     fn fast_detector() -> YieldDetector {
-        let mut config = YieldConfig::default();
-        config.silence_timeout_ms = 50; // 50ms for fast tests
+        let config = YieldConfig { silence_timeout_ms: 50, ..Default::default() };
         YieldDetector::new(config)
     }
 
@@ -321,8 +320,7 @@ mod tests {
 
     #[test]
     fn test_auto_confirm_response() {
-        let mut config = YieldConfig::default();
-        config.silence_timeout_ms = 50;
+        let config = YieldConfig { silence_timeout_ms: 50, ..Default::default() };
         let mut detector = YieldDetector::new(config);
 
         let policy = policy_from_toml(
@@ -358,8 +356,7 @@ scope = ["apt"]
 
     #[test]
     fn test_yield_to_operator_decision() {
-        let mut config = YieldConfig::default();
-        config.silence_timeout_ms = 50;
+        let config = YieldConfig { silence_timeout_ms: 50, ..Default::default() };
         let mut detector = YieldDetector::new(config);
 
         let policy = policy_from_toml(
@@ -456,9 +453,7 @@ notify = true
 
     #[test]
     fn test_tail_buffer_rotation() {
-        let mut config = YieldConfig::default();
-        config.prompt_window_bytes = 16; // tiny window for testing
-        config.silence_timeout_ms = 50;
+        let config = YieldConfig { prompt_window_bytes: 16, silence_timeout_ms: 50, ..Default::default() };
         let mut detector = YieldDetector::new(config);
 
         // Feed more than prompt_window_bytes.

@@ -1,7 +1,7 @@
-/// Interactive handler — mode-aware.
-///
-/// CLI: detect raw mode -> transparent passthrough -> session summary on exit.
-/// MCP: return error/warning (interactive commands can't run over MCP stdio).
+//! Interactive handler — mode-aware.
+//!
+//! CLI: detect raw mode -> transparent passthrough -> session summary on exit.
+//! MCP: return error/warning (interactive commands can't run over MCP stdio).
 
 use std::time::Duration;
 

@@ -1,12 +1,12 @@
-/// Block compressor — collapses multi-line diagnostic blocks into single digest lines.
-///
-/// Pipeline position: VTE strip → progress → **block compress** → dedup → Oreo
-///
-/// Compiler diagnostics (rustc, gcc, clang) use multi-line human-readable formats
-/// with ASCII art, pipe decorators, and context lines. An 8-line rustc warning
-/// contains ~1 line of LLM-useful information. This stage compresses each block
-/// into a single dense line before dedup runs, so dedup can correctly group
-/// identical diagnostics.
+//! Block compressor — collapses multi-line diagnostic blocks into single digest lines.
+//!
+//! Pipeline position: VTE strip -> progress -> **block compress** -> dedup -> Oreo
+//!
+//! Compiler diagnostics (rustc, gcc, clang) use multi-line human-readable formats
+//! with ASCII art, pipe decorators, and context lines. An 8-line rustc warning
+//! contains ~1 line of LLM-useful information. This stage compresses each block
+//! into a single dense line before dedup runs, so dedup can correctly group
+//! identical diagnostics.
 
 use crate::core::grammar::BlockRule;
 
@@ -121,8 +121,7 @@ impl BlockCompressor {
             vec![digest]
         } else {
             // Extract regex didn't match — emit original lines unchanged (graceful fallback)
-            let lines = std::mem::take(&mut self.buffer);
-            lines
+            std::mem::take(&mut self.buffer)
         }
     }
 }

@@ -1,7 +1,8 @@
 /// The six command categories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Category {
     /// Verbose output -> condensed summary (npm install, cargo build)
+    #[default]
     Condense,
     /// Silent commands -> narrated result (cp, mv, mkdir)
     Narrate,
@@ -13,12 +14,6 @@ pub enum Category {
     Interactive,
     /// Warn before executing destructive commands (rm -rf, force push)
     Dangerous,
-}
-
-impl Default for Category {
-    fn default() -> Self {
-        Category::Condense
-    }
 }
 
 /// Execution mode: CLI proxy or MCP server.
@@ -36,6 +31,7 @@ pub enum ExecutionMode {
 
 impl Category {
     /// Parse a category name string into a Category variant.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Category> {
         match s {
             "condense" => Some(Category::Condense),

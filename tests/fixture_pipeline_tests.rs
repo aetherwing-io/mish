@@ -1,11 +1,11 @@
-/// Fixture pipeline tests for mish-s1i.16.
-///
-/// Each of the 5 grammars has at least 2 fixtures (success + error).
-/// Tests parse every line through the classifier and verify:
-/// - Correct classification counts (hazard, outcome, noise, unknown)
-/// - Specific hazard lines are detected
-/// - Specific outcome captures are extracted
-/// - Error fixtures surface all hazards
+//! Fixture pipeline tests for mish-s1i.16.
+//!
+//! Each of the 5 grammars has at least 2 fixtures (success + error).
+//! Tests parse every line through the classifier and verify:
+//! - Correct classification counts (hazard, outcome, noise, unknown)
+//! - Specific hazard lines are detected
+//! - Specific outcome captures are extracted
+//! - Error fixtures surface all hazards
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -273,7 +273,7 @@ fn test_cargo_build_error_fixture_has_warnings() {
     let warnings: Vec<_> = hazards.iter()
         .filter(|(s, _)| *s == Some(Severity::Warning))
         .collect();
-    assert!(warnings.len() >= 1, "cargo error fixture should have warnings, got {}", warnings.len());
+    assert!(!warnings.is_empty(), "cargo error fixture should have warnings, got {}", warnings.len());
 }
 
 // ===========================================================================
@@ -356,7 +356,7 @@ fn test_git_push_rejected_fixture_has_hazards() {
     let fixture = load_fixture("git_push_rejected.txt");
 
     let hazards = collect_hazards(grammar, Some(action), &fixture);
-    assert!(hazards.len() >= 1, "git push rejected should have hazards, got {}", hazards.len());
+    assert!(!hazards.is_empty(), "git push rejected should have hazards, got {}", hazards.len());
 
     let has_rejected = hazards.iter().any(|(_, ref text)| text.contains("rejected"));
     assert!(has_rejected, "git push rejected should detect [rejected] line");
@@ -416,7 +416,7 @@ fn test_docker_build_error_fixture_has_hazards() {
     let fixture = load_fixture("docker_build_error.txt");
 
     let hazards = collect_hazards(grammar, Some(action), &fixture);
-    assert!(hazards.len() >= 1, "docker error fixture should have hazards, got {}", hazards.len());
+    assert!(!hazards.is_empty(), "docker error fixture should have hazards, got {}", hazards.len());
 
     // Should detect ERROR line
     let has_error = hazards.iter().any(|(s, _)| *s == Some(Severity::Error));

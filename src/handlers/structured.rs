@@ -1,7 +1,7 @@
-/// Structured handler — execute, parse machine-readable output, format.
-///
-/// Handles git status, docker ps, etc. May inject --porcelain/--format json.
-/// Falls back to Generic(raw_output) for unrecognized commands.
+//! Structured handler — execute, parse machine-readable output, format.
+//!
+//! Handles git status, docker ps, etc. May inject --porcelain/--format json.
+//! Falls back to Generic(raw_output) for unrecognized commands.
 
 use std::process::Command;
 

@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 /// Helper: build a `mish` command from the compiled binary.
 fn mish() -> Command {
-    cargo_bin_cmd!("mish").into()
+    cargo_bin_cmd!("mish")
 }
 
 // =========================================================================
@@ -31,7 +31,7 @@ fn mish() -> Command {
 #[serial(pty)]
 fn test_01_echo_hello_produces_output() {
     mish()
-        .args(&["echo", "hello"])
+        .args(["echo", "hello"])
         .assert()
         .success()
         .stdout(predicate::str::contains("hello"));
@@ -41,7 +41,7 @@ fn test_01_echo_hello_produces_output() {
 #[serial(pty)]
 fn test_02_true_exits_zero() {
     mish()
-        .args(&["true"])
+        .args(["true"])
         .assert()
         .success();
 }
@@ -50,7 +50,7 @@ fn test_02_true_exits_zero() {
 #[serial(pty)]
 fn test_03_exit_code_one_propagated() {
     mish()
-        .args(&["/bin/sh", "-c", "exit 1"])
+        .args(["/bin/sh", "-c", "exit 1"])
         .assert()
         .code(1);
 }
@@ -59,7 +59,7 @@ fn test_03_exit_code_one_propagated() {
 #[serial(pty)]
 fn test_04_exit_code_42_propagated() {
     mish()
-        .args(&["/bin/sh", "-c", "exit 42"])
+        .args(["/bin/sh", "-c", "exit 42"])
         .assert()
         .code(42);
 }
@@ -73,7 +73,7 @@ fn test_04_exit_code_42_propagated() {
 fn test_05_human_success_starts_with_plus() {
     // echo is passthrough with real grammars — use /bin/sh -c which is condense
     mish()
-        .args(&["/bin/sh", "-c", "echo hello"])
+        .args(["/bin/sh", "-c", "echo hello"])
         .assert()
         .success()
         .stdout(predicate::str::starts_with("+"));
@@ -83,7 +83,7 @@ fn test_05_human_success_starts_with_plus() {
 #[serial(pty)]
 fn test_06_human_failure_starts_with_bang() {
     mish()
-        .args(&["/bin/sh", "-c", "exit 1"])
+        .args(["/bin/sh", "-c", "exit 1"])
         .assert()
         .code(1)
         .stdout(predicate::str::starts_with("!"));
@@ -93,7 +93,7 @@ fn test_06_human_failure_starts_with_bang() {
 #[serial(pty)]
 fn test_07_human_shows_line_count() {
     mish()
-        .args(&["/bin/sh", "-c", "echo a; echo b; echo c"])
+        .args(["/bin/sh", "-c", "echo a; echo b; echo c"])
         .assert()
         .success()
         .stdout(predicate::str::contains("lines"));
@@ -103,7 +103,7 @@ fn test_07_human_shows_line_count() {
 #[serial(pty)]
 fn test_08_human_shows_exit_code_on_failure() {
     mish()
-        .args(&["/bin/sh", "-c", "echo output && exit 42"])
+        .args(["/bin/sh", "-c", "echo output && exit 42"])
         .assert()
         .code(42)
         .stdout(predicate::str::contains("exit 42"));
@@ -113,7 +113,7 @@ fn test_08_human_shows_exit_code_on_failure() {
 #[serial(pty)]
 fn test_09_ring_buffer_last_lines() {
     mish()
-        .args(&["/bin/sh", "-c", "echo alpha; echo bravo; echo charlie"])
+        .args(["/bin/sh", "-c", "echo alpha; echo bravo; echo charlie"])
         .assert()
         .success()
         .stdout(predicate::str::contains("last:"));
@@ -127,7 +127,7 @@ fn test_09_ring_buffer_last_lines() {
 #[serial(pty)]
 fn test_10_json_mode_valid_structure() {
     let output = mish()
-        .args(&["--json", "echo", "hello"])
+        .args(["--json", "echo", "hello"])
         .output()
         .expect("mish should run");
 
@@ -148,7 +148,7 @@ fn test_10_json_mode_valid_structure() {
 #[serial(pty)]
 fn test_11_json_mode_failure_exit_code() {
     let output = mish()
-        .args(&["--json", "/bin/sh", "-c", "exit 1"])
+        .args(["--json", "/bin/sh", "-c", "exit 1"])
         .output()
         .expect("mish should run");
 
@@ -165,7 +165,7 @@ fn test_11_json_mode_failure_exit_code() {
 #[serial(pty)]
 fn test_12_json_category_is_condense() {
     let output = mish()
-        .args(&["--json", "echo", "test"])
+        .args(["--json", "echo", "test"])
         .output()
         .expect("mish should run");
 
@@ -183,7 +183,7 @@ fn test_12_json_category_is_condense() {
 #[serial(pty)]
 fn test_13_json_optional_fields_absent() {
     let output = mish()
-        .args(&["--json", "echo", "test"])
+        .args(["--json", "echo", "test"])
         .output()
         .expect("mish should run");
 
@@ -210,7 +210,7 @@ fn test_13_json_optional_fields_absent() {
 #[serial(pty)]
 fn test_14_context_mode_single_line() {
     let output = mish()
-        .args(&["--context", "echo", "hello"])
+        .args(["--context", "echo", "hello"])
         .output()
         .expect("mish should run");
 
@@ -240,7 +240,7 @@ fn test_14_context_mode_single_line() {
 #[serial(pty)]
 fn test_15_context_mode_failure_shows_err() {
     let output = mish()
-        .args(&["--context", "/bin/sh", "-c", "exit 1"])
+        .args(["--context", "/bin/sh", "-c", "exit 1"])
         .output()
         .expect("mish should run");
 
@@ -262,7 +262,7 @@ fn test_15_context_mode_failure_shows_err() {
 #[serial(pty)]
 fn test_16_passthrough_mode_has_summary() {
     mish()
-        .args(&["--passthrough", "echo", "hello"])
+        .args(["--passthrough", "echo", "hello"])
         .assert()
         .success()
         .stdout(predicate::str::contains("mish summary"));
@@ -276,7 +276,7 @@ fn test_16_passthrough_mode_has_summary() {
 #[serial(pty)]
 fn test_17_compound_and_both_run_on_success() {
     let output = mish()
-        .args(&["echo", "first", "&&", "echo", "second"])
+        .args(["echo", "first", "&&", "echo", "second"])
         .output()
         .expect("mish should run");
 
@@ -291,7 +291,7 @@ fn test_17_compound_and_both_run_on_success() {
 #[serial(pty)]
 fn test_18_compound_and_skips_on_failure() {
     let output = mish()
-        .args(&[
+        .args([
             "/bin/sh",
             "-c",
             "exit 1",
@@ -313,7 +313,7 @@ fn test_18_compound_and_skips_on_failure() {
 #[serial(pty)]
 fn test_19_compound_or_fallback_runs() {
     let output = mish()
-        .args(&["/bin/sh", "-c", "exit 1", "||", "echo", "fallback"])
+        .args(["/bin/sh", "-c", "exit 1", "||", "echo", "fallback"])
         .output()
         .expect("mish should run");
 
@@ -328,7 +328,7 @@ fn test_19_compound_or_fallback_runs() {
 #[serial(pty)]
 fn test_20_compound_seq_both_always_run() {
     let output = mish()
-        .args(&["echo", "first", ";", "echo", "second"])
+        .args(["echo", "first", ";", "echo", "second"])
         .output()
         .expect("mish should run");
 
@@ -344,7 +344,7 @@ fn test_20_compound_seq_both_always_run() {
 fn test_21_compound_exit_code_from_last_segment() {
     // echo ok ; exit 1 — last segment fails, should propagate exit 1
     mish()
-        .args(&["echo", "ok", ";", "/bin/sh", "-c", "exit 1"])
+        .args(["echo", "ok", ";", "/bin/sh", "-c", "exit 1"])
         .assert()
         .code(1);
 }
@@ -357,7 +357,7 @@ fn test_21_compound_exit_code_from_last_segment() {
 #[serial(pty)]
 fn test_22_long_output_condensed() {
     let output = mish()
-        .args(&[
+        .args([
             "/bin/sh",
             "-c",
             "for i in $(seq 1 100); do echo \"line $i of output\"; done",
@@ -380,7 +380,7 @@ fn test_22_long_output_condensed() {
 #[serial(pty)]
 fn test_23_long_output_shows_line_count() {
     mish()
-        .args(&[
+        .args([
             "/bin/sh",
             "-c",
             "for i in $(seq 1 50); do echo \"line $i\"; done",
@@ -404,7 +404,7 @@ fn test_24_no_args_exits_with_error() {
 #[serial(pty)]
 fn test_25_command_not_found() {
     mish()
-        .args(&["nonexistent_command_xyz_123"])
+        .args(["nonexistent_command_xyz_123"])
         .assert()
         .failure();
 }
@@ -413,7 +413,7 @@ fn test_25_command_not_found() {
 #[serial(pty)]
 fn test_26_stderr_captured_through_pty() {
     mish()
-        .args(&["/bin/sh", "-c", "echo err_output >&2"])
+        .args(["/bin/sh", "-c", "echo err_output >&2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("err_output"));
@@ -423,7 +423,7 @@ fn test_26_stderr_captured_through_pty() {
 #[serial(pty)]
 fn test_27_multiline_output_has_content() {
     let output = mish()
-        .args(&["/bin/sh", "-c", "echo alpha; echo bravo"])
+        .args(["/bin/sh", "-c", "echo alpha; echo bravo"])
         .output()
         .expect("mish should run");
 
@@ -451,7 +451,7 @@ fn test_28_cp_with_tempfile() {
     fs::write(&src, "hello world").unwrap();
 
     mish()
-        .args(&[
+        .args([
             "cp",
             src.to_str().unwrap(),
             dst.to_str().unwrap(),
@@ -469,7 +469,7 @@ fn test_29_mkdir_with_tempdir() {
     let nested = dir.path().join("a/b/c");
 
     mish()
-        .args(&["mkdir", "-p", nested.to_str().unwrap()])
+        .args(["mkdir", "-p", nested.to_str().unwrap()])
         .assert()
         .success();
 
@@ -485,7 +485,7 @@ fn test_30_rm_with_tempfile() {
     assert!(target.exists());
 
     mish()
-        .args(&["rm", target.to_str().unwrap()])
+        .args(["rm", target.to_str().unwrap()])
         .assert()
         .success();
 
@@ -500,7 +500,7 @@ fn test_30_rm_with_tempfile() {
 #[serial(pty)]
 fn test_31_cp_nonexistent_source_fails() {
     mish()
-        .args(&["cp", "/nonexistent_path_xyz/src.txt", "/tmp/dst.txt"])
+        .args(["cp", "/nonexistent_path_xyz/src.txt", "/tmp/dst.txt"])
         .assert()
         .failure();
 }
@@ -513,7 +513,7 @@ fn test_31_cp_nonexistent_source_fails() {
 #[serial(pty)]
 fn test_32_json_compound_produces_valid_json() {
     let output = mish()
-        .args(&["--json", "echo", "a", ";", "echo", "b"])
+        .args(["--json", "echo", "a", ";", "echo", "b"])
         .output()
         .expect("mish should run");
 
@@ -544,7 +544,7 @@ fn test_32_json_compound_produces_valid_json() {
 fn test_33_empty_output_command() {
     // `true` produces no output — verify graceful handling
     mish()
-        .args(&["true"])
+        .args(["true"])
         .assert()
         .success()
         .stdout(predicate::str::contains("exit 0"));
@@ -555,7 +555,7 @@ fn test_33_empty_output_command() {
 fn test_34_binary_safe_output() {
     // Write some bytes via printf, verify no crash
     mish()
-        .args(&["/bin/sh", "-c", "printf 'hello\\x00world\\n'"])
+        .args(["/bin/sh", "-c", "printf 'hello\\x00world\\n'"])
         .assert()
         .success();
 }
@@ -565,7 +565,7 @@ fn test_34_binary_safe_output() {
 fn test_35_rapid_exit() {
     // Command that exits immediately with no output
     mish()
-        .args(&["/bin/sh", "-c", "exit 0"])
+        .args(["/bin/sh", "-c", "exit 0"])
         .assert()
         .success();
 }
@@ -580,7 +580,7 @@ fn test_36_unknown_flags_passed_to_command() {
     // `mish echo --foo bar` should run `echo --foo bar` — the --foo flag
     // should be passed through to echo, not consumed by mish.
     let output = mish()
-        .args(&["echo", "--foo", "bar"])
+        .args(["echo", "--foo", "bar"])
         .output()
         .expect("mish should run");
 
@@ -605,7 +605,7 @@ fn test_36_unknown_flags_passed_to_command() {
 fn test_37_double_dash_flags_passed_through() {
     // Flags with values like --loglevel=warn should pass through
     let output = mish()
-        .args(&["echo", "--loglevel=warn", "hello"])
+        .args(["echo", "--loglevel=warn", "hello"])
         .output()
         .expect("mish should run");
 
@@ -626,7 +626,7 @@ fn test_38_json_flag_after_command_not_consumed() {
     // so it should be part of the command args, not consumed as mish's --json flag.
     // The output should be in human mode (not JSON), with --json in the echoed text.
     let output = mish()
-        .args(&["echo", "--json", "hello"])
+        .args(["echo", "--json", "hello"])
         .output()
         .expect("mish should run");
 
@@ -652,7 +652,7 @@ fn test_39_npm_install_parsing() {
     // Bead spec: "mish npm install lodash" → command=["npm","install","lodash"]
     // Verify the command string appears correctly in JSON output
     let output = mish()
-        .args(&["--json", "/bin/sh", "-c", "exit 0"])
+        .args(["--json", "/bin/sh", "-c", "exit 0"])
         .output()
         .expect("mish should run");
 
@@ -675,7 +675,7 @@ fn test_40_json_flag_extraction() {
     // Bead spec: "mish --json npm test" → output_mode=JSON, command=["npm","test"]
     // Since npm may not be available, use echo as proxy
     let output = mish()
-        .args(&["--json", "echo", "test"])
+        .args(["--json", "echo", "test"])
         .output()
         .expect("mish should run");
 
@@ -698,7 +698,7 @@ fn test_40_json_flag_extraction() {
 #[serial(pty)]
 fn test_48_pipeline_echo_grep() {
     let output = mish()
-        .args(&["echo", "hello world", "|", "grep", "hello"])
+        .args(["echo", "hello world", "|", "grep", "hello"])
         .output()
         .expect("mish should run pipeline");
 
@@ -715,7 +715,7 @@ fn test_48_pipeline_echo_grep() {
 #[serial(pty)]
 fn test_49_pipeline_multi_stage() {
     let output = mish()
-        .args(&["echo", "hello", "world", "|", "wc", "-w"])
+        .args(["echo", "hello", "world", "|", "wc", "-w"])
         .output()
         .expect("mish should run multi-stage pipeline");
 
@@ -732,7 +732,7 @@ fn test_49_pipeline_multi_stage() {
 #[serial(pty)]
 fn test_50_pipeline_exit_code_from_last() {
     mish()
-        .args(&["echo", "hello", "|", "grep", "nonexistent_xyz_pattern"])
+        .args(["echo", "hello", "|", "grep", "nonexistent_xyz_pattern"])
         .assert()
         .code(1);
 }
@@ -741,7 +741,7 @@ fn test_50_pipeline_exit_code_from_last() {
 #[serial(pty)]
 fn test_51_pipeline_passthrough_category() {
     let output = mish()
-        .args(&["--json", "echo", "hello", "|", "cat"])
+        .args(["--json", "echo", "hello", "|", "cat"])
         .output()
         .expect("mish should run pipeline in JSON mode");
 
@@ -761,7 +761,7 @@ fn test_51_pipeline_passthrough_category() {
 #[serial(pty)]
 fn test_52_pipeline_context_mode() {
     let output = mish()
-        .args(&["--context", "echo", "hello", "|", "cat"])
+        .args(["--context", "echo", "hello", "|", "cat"])
         .output()
         .expect("mish should run pipeline in context mode");
 
@@ -782,7 +782,7 @@ fn test_52_pipeline_context_mode() {
 #[serial(pty)]
 fn test_53_compound_and_chain_sequential() {
     let output = mish()
-        .args(&["echo", "aaa", "&&", "echo", "bbb", "&&", "echo", "ccc"])
+        .args(["echo", "aaa", "&&", "echo", "bbb", "&&", "echo", "ccc"])
         .output()
         .expect("mish should run");
 
@@ -797,7 +797,7 @@ fn test_53_compound_and_chain_sequential() {
 #[serial(pty)]
 fn test_54_compound_and_stops_on_failure() {
     let output = mish()
-        .args(&["/bin/sh", "-c", "exit 1", "&&", "echo", "should_not_appear"])
+        .args(["/bin/sh", "-c", "exit 1", "&&", "echo", "should_not_appear"])
         .output()
         .expect("mish should run");
 
@@ -812,7 +812,7 @@ fn test_54_compound_and_stops_on_failure() {
 #[serial(pty)]
 fn test_55_compound_or_continues_on_failure() {
     let output = mish()
-        .args(&["/bin/sh", "-c", "exit 1", "||", "echo", "fallback_value"])
+        .args(["/bin/sh", "-c", "exit 1", "||", "echo", "fallback_value"])
         .output()
         .expect("mish should run");
 
@@ -828,7 +828,7 @@ fn test_55_compound_or_continues_on_failure() {
 #[serial(pty)]
 fn test_56_compound_or_skips_on_success() {
     let output = mish()
-        .args(&["echo", "ok", "||", "echo", "should_not_appear"])
+        .args(["echo", "ok", "||", "echo", "should_not_appear"])
         .output()
         .expect("mish should run");
 
@@ -843,7 +843,7 @@ fn test_56_compound_or_skips_on_success() {
 #[serial(pty)]
 fn test_57_compound_seq_unconditional() {
     let output = mish()
-        .args(&["/bin/sh", "-c", "exit 1", ";", "echo", "always_runs"])
+        .args(["/bin/sh", "-c", "exit 1", ";", "echo", "always_runs"])
         .output()
         .expect("mish should run");
 
@@ -859,7 +859,7 @@ fn test_57_compound_seq_unconditional() {
 #[serial(pty)]
 fn test_58_compound_mixed_operators() {
     let output = mish()
-        .args(&[
+        .args([
             "echo", "first_val", "&&", "echo", "second_val", ";", "echo", "third_val",
         ])
         .output()
@@ -875,7 +875,7 @@ fn test_58_compound_mixed_operators() {
 #[serial(pty)]
 fn test_59_compound_mixed_with_failure() {
     let output = mish()
-        .args(&[
+        .args([
             "/bin/sh", "-c", "exit 1", "&&", "echo", "skip_this", ";", "echo", "always_this",
         ])
         .output()
@@ -905,7 +905,7 @@ fn test_59_compound_mixed_with_failure() {
 fn test_60_git_status_runs_successfully() {
     // Run git status in the mish repo (which is a git repo)
     let output = mish()
-        .args(&["git", "status"])
+        .args(["git", "status"])
         .output()
         .expect("mish should run git status");
 
@@ -923,7 +923,7 @@ fn test_60_git_status_runs_successfully() {
 #[serial(pty)]
 fn test_61_git_status_json_has_valid_structure() {
     let output = mish()
-        .args(&["--json", "git", "status"])
+        .args(["--json", "git", "status"])
         .output()
         .expect("mish should run git status in JSON mode");
 
@@ -943,7 +943,7 @@ fn test_61_git_status_json_has_valid_structure() {
 #[serial(pty)]
 fn test_62_git_status_context_mode() {
     let output = mish()
-        .args(&["--context", "git", "status"])
+        .args(["--context", "git", "status"])
         .output()
         .expect("mish should run git status in context mode");
 
@@ -976,7 +976,7 @@ fn test_63_dangerous_rm_rf_shows_warning() {
     // The warning symbol ⚠ should appear in stderr (prompt) and the
     // formatted output should contain the warning.
     let output = mish()
-        .args(&["rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
+        .args(["rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
         .output()
         .expect("mish should handle dangerous command");
 
@@ -996,7 +996,7 @@ fn test_64_dangerous_category_in_json() {
     // CLI mode prompts for confirmation — but since no stdin is available,
     // it defaults to denied. The JSON output should reflect the category.
     let output = mish()
-        .args(&["--json", "rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
+        .args(["--json", "rm", "-rf", "/tmp/mish_test_nonexistent_xyz"])
         .output()
         .expect("mish should handle dangerous command in JSON mode");
 
@@ -1027,7 +1027,7 @@ fn test_64_dangerous_category_in_json() {
 #[serial(pty)]
 fn test_65_ls_passthrough_category() {
     let output = mish()
-        .args(&["--json", "ls"])
+        .args(["--json", "ls"])
         .output()
         .expect("mish should run ls");
 
@@ -1052,7 +1052,7 @@ fn test_66_ls_la_shows_files() {
     fs::write(&file, "content").unwrap();
 
     let output = mish()
-        .args(&["ls", "-la", dir.path().to_str().unwrap()])
+        .args(["ls", "-la", dir.path().to_str().unwrap()])
         .output()
         .expect("mish should run ls -la");
 
@@ -1074,7 +1074,7 @@ fn test_67_cat_passthrough_shows_contents() {
     fs::write(&file, "unique_test_content_12345\n").unwrap();
 
     let output = mish()
-        .args(&["cat", file.to_str().unwrap()])
+        .args(["cat", file.to_str().unwrap()])
         .output()
         .expect("mish should run cat");
 
@@ -1096,7 +1096,7 @@ fn test_68_cat_passthrough_category_json() {
     fs::write(&file, "json_cat_test\n").unwrap();
 
     let output = mish()
-        .args(&["--json", "cat", file.to_str().unwrap()])
+        .args(["--json", "cat", file.to_str().unwrap()])
         .output()
         .expect("mish should run cat in JSON mode");
 
@@ -1126,7 +1126,7 @@ fn test_69_cp_narrate_category_json() {
     fs::write(&src, "copy me").unwrap();
 
     let output = mish()
-        .args(&[
+        .args([
             "--json",
             "cp",
             src.to_str().unwrap(),
@@ -1156,7 +1156,7 @@ fn test_70_mkdir_narrate_category_json() {
     let nested = dir.path().join("x/y/z");
 
     let output = mish()
-        .args(&["--json", "mkdir", "-p", nested.to_str().unwrap()])
+        .args(["--json", "mkdir", "-p", nested.to_str().unwrap()])
         .output()
         .expect("mish should run mkdir in JSON mode");
 
@@ -1182,7 +1182,7 @@ fn test_70_mkdir_narrate_category_json() {
 #[serial(pty)]
 fn test_71_unknown_command_condense_category() {
     let output = mish()
-        .args(&["--json", "/bin/sh", "-c", "echo condense_test"])
+        .args(["--json", "/bin/sh", "-c", "echo condense_test"])
         .output()
         .expect("mish should run");
 

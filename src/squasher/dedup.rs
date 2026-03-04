@@ -1,6 +1,6 @@
-/// Deduplication engine.
-///
-/// Template-based dedup: groups similar lines and emits counts.
+//! Deduplication engine.
+//!
+//! Template-based dedup: groups similar lines and emits counts.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;

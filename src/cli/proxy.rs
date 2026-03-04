@@ -1,10 +1,10 @@
-/// CLI proxy entry point.
-///
-/// Parses the command, invokes the category router, and formats terminal output.
-/// Handles compound commands (split on &&, ||, ;) and output mode flags.
-///
-/// Also provides an async event loop (`run_interactive_loop`) for signal
-/// handling and stdin forwarding when commands need interactive I/O.
+//! CLI proxy entry point.
+//!
+//! Parses the command, invokes the category router, and formats terminal output.
+//! Handles compound commands (split on &&, ||, ;) and output mode flags.
+//!
+//! Also provides an async event loop (`run_interactive_loop`) for signal
+//! handling and stdin forwarding when commands need interactive I/O.
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -486,11 +486,11 @@ fn query_terminal_size() -> (u16, u16) {
     };
 
     unsafe {
-        if nix::libc::ioctl(nix::libc::STDOUT_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1 {
-            if nix::libc::ioctl(nix::libc::STDERR_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1 {
-                ws.ws_row = 24;
-                ws.ws_col = 80;
-            }
+        if nix::libc::ioctl(nix::libc::STDOUT_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1
+            && nix::libc::ioctl(nix::libc::STDERR_FILENO, nix::libc::TIOCGWINSZ, &mut ws) == -1
+        {
+            ws.ws_row = 24;
+            ws.ws_col = 80;
         }
     }
 

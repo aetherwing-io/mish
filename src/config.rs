@@ -44,7 +44,7 @@ impl From<std::io::Error> for ConfigError {
 // ---------------------------------------------------------------------------
 
 /// Top-level mish configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MishConfig {
     pub server: ServerConfig,
     pub squasher: SquasherConfig,
@@ -101,6 +101,7 @@ pub struct AuditConfig {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct PolicyConfig {
     pub auto_confirm: Vec<AutoConfirmRule>,
     pub yield_to_operator: Vec<YieldToOperatorRule>,
@@ -215,15 +216,6 @@ impl Default for AuditConfig {
     }
 }
 
-impl Default for PolicyConfig {
-    fn default() -> Self {
-        Self {
-            auto_confirm: Vec::new(),
-            yield_to_operator: Vec::new(),
-            forbidden: Vec::new(),
-        }
-    }
-}
 
 impl Default for HandoffConfig {
     fn default() -> Self {
@@ -234,21 +226,6 @@ impl Default for HandoffConfig {
     }
 }
 
-impl Default for MishConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            squasher: SquasherConfig::default(),
-            yield_config: YieldConfig::default(),
-            timeout_defaults: TimeoutDefaults::default(),
-            watch_presets: HashMap::new(),
-            audit: AuditConfig::default(),
-            policy: PolicyConfig::default(),
-            handoff: HandoffConfig::default(),
-            sandbox: None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Serde intermediate structs (raw TOML representation)

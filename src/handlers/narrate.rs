@@ -119,8 +119,6 @@ fn narrate_cp(
 
     let note = if pre.dest_exists {
         "overwritten"
-    } else if post.size_match {
-        "ok"
     } else {
         "ok"
     };

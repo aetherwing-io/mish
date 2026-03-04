@@ -1,5 +1,5 @@
-/// Integration tests for the 5 tool grammars (npm, cargo, git, docker, make),
-/// shared grammar inheritance, summary formatting, and load_all_grammars.
+//! Integration tests for the 5 tool grammars (npm, cargo, git, docker, make),
+//! shared grammar inheritance, summary formatting, and load_all_grammars.
 
 use std::collections::HashMap;
 use std::path::Path;

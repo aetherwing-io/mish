@@ -1,7 +1,7 @@
-/// Progress bar detection and removal.
-///
-/// Detects CR-based overwrite patterns and collapses spinner/progress frames.
-/// Works on already-assembled Line types from the line buffer.
+//! Progress bar detection and removal.
+//!
+//! Detects CR-based overwrite patterns and collapses spinner/progress frames.
+//! Works on already-assembled Line types from the line buffer.
 
 use crate::core::line_buffer::Line;
 

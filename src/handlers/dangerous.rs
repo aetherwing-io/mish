@@ -1,7 +1,7 @@
-/// Dangerous handler — mode-aware.
-///
-/// CLI: warn on terminal -> prompt human -> maybe execute.
-/// MCP: return structured warning -> policy engine -> LLM decides or escalates.
+//! Dangerous handler — mode-aware.
+//!
+//! CLI: warn on terminal -> prompt human -> maybe execute.
+//! MCP: return structured warning -> policy engine -> LLM decides or escalates.
 
 use crate::policy::config::CompiledPolicy;
 use crate::policy::matcher::{check_forbidden, PolicyDecision};

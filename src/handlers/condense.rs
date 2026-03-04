@@ -1,12 +1,12 @@
-/// Condense handler — full pipeline integration.
-///
-/// Two paths process the same raw PTY output:
-/// - **Streaming**: LineBuffer → Classifier → EmitBuffer → Summary (outcomes, hazards)
-/// - **Batch**: raw Lines → Pipeline::process(Condense) → cleaned output (VTE strip,
-///   progress removal, dedup, truncation) — consistent with the MCP sh_run path.
-///
-/// This is the primary handler for verbose command output. It spawns a command
-/// in a PTY, feeds output through both paths, and returns the combined result.
+//! Condense handler — full pipeline integration.
+//!
+//! Two paths process the same raw PTY output:
+//! - **Streaming**: LineBuffer -> Classifier -> EmitBuffer -> Summary (outcomes, hazards)
+//! - **Batch**: raw Lines -> Pipeline::process(Condense) -> cleaned output (VTE strip,
+//!   progress removal, dedup, truncation) -- consistent with the MCP sh_run path.
+//!
+//! This is the primary handler for verbose command output. It spawns a command
+//! in a PTY, feeds output through both paths, and returns the combined result.
 
 use std::io::Write;
 use std::os::unix::io::AsFd;
@@ -111,11 +111,11 @@ impl TerminalGuard {
         use std::io;
 
         let stdin_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
-        let original_termios = tcgetattr(&stdin_fd)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("tcgetattr: {e}")))?;
+        let original_termios = tcgetattr(stdin_fd)
+            .map_err(|e| io::Error::other(format!("tcgetattr: {e}")))?;
 
         let flags = fcntl(libc::STDIN_FILENO, FcntlArg::F_GETFL)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("fcntl F_GETFL: {e}")))?;
+            .map_err(|e| io::Error::other(format!("fcntl F_GETFL: {e}")))?;
         let original_stdin_flags = OFlag::from_bits_truncate(flags);
 
         Ok(Self {
@@ -132,7 +132,7 @@ impl Drop for TerminalGuard {
 
         // Restore termios
         let stdin_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
-        let _ = tcsetattr(&stdin_fd, SetArg::TCSANOW, &self.original_termios);
+        let _ = tcsetattr(stdin_fd, SetArg::TCSANOW, &self.original_termios);
 
         // Restore stdin flags (remove O_NONBLOCK if we added it)
         let _ = fcntl(libc::STDIN_FILENO, FcntlArg::F_SETFL(self.original_stdin_flags));
@@ -250,9 +250,9 @@ pub fn handle(
                     let stdin_fd = unsafe {
                         std::os::unix::io::BorrowedFd::borrow_raw(libc::STDIN_FILENO)
                     };
-                    if let Ok(mut raw_termios) = nix::sys::termios::tcgetattr(&stdin_fd) {
+                    if let Ok(mut raw_termios) = nix::sys::termios::tcgetattr(stdin_fd) {
                         cfmakeraw(&mut raw_termios);
-                        let _ = tcsetattr(&stdin_fd, SetArg::TCSANOW, &raw_termios);
+                        let _ = tcsetattr(stdin_fd, SetArg::TCSANOW, &raw_termios);
                     }
 
                     // Set stdin to non-blocking for poll-based forwarding
@@ -950,7 +950,7 @@ failure = "! compile failed"
             .filter(|l| l.contains("... "))
             .collect();
         assert!(
-            flush_markers.len() >= 1,
+            !flush_markers.is_empty(),
             "expected at least 1 intermediate flush marker from silence gap, \
              hazard_lines: {:?}",
             result.summary.hazard_lines

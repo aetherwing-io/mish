@@ -106,11 +106,8 @@ impl TestServer {
     /// Uses a short poll timeout to drain any buffered output.
     fn drain_stdout_nonblocking(&mut self) -> String {
         let mut collected = String::new();
-        loop {
-            match self.read_line_timeout(100) {
-                Some(line) => collected.push_str(&line),
-                None => break,
-            }
+        while let Some(line) = self.read_line_timeout(100) {
+            collected.push_str(&line);
         }
         collected
     }
@@ -276,7 +273,7 @@ fn test_every_stdout_line_is_valid_jsonrpc() {
         ("initialize response", line1),
         ("tools/list response", line2),
     ];
-    for (_i, line) in remaining.lines().enumerate() {
+    for line in remaining.lines() {
         if !line.trim().is_empty() {
             all_lines.push(("post-shutdown", line.to_string()));
         }

@@ -1,6 +1,6 @@
-/// Squasher pipeline orchestration.
-///
-/// VTE strip -> progress removal -> dedup -> truncation -> output
+//! Squasher pipeline orchestration.
+//!
+//! VTE strip -> progress removal -> dedup -> truncation -> output
 
 use crate::core::grammar::BlockRule;
 use crate::core::line_buffer::Line;
@@ -980,7 +980,7 @@ mod tests {
         let result = pipe.process(lines, Category::Condense);
 
         assert!(!result.metrics.binary_detected, "normal text should not trigger binary detection");
-        assert!(result.output.len() >= 1, "should produce output");
+        assert!(!result.output.is_empty(), "should produce output");
     }
 
     #[test]

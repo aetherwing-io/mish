@@ -407,6 +407,7 @@ impl AuditLogger {
     ///
     /// When disabled or `raw_output` is `None`, the entry is logged without
     /// a sidecar and `raw_output_sha256` is `None`.
+    #[allow(clippy::too_many_arguments)]
     pub fn log_command_with_raw(
         &mut self,
         session: String,
@@ -479,7 +480,7 @@ impl AuditLogger {
         // Compress with zstd and write.
         let sidecar_path = sidecar_dir.join(format!("{seq:03}.raw.zst"));
         let compressed = zstd::encode_all(data, 3)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(&sidecar_path, &compressed)?;
 
         Ok(hash)

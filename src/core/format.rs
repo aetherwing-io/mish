@@ -1,7 +1,7 @@
-/// Output formatting.
-///
-/// Modes: human (default), json, passthrough, context.
-/// Provides status symbols and mode-specific renderers for command results.
+//! Output formatting.
+//!
+//! Modes: human (default), json, passthrough, context.
+//! Provides status symbols and mode-specific renderers for command results.
 
 use serde::Serialize;
 
@@ -10,9 +10,10 @@ use serde::Serialize;
 // ---------------------------------------------------------------------------
 
 /// Output mode controlling how results are displayed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputMode {
     /// Status symbols + indented body (default).
+    #[default]
     Human,
     /// Structured JSON envelope.
     Json,
@@ -20,12 +21,6 @@ pub enum OutputMode {
     Passthrough,
     /// Ultra-compressed single line for LLM context.
     Context,
-}
-
-impl Default for OutputMode {
-    fn default() -> Self {
-        OutputMode::Human
-    }
 }
 
 /// A hazard/warning from command output.

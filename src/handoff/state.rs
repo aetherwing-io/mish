@@ -70,6 +70,7 @@ impl std::fmt::Display for HandoffError {
 impl std::error::Error for HandoffError {}
 
 /// Manages all active handoff sessions.
+#[derive(Default)]
 pub struct HandoffManager {
     /// Active handoffs keyed by handoff_id.
     entries: HashMap<String, HandoffEntry>,
@@ -89,11 +90,7 @@ fn random_hex_128() -> String {
 
 impl HandoffManager {
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            reference_map: HashMap::new(),
-            alias_map: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Create a new handoff for the given process alias.

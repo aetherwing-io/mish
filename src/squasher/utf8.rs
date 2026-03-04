@@ -1,6 +1,6 @@
-/// Streaming UTF-8 decoder.
-///
-/// Handles multi-byte characters split across buffer boundaries.
+//! Streaming UTF-8 decoder.
+//!
+//! Handles multi-byte characters split across buffer boundaries.
 
 /// Decodes raw bytes into valid UTF-8 strings, carrying over incomplete
 /// multi-byte sequences across buffer boundaries.

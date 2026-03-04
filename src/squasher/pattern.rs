@@ -1,7 +1,7 @@
-/// Watch regex matching and presets.
-///
-/// Filters output by regex patterns. Presets: @errors, @npm, etc.
-/// Provides WatchFilter for higher-level filtering with unmatched line handling.
+//! Watch regex matching and presets.
+//!
+//! Filters output by regex patterns. Presets: @errors, @npm, etc.
+//! Provides WatchFilter for higher-level filtering with unmatched line handling.
 
 use regex::Regex;
 use std::fmt;
@@ -16,22 +16,18 @@ pub struct PatternMatcher {
 pub struct Presets;
 
 /// What to do with lines that don't match any watch pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnmatchedMode {
     /// Count unmatched lines and produce a summary (default).
+    #[default]
     Squash,
     /// Discard unmatched lines entirely.
     Drop,
 }
 
-impl Default for UnmatchedMode {
-    fn default() -> Self {
-        UnmatchedMode::Squash
-    }
-}
-
 impl UnmatchedMode {
     /// Parse from string. Returns None for invalid values.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "squash" => Some(UnmatchedMode::Squash),

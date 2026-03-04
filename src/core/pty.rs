@@ -101,15 +101,15 @@ impl PtyCapture {
                     let col = CString::new(winsize.ws_col.to_string()).unwrap();
                     let row = CString::new(winsize.ws_row.to_string()).unwrap();
                     let term = CString::new("xterm-256color").unwrap();
-                    libc::setenv(b"COLUMNS\0".as_ptr().cast(), col.as_ptr(), 1);
-                    libc::setenv(b"LINES\0".as_ptr().cast(), row.as_ptr(), 1);
-                    libc::setenv(b"TERM\0".as_ptr().cast(), term.as_ptr(), 1);
+                    libc::setenv(c"COLUMNS".as_ptr(), col.as_ptr(), 1);
+                    libc::setenv(c"LINES".as_ptr(), row.as_ptr(), 1);
+                    libc::setenv(c"TERM".as_ptr(), term.as_ptr(), 1);
 
                     // Suppress pagers — mish PTYs are non-interactive.
                     let cat = CString::new("cat").unwrap();
-                    libc::setenv(b"PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
-                    libc::setenv(b"GIT_PAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
-                    libc::setenv(b"MANPAGER\0".as_ptr().cast(), cat.as_ptr(), 1);
+                    libc::setenv(c"PAGER".as_ptr(), cat.as_ptr(), 1);
+                    libc::setenv(c"GIT_PAGER".as_ptr(), cat.as_ptr(), 1);
+                    libc::setenv(c"MANPAGER".as_ptr(), cat.as_ptr(), 1);
 
                     // Suppress zsh PROMPT_SP no-newline indicator.
                     // When command output doesn't end with a newline, zsh prints
@@ -118,7 +118,7 @@ impl PtyCapture {
                     // Setting PROMPT_EOL_MARK="" makes the marker invisible.
                     let empty = CString::new("").unwrap();
                     libc::setenv(
-                        b"PROMPT_EOL_MARK\0".as_ptr().cast(),
+                        c"PROMPT_EOL_MARK".as_ptr(),
                         empty.as_ptr(),
                         1,
                     );
@@ -379,8 +379,7 @@ impl PtyCapture {
             }
         })
         .await
-        .unwrap_or_else(|e| Err(PtyError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        .unwrap_or_else(|e| Err(PtyError::Io(std::io::Error::other(
             format!("spawn_blocking join error: {e}"),
         ))))
     }
@@ -390,23 +389,17 @@ impl Drop for PtyCapture {
     fn drop(&mut self) {
         // OwnedFd will close the master fd on drop.
         // Try to reap the child — send SIGTERM first, then SIGKILL if needed.
-        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::StillAlive) => {
-                // Child still running — send SIGTERM and wait briefly.
-                let _ = kill(self.child_pid, Signal::SIGTERM);
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => {
-                        // Still alive after SIGTERM — escalate to SIGKILL.
-                        let _ = kill(self.child_pid, Signal::SIGKILL);
-                        // Block until reaped. SIGKILL is guaranteed to terminate,
-                        // so this won't hang. WNOHANG here would race and leave zombies.
-                        let _ = waitpid(self.child_pid, None);
-                    }
-                    _ => {} // Reaped or error — done.
-                }
+        if let Ok(WaitStatus::StillAlive) = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+            // Child still running — send SIGTERM and wait briefly.
+            let _ = kill(self.child_pid, Signal::SIGTERM);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if let Ok(WaitStatus::StillAlive) = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                // Still alive after SIGTERM — escalate to SIGKILL.
+                let _ = kill(self.child_pid, Signal::SIGKILL);
+                // Block until reaped. SIGKILL is guaranteed to terminate,
+                // so this won't hang. WNOHANG here would race and leave zombies.
+                let _ = waitpid(self.child_pid, None);
             }
-            _ => {} // Already exited, already reaped, or error — done.
         }
     }
 }
@@ -422,12 +415,12 @@ fn get_terminal_size() -> Winsize {
 
     unsafe {
         // Try stdout first, then stderr
-        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == -1 {
-            if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == -1 {
-                // Fallback to 80x24
-                ws.ws_row = 24;
-                ws.ws_col = 80;
-            }
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == -1
+            && libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == -1
+        {
+            // Fallback to 80x24
+            ws.ws_row = 24;
+            ws.ws_col = 80;
         }
     }
 

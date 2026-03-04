@@ -1,6 +1,6 @@
-/// Emit buffer — accumulates classified lines and flushes on triggers.
-///
-/// Flush triggers: process exit, hazard detected, prompt detected, silence, periodic timer.
+//! Emit buffer — accumulates classified lines and flushes on triggers.
+//!
+//! Flush triggers: process exit, hazard detected, prompt detected, silence, periodic timer.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};

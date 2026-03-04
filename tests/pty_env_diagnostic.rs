@@ -422,6 +422,7 @@ fn make_socketpair() -> (OwnedFd, OwnedFd) {
 /// Run diagnostic using unix socketpairs instead of POSIX pipes for stdio.
 /// This matches Bun's spawn behavior — Bun uses AF_UNIX SOCK_STREAM socket
 /// pairs, not pipe() — isolating whether the fd type is the differentiator.
+#[allow(clippy::zombie_processes)]
 fn run_diagnostic_socketpair() -> DiagResult<String> {
     let (parent_w, child_r) = make_socketpair();       // stdin:  parent writes → child reads
     let (child_w_out, parent_r_out) = make_socketpair(); // stdout: child writes → parent reads
@@ -510,7 +511,7 @@ fn run_diagnostic_socketpair() -> DiagResult<String> {
 fn run_diagnostic_bun() -> DiagResult<String> {
     // Check bun availability
     let bun_check = Command::new("bun").arg("--version").output();
-    if bun_check.as_ref().map(|o| o.status.success()).unwrap_or(false) == false {
+    if !bun_check.as_ref().map(|o| o.status.success()).unwrap_or(false) {
         return Err(DiagError {
             message: "bun not found in PATH (install: https://bun.sh)".to_string(),
             elapsed: Duration::ZERO,

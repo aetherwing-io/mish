@@ -29,6 +29,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex as TokioMutex;
 
+/// Type alias for the PTY fd lookup callback used by the control server.
+type PtyFdLookup = Box<dyn Fn(&str) -> Option<RawFd> + Send + Sync>;
+
 use super::state::{HandoffError, HandoffManager};
 
 // ---------------------------------------------------------------------------
@@ -201,7 +204,7 @@ pub struct ControlServerState {
     pub handoff_manager: TokioMutex<HandoffManager>,
     /// Callback to get a PTY master fd for a given alias.
     /// Returns (raw_fd, spool_read_fn) or None if alias not found.
-    pub pty_fd_lookup: Box<dyn Fn(&str) -> Option<RawFd> + Send + Sync>,
+    pub pty_fd_lookup: PtyFdLookup,
 }
 
 /// Unix domain socket server for the mish control protocol.
@@ -740,9 +743,8 @@ mod tests {
         let dir = socket_dir(99999);
         assert_eq!(dir, PathBuf::from("/tmp/mish/99999"));
 
-        match original {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => {}
+        if let Some(v) = original {
+            std::env::set_var("XDG_RUNTIME_DIR", v);
         }
     }
 
@@ -757,9 +759,8 @@ mod tests {
         let path = socket_path(42);
         assert_eq!(path, PathBuf::from("/tmp/mish/42/control.sock"));
 
-        match original {
-            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
-            None => {}
+        if let Some(v) = original {
+            std::env::set_var("XDG_RUNTIME_DIR", v);
         }
     }
 
@@ -1259,7 +1260,7 @@ mod tests {
 
     #[test]
     fn attach_error_from_io() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let attach_err: AttachError = io_err.into();
         assert!(matches!(attach_err, AttachError::Io(_)));
     }

@@ -1,13 +1,13 @@
 pub mod categories;
 
-/// Top-level category routing.
-///
-/// command -> grammar lookup -> categorize -> dispatch to handler
-///
-/// The router is the central dispatch layer for both CLI proxy and MCP server modes.
-/// It loads grammar for the command, runs preflight if applicable, categorizes the
-/// command, dispatches to the appropriate handler, and optionally runs error enrichment
-/// on failure.
+// Top-level category routing.
+//
+// command -> grammar lookup -> categorize -> dispatch to handler
+//
+// The router is the central dispatch layer for both CLI proxy and MCP server modes.
+// It loads grammar for the command, runs preflight if applicable, categorizes the
+// command, dispatches to the appropriate handler, and optionally runs error enrichment
+// on failure.
 
 use std::collections::HashMap;
 
@@ -78,11 +78,7 @@ pub fn route(
 
     // 2. Run preflight if grammar exists (may modify command args)
     let mut cmd = command.to_vec();
-    let preflight_result = if let Some(g) = grammar {
-        Some(preflight(&mut cmd, g, action, mode))
-    } else {
-        None
-    };
+    let preflight_result = grammar.map(|g| preflight(&mut cmd, g, action, mode));
 
     // 3. Categorize the command
     let category = categorize(&cmd, grammars, categories_config, dangerous_patterns);

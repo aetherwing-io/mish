@@ -225,29 +225,14 @@ impl ShellProcess {
                     // Try to detect boundaries in the accumulated buffer.
                     // Each time we find one, consume it and reset the buffer
                     // to what comes after.
-                    loop {
-                        if let Some(result) = self.boundary.detect_boundary(&buffer, None) {
-                            boundaries_seen += 1;
-                            if !result.cwd.is_empty() {
-                                self.cwd = result.cwd;
-                            }
-
-                            if boundaries_seen >= target_boundaries {
-                                // Clear buffer — we're done
-                                buffer.clear();
-                                break;
-                            }
-
-                            // Remove the consumed boundary from the buffer.
-                            // The detect_boundary returns cleaned output; we need
-                            // to reset to check for more boundaries. Since the
-                            // regex-based detection consumes markers, we can just
-                            // clear and continue reading.
-                            buffer.clear();
-                            break;
-                        } else {
-                            break;
+                    if let Some(result) = self.boundary.detect_boundary(&buffer, None) {
+                        boundaries_seen += 1;
+                        if !result.cwd.is_empty() {
+                            self.cwd = result.cwd;
                         }
+
+                        // Clear buffer whether done or continuing
+                        buffer.clear();
                     }
 
                     if boundaries_seen >= target_boundaries {

@@ -1,7 +1,7 @@
-/// Error enrichment on failure.
-///
-/// Pre-fetches diagnostics the LLM would request next: path walks, stat, permissions.
-/// Budget: <100ms total, read-only, non-speculative.
+//! Error enrichment on failure.
+//!
+//! Pre-fetches diagnostics the LLM would request next: path walks, stat, permissions.
+//! Budget: <100ms total, read-only, non-speculative.
 
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
@@ -636,8 +636,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let mut prev = vec![0usize; n + 1];
     let mut curr = vec![0usize; n + 1];
 
-    for j in 0..=n {
-        prev[j] = j;
+    for (j, slot) in prev.iter_mut().enumerate().take(n + 1) {
+        *slot = j;
     }
 
     for i in 1..=m {
@@ -1117,7 +1117,7 @@ pub fn enrich(
                 None
             },
             dest_parent_exists: dst.parent().map(|p| p.exists()).unwrap_or(false),
-            dest_parent_info: dst.parent().map(|p| stat::file_info(p)),
+            dest_parent_info: dst.parent().map(stat::file_info),
         };
 
         let src_mark = if fod.source_exists { "\u{2713}" } else { "\u{2717}" };

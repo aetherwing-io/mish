@@ -67,13 +67,19 @@ pub struct StdioTransport<R, W> {
     writer: W,
 }
 
-impl StdioTransport<tokio::io::BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
-    /// Create a new transport using real stdin/stdout.
-    pub fn new() -> Self {
+impl Default for StdioTransport<tokio::io::BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
+    fn default() -> Self {
         StdioTransport {
             reader: tokio::io::BufReader::new(tokio::io::stdin()),
             writer: tokio::io::stdout(),
         }
+    }
+}
+
+impl StdioTransport<tokio::io::BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
+    /// Create a new transport using real stdin/stdout.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
