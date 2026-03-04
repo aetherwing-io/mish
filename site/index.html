@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mish — The LLM-native shell</title>
+<meta name="description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<meta property="og:title" content="mish — The LLM-native shell">
+<meta property="og:description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://ohitsmish.com">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="mish — The LLM-native shell">
+<meta name="twitter:description" content="Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2316161d'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='64' y2='64' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%234f8fff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ctext x='32' y='43' text-anchor='middle' font-family='monospace' font-size='24' font-weight='700' fill='url(%23g)'%3E%CE%BC%7Csh%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Outfit:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --violet: #8b5cf6;
+    --indigo: #6d5ce7;
+    --blue: #4f8fff;
+    --shift: linear-gradient(135deg, #8b5cf6 0%, #6d5ce7 40%, #4f8fff 100%);
+    --shift-text: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    --void: #09090b;
+    --deep: #0f0f13;
+    --surface: #16161d;
+    --elevated: #1e1e28;
+    --border: #2a2a38;
+    --muted: #55556a;
+    --secondary: #8888a0;
+    --text: #c4c4d4;
+    --bright: #ededf4;
+    --white: #f8f8fc;
+    --success: #34d399;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --lavender: #e0a4ff;
+    --mono: 'Geist Mono', 'SF Mono', monospace;
+    --sans: 'Outfit', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--void);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 48px;
+  }
+
+  /* Gradient text utilities */
+  .g {
+    background: linear-gradient(135deg, #8b5cf6 0%, #4f8fff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .gt {
+    background: linear-gradient(135deg, #a78bfa 0%, #7db4ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Section headers */
+  .section { margin-bottom: 100px; }
+  .section-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-bottom: 28px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .section-num::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .section-title {
+    font-family: var(--sans);
+    font-size: 28px;
+    font-weight: 300;
+    color: var(--bright);
+    letter-spacing: -0.5px;
+    margin-bottom: 16px;
+  }
+  .section-title strong {
+    font-weight: 600;
+    background: var(--shift-text);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .section-desc {
+    font-size: 15px;
+    color: var(--secondary);
+    max-width: 560px;
+    margin-bottom: 36px;
+    line-height: 1.7;
+  }
+
+  /* Terminal mockup */
+  .term {
+    background: var(--deep);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--surface);
+    gap: 8px;
+  }
+  .td { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+  .term-bar:hover .td:nth-child(1) { background: #ff5f57; }
+  .term-bar:hover .td:nth-child(2) { background: #ffbd2e; }
+  .term-bar:hover .td:nth-child(3) { background: #28ca42; }
+  .term-title { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .term-body {
+    padding: 24px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .tp { color: var(--violet); }
+  .tc { color: var(--bright); }
+  .tf { color: var(--blue); }
+  .ta { color: var(--lavender); }
+  .tm { color: var(--muted); font-style: italic; }
+  .to { color: var(--secondary); }
+  .tok { color: var(--success); }
+  .terr { color: var(--error); }
+  .tw { color: var(--warn); }
+  .cursor-blink {
+    display: inline-block;
+    width: 8px; height: 16px;
+    background: var(--violet);
+    opacity: 0.7;
+    animation: blink 1.1s step-end infinite;
+    vertical-align: text-bottom;
+    border-radius: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Spec table */
+  .spec-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 14px;
+    background: var(--surface);
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .spec-table th {
+    text-align: left;
+    padding: 14px 20px;
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+  }
+  .spec-table td {
+    padding: 16px 20px;
+    color: var(--text);
+    border-bottom: 1px solid rgba(42,42,56,0.4);
+  }
+  .spec-table td.val { color: var(--violet); font-weight: 600; }
+  .spec-table tr:last-child td { border-bottom: none; }
+  .spec-table .how {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--secondary);
+    font-weight: 300;
+  }
+  .spec-table .scenario {
+    color: var(--bright);
+    font-weight: 500;
+  }
+
+  /* Hero */
+  .hero {
+    padding: 160px 48px 120px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    width: 700px;
+    height: 700px;
+    border-radius: 50%;
+    background: rgba(139, 92, 246, 0.035);
+    filter: blur(120px);
+    top: -250px;
+    right: -150px;
+    pointer-events: none;
+  }
+  .hero::after {
+    content: '';
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    background: rgba(79, 143, 255, 0.025);
+    filter: blur(120px);
+    bottom: -200px;
+    left: -150px;
+    pointer-events: none;
+  }
+  .hero-inner {
+    position: relative;
+    z-index: 1;
+  }
+  .hero-wordmark {
+    font-family: var(--mono);
+    font-size: 80px;
+    font-weight: 700;
+    letter-spacing: -4px;
+    color: var(--bright);
+    line-height: 1;
+    margin-bottom: 20px;
+  }
+  .hero-wordmark .mu {
+    background: var(--shift-text);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero-tag {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 3px;
+    color: var(--muted);
+    text-transform: lowercase;
+    margin-bottom: 40px;
+  }
+  .hero-desc {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 300;
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 480px;
+    margin: 0 auto 48px;
+  }
+  .hero-cta {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  /* Buttons */
+  a { color: inherit; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 28px;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+  .btn-ghost {
+    border: 1px solid var(--border);
+    color: var(--bright);
+    background: transparent;
+  }
+  .btn-ghost:hover {
+    border-color: var(--violet);
+    background: rgba(139, 92, 246, 0.06);
+  }
+  .btn-text {
+    color: var(--secondary);
+    padding: 12px 16px;
+  }
+  .btn-text:hover { color: var(--bright); }
+
+  /* Card grid */
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .card {
+    padding: 28px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .card-symbol {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .card h3 {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--bright);
+  }
+  .card p {
+    font-size: 13px;
+    color: var(--secondary);
+    line-height: 1.6;
+  }
+
+  /* Feature grid */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .feature-card {
+    padding: 28px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    transition: border-color 0.2s;
+  }
+  .feature-card:hover {
+    border-color: rgba(139, 92, 246, 0.25);
+  }
+  .feature-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--violet);
+    margin-bottom: 12px;
+  }
+  .feature-card h3 {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--bright);
+    margin-bottom: 8px;
+  }
+  .feature-card p {
+    font-size: 13px;
+    color: var(--secondary);
+    line-height: 1.6;
+  }
+
+  /* Mockup stack */
+  .mockup-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 32px;
+  }
+  .mockup-note {
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--text);
+    margin-top: 12px;
+    margin-bottom: 12px;
+    font-weight: 300;
+  }
+
+  /* Install note */
+  .install-note {
+    font-family: var(--sans);
+    font-size: 15px;
+    color: var(--secondary);
+    margin-top: 28px;
+    text-align: center;
+  }
+  .install-note strong {
+    color: var(--bright);
+    font-weight: 500;
+  }
+
+  /* Section link */
+  .section-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--secondary);
+    text-decoration: none;
+    margin-top: 28px;
+    transition: color 0.2s;
+  }
+  .section-link:hover { color: var(--bright); }
+
+  /* Footer */
+  .site-footer {
+    border-top: 1px solid var(--border);
+    padding: 48px 0;
+    margin-top: 48px;
+  }
+  .footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .footer-mark {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .footer-icon {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .footer-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .footer-links {
+    display: flex;
+    gap: 24px;
+    list-style: none;
+  }
+  .footer-links a {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--secondary);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+  .footer-links a:hover { color: var(--bright); }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .hero { padding: 100px 24px 80px; }
+    .hero-wordmark { font-size: 52px; letter-spacing: -2px; }
+    .hero-tag { font-size: 11px; letter-spacing: 2px; }
+    .hero-desc { font-size: 15px; }
+    .container { padding: 0 24px; }
+    .section { margin-bottom: 72px; }
+    .section-title { font-size: 22px; }
+    .card-grid,
+    .feature-grid,
+    .mockup-grid { grid-template-columns: 1fr; }
+    .spec-table { font-size: 12px; }
+    .spec-table th, .spec-table td { padding: 10px 14px; }
+    .term-body { font-size: 11px; padding: 16px; }
+    .footer-inner { flex-direction: column; gap: 24px; text-align: center; }
+    .footer-links { flex-wrap: wrap; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-wordmark"><span class="mu">&#x3BC;</span>ish</div>
+    <div class="hero-tag">the llm-native shell</div>
+    <p class="hero-desc">Structured output, pre-fetched diagnostics, and purpose-built command routing. One binary between your agent and the OS.</p>
+    <div class="hero-cta">
+      <a href="https://github.com/mish-sh/mish" class="btn btn-ghost">Source</a>
+      <a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md" class="btn btn-text">Benchmarks &#8594;</a>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- 01 THE PROBLEM -->
+  <section class="section">
+    <div class="section-num">01 THE PROBLEM</div>
+    <h2 class="section-title">Agents talk to your OS through a <strong>straw</strong></h2>
+    <p class="section-desc">Every tool call consumes tokens. Raw shell gives your agent walls of text, no metadata, and zero help when things break.</p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-symbol" style="color: var(--error);">!</span>
+          <h3>Verbose</h3>
+        </div>
+        <p>Test suites dump thousands of lines into context. The only one that matters is at the bottom.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-symbol" style="color: var(--error);">!</span>
+          <h3>Blind</h3>
+        </div>
+        <p>Commands fail with a bare error. Your agent burns four more calls just figuring out why.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-symbol" style="color: var(--warn);">?</span>
+          <h3>Silent</h3>
+        </div>
+        <p>Success returns empty string. No exit code. No timing. No confirmation it worked.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-symbol" style="color: var(--warn);">&#x26A0;</span>
+          <h3>Unguarded</h3>
+        </div>
+        <p>Destructive commands execute without pause. No classification. No escalation. No safety net.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 THE RECEIPTS -->
+  <section class="section">
+    <div class="section-num">02 THE RECEIPTS</div>
+    <h2 class="section-title">Measured, <strong>not promised</strong></h2>
+    <p class="section-desc">Same commands. Same machine. Same session. mish vs bare shell on a real Rust codebase.</p>
+    <table class="spec-table">
+      <thead>
+        <tr><th>Scenario</th><th>Reduction</th><th>How</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="scenario">Full test suite</td>
+          <td class="val">6.6&#215;</td>
+          <td class="how">Dedup + Oreo truncation &#8212; head and tail kept, repetitive middle dropped</td>
+        </tr>
+        <tr>
+          <td class="scenario">Test suite + watch</td>
+          <td class="val">440&#215;</td>
+          <td class="how">Only regex-matched lines return</td>
+        </tr>
+        <tr>
+          <td class="scenario">Failed command</td>
+          <td class="val">5&#8594;1 round trips</td>
+          <td class="how">Path walks, permissions, nearest dirs &#8212; pre-fetched on failure</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="mockup-stack">
+
+      <!-- 1: Build with dedup + recommendation -->
+      <div class="term">
+        <div class="term-bar">
+          <div class="td"></div><div class="td"></div><div class="td"></div>
+          <div class="term-title">sh_run &#8212; cargo build</div>
+        </div>
+        <div class="term-body">{
+  <span class="tf">"exit_code"</span>: <span class="tok">0</span>,
+  <span class="tf">"duration_ms"</span>: <span class="tc">1183</span>,
+  <span class="tf">"category"</span>: <span class="ta">"condense"</span>,
+  <span class="tf">"output"</span>: <span class="ta">"Compiling mish v0.1.0
+    warning: field is never read <span class="tw">(&#215;3)</span>
+      --> src/mcp/server.rs:71:5
+      --> src/session/shell.rs:89:5
+      --> src/tools/sh_spawn.rs:371:4
+    Finished `dev` profile in 0.98s"</span>,
+  <span class="tf">"recommendations"</span>: [
+    { <span class="tf">"flag"</span>: <span class="ta">"--message-format=json"</span>, <span class="tf">"reason"</span>: <span class="ta">"quieter output"</span> }
+  ]
+}</div>
+      </div>
+      <p class="mockup-note">Three identical warning structures collapsed to one. Next-run flag suggested.</p>
+
+      <!-- 2: Test suite with Oreo truncation -->
+      <div class="term">
+        <div class="term-bar">
+          <div class="td"></div><div class="td"></div><div class="td"></div>
+          <div class="term-title">sh_run &#8212; cargo test --lib</div>
+        </div>
+        <div class="term-body">{
+  <span class="tf">"exit_code"</span>: <span class="tok">0</span>,
+  <span class="tf">"duration_ms"</span>: <span class="tc">22263</span>,
+  <span class="tf">"category"</span>: <span class="ta">"condense"</span>,
+  <span class="tf">"lines"</span>: { <span class="tf">"total"</span>: <span class="tc">1319</span>, <span class="tf">"shown"</span>: <span class="tc">201</span> },
+  <span class="tf">"output"</span>: <span class="ta">"running 1289 tests
+    test audit::logger::tests::command_record ... ok <span class="tw">(&#215;2)</span>
+    test audit::logger::tests::serialization ... ok <span class="tw">(&#215;3)</span>
+    ...
+    <span class="tm">&#183;&#183;&#183; [594 lines truncated &#8212; 0 errors in hidden region] &#183;&#183;&#183;</span>
+    ...
+    test yield_engine::detector::tests::yield_state ... ok
+    test result: ok. 1289 passed; 0 failed; finished in 21.97s"</span>
+}</div>
+      </div>
+      <p class="mockup-note">Head and tail preserved. Hidden region scanned for errors. Repeated patterns collapsed.</p>
+
+      <!-- 3: Watch filter -->
+      <div class="term">
+        <div class="term-bar">
+          <div class="td"></div><div class="td"></div><div class="td"></div>
+          <div class="term-title">sh_run &#8212; cargo test --lib &#8212; watch=<span style="color:var(--lavender);">"warning"</span></div>
+        </div>
+        <div class="term-body">{
+  <span class="tf">"exit_code"</span>: <span class="tok">0</span>,
+  <span class="tf">"duration_ms"</span>: <span class="tc">22316</span>,
+  <span class="tf">"lines"</span>: { <span class="tf">"total"</span>: <span class="tc">1319</span>, <span class="tf">"shown"</span>: <span class="tc">3</span> },
+  <span class="tf">"matched_lines"</span>: [
+    <span class="ta">"warning: field `config` is never read"</span>,
+    <span class="ta">"warning: field `shell_path` is never read"</span>,
+    <span class="ta">"warning: `mish` (lib test) generated 2 warnings"</span>
+  ]
+}</div>
+      </div>
+      <p class="mockup-note">Same test suite. Same 1,319 lines executed. Three returned.</p>
+
+      <!-- 4: Error enrichment -->
+      <div class="term">
+        <div class="term-bar">
+          <div class="td"></div><div class="td"></div><div class="td"></div>
+          <div class="term-title">sh_run &#8212; cp /tmp/missing.txt /var/log/dest/</div>
+        </div>
+        <div class="term-body">{
+  <span class="tf">"exit_code"</span>: <span class="terr">1</span>,
+  <span class="tf">"category"</span>: <span class="ta">"narrate"</span>,
+  <span class="tf">"output"</span>: <span class="ta">"cp: /var/log/dest does not exist"</span>,
+  <span class="tf">"enrichment"</span>: [
+    { <span class="tf">"kind"</span>: <span class="ta">"source"</span>,  <span class="tf">"message"</span>: <span class="ta">"missing.txt</span> <span class="terr">&#x2717; not found</span><span class="ta">"</span> },
+    { <span class="tf">"kind"</span>: <span class="ta">"path"</span>,    <span class="tf">"message"</span>: <span class="ta">"/var/log</span> <span class="tok">&#x2713;</span>  <span class="ta">/var/log/dest</span> <span class="terr">&#x2717;</span><span class="ta">"</span> },
+    { <span class="tf">"kind"</span>: <span class="ta">"parent"</span>,  <span class="tf">"message"</span>: <span class="ta">"rwxr-xr-x</span> <span class="tok">&#x2713;</span><span class="ta">"</span> },
+    { <span class="tf">"kind"</span>: <span class="ta">"nearest"</span>, <span class="tf">"message"</span>: <span class="ta">"apache2/, asl/, cups/, ..."</span> }
+  ]
+}</div>
+      </div>
+      <p class="mockup-note">One call. Source checked, path walked, permissions verified, nearby dirs listed.</p>
+
+    </div>
+
+    <a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md" class="section-link">Full benchmark data &#8594;</a>
+  </section>
+
+  <!-- 03 CAPABILITIES -->
+  <section class="section">
+    <div class="section-num">03 CAPABILITIES</div>
+    <h2 class="section-title">What <strong>one binary</strong> gives your agent</h2>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-label">Metadata</div>
+        <h3>Structured on every response</h3>
+        <p>Exit code, timing, and command category. Your agent never parses raw text to know what happened.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Compression</div>
+        <h3>Output squashing</h3>
+        <p>ANSI stripping, progress removal, dedup, Oreo truncation. The noisy middle disappears. Head and tail survive.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Diagnostics</div>
+        <h3>Error enrichment</h3>
+        <p>When commands fail, mish pre-walks paths, checks permissions, and lists nearby files &#8212; before your agent has to ask.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Filtering</div>
+        <h3>Watch patterns</h3>
+        <p>Regex filters at the source, not in the context window. A full test suite returns only the lines that match.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Lifecycle</div>
+        <h3>Process supervision</h3>
+        <p>Named handles, output spools, wait-for-ready. The process table rides along on every response for free.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-label">Routing</div>
+        <h3>6-category classification</h3>
+        <p>condense, narrate, passthrough, structured, interactive, dangerous. Every command gets the handler it deserves.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 INSTALL -->
+  <section class="section">
+    <div class="section-num">04 INSTALL</div>
+    <h2 class="section-title">Three steps to <strong>five tools</strong></h2>
+
+    <div class="term">
+      <div class="term-bar">
+        <div class="td"></div><div class="td"></div><div class="td"></div>
+        <div class="term-title">build + install</div>
+      </div>
+      <div class="term-body"><span class="tp">$</span> <span class="tc">cargo build --release</span>
+<span class="tp">$</span> <span class="tc">ln -sf</span> <span class="ta">"$(pwd)/target/release/mish"</span> <span class="tf">/usr/local/bin/mish</span></div>
+    </div>
+
+    <div class="term" style="margin-top: 16px;">
+      <div class="term-bar">
+        <div class="td"></div><div class="td"></div><div class="td"></div>
+        <div class="term-title">~/.claude/.mcp.json</div>
+      </div>
+      <div class="term-body">{
+  <span class="tf">"mcpServers"</span>: {
+    <span class="tf">"mish"</span>: {
+      <span class="tf">"command"</span>: <span class="ta">"mish"</span>,
+      <span class="tf">"args"</span>: [<span class="ta">"serve"</span>]
+    }
+  }
+}</div>
+    </div>
+
+    <p class="install-note">Restart Claude Code. <strong>Five tools appear.</strong></p>
+  </section>
+
+</main>
+
+<!-- Footer -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-mark">
+        <span class="footer-icon gt">&#x3BC;|sh</span>
+        <span class="footer-meta">MIT License</span>
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/mish-sh/mish">GitHub</a></li>
+        <li><a href="https://github.com/mish-sh/mish/blob/main/docs/SHOWCASE.md">Showcase</a></li>
+        <li><a href="https://github.com/mish-sh/mish/blob/main/docs/ARCHITECTURE.md">Docs</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
