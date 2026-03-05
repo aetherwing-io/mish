@@ -89,6 +89,7 @@ pub struct Action {
     pub outcome: Vec<Rule>,
     pub summary: SummaryTemplate,
     pub llm_hints: Vec<LlmHint>,
+    pub category: Option<Category>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +163,8 @@ pub struct EnrichActionConfig {
 pub struct LlmHint {
     pub prefer: String,
     pub reason: String,
+    /// Optional mode filter: "mcp", "cli", or None (emit in both modes).
+    pub mode: Option<String>,
 }
 
 /// A block compression rule for collapsing multi-line diagnostic blocks
@@ -250,6 +253,8 @@ struct RawRule {
 struct RawLlmHint {
     prefer: String,
     reason: String,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -266,6 +271,8 @@ struct RawAction {
     summary: Option<RawSummaryTemplate>,
     #[serde(default)]
     llm_hints: Vec<RawLlmHint>,
+    #[serde(default)]
+    category: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -447,8 +454,9 @@ impl TryFrom<RawAction> for Action {
         let llm_hints = raw
             .llm_hints
             .into_iter()
-            .map(|h| LlmHint { prefer: h.prefer, reason: h.reason })
+            .map(|h| LlmHint { prefer: h.prefer, reason: h.reason, mode: h.mode })
             .collect();
+        let category = raw.category.as_deref().map(parse_category).transpose()?;
         Ok(Action {
             detect,
             noise,
@@ -456,6 +464,7 @@ impl TryFrom<RawAction> for Action {
             outcome,
             summary,
             llm_hints,
+            category,
         })
     }
 }
@@ -539,7 +548,7 @@ fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
     let llm_hints = raw
         .llm_hints
         .into_iter()
-        .map(|h| LlmHint { prefer: h.prefer, reason: h.reason })
+        .map(|h| LlmHint { prefer: h.prefer, reason: h.reason, mode: h.mode })
         .collect();
 
     Ok(Grammar {

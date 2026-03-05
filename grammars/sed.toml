@@ -1,0 +1,13 @@
+[tool]
+name = "sed"
+detect = ["sed"]
+
+[[llm_hints]]
+prefer = "ss_session('read <path>')"
+reason = "for viewing files, slipstream reads directly — for targeted ranges, read full file and slice"
+mode = "mcp"
+
+[[llm_hints]]
+prefer = "ss 'read <path>'"
+reason = "for viewing files, slipstream reads directly — for targeted ranges, read full file and slice"
+mode = "cli"

@@ -1,0 +1,11 @@
+[tool]
+name = "python3"
+detect = ["python3", "python"]
+
+[actions.oneliner]
+detect = ["-c"]
+category = "passthrough"
+
+[actions.module]
+detect = ["-m"]
+category = "passthrough"

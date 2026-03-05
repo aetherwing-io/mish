@@ -101,12 +101,18 @@ pub async fn handle(
         active_processes: process_table.active_count(),
     };
 
+    let tips = vec![
+        "File reads: prefer ss_session('read <path>') over sh_run('cat/sed/head') — faster, no squashing".to_string(),
+        "File edits: prefer ss(path, old, new) over sh_run('sed -i ...') — atomic, no shell escaping".to_string(),
+    ];
+
     Ok(ShHelpResponse {
         tools,
         watch_presets,
         squasher_defaults,
         resource_limits,
         resource_usage,
+        tips,
     })
 }
 

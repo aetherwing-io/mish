@@ -32,11 +32,11 @@ pattern = "chmod\\s+.*777"
 reason = "World-writable permissions"
 
 [[patterns]]
-pattern = "dd\\s+"
+pattern = "(?:^|&&|\\|\\||;|\\|)\\s*dd\\s+"
 reason = "Direct disk write — can overwrite filesystems"
 
 [[patterns]]
-pattern = "mkfs\\."
+pattern = "(?:^|&&|\\|\\||;|\\|)\\s*mkfs\\."
 reason = "Filesystem format — destroys all data on target"
 
 [[patterns]]

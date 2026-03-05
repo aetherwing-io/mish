@@ -25,6 +25,17 @@ pub struct PipelineMetrics {
     pub binary_detected: bool,
 }
 
+/// Detected content type of the output, used to bypass dedup for high-value content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentType {
+    /// Repetitive build/install output — full pipeline
+    Normal,
+    /// Unified diff format — skip dedup
+    Diff,
+    /// >80% unique lines — skip dedup
+    HighEntropy,
+}
+
 /// Configuration for the squasher pipeline.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
@@ -285,15 +296,28 @@ impl Pipeline {
     }
 
     /// Full condense pipeline: VTE strip -> progress -> dedup -> truncation.
+    ///
+    /// Detects content type first: if the output is a diff or high-entropy
+    /// (>80% unique lines), dedup and truncation are skipped to avoid
+    /// destroying high-value content like source code or diffs.
     fn process_condense(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
-        for line in raw_lines {
-            self.feed(line);
-        }
-        let (output, metrics) = self.finalize_with_metrics();
-        PipelineResult {
-            output,
-            metrics,
-            category,
+        let content_type = detect_content_type(&raw_lines);
+        match content_type {
+            ContentType::Normal => {
+                for line in raw_lines {
+                    self.feed(line);
+                }
+                let (output, metrics) = self.finalize_with_metrics();
+                PipelineResult {
+                    output,
+                    metrics,
+                    category,
+                }
+            }
+            ContentType::Diff | ContentType::HighEntropy => {
+                // Skip dedup and truncation — VTE strip + progress removal only
+                self.process_vte_strip_only(raw_lines, category)
+            }
         }
     }
 
@@ -327,6 +351,12 @@ impl Pipeline {
         }
     }
 
+    /// Check if this pipeline's content type would be high-entropy.
+    /// Public for use by external callers that need the detection result.
+    pub fn detect_content_type_for(lines: &[Line]) -> ContentType {
+        detect_content_type(lines)
+    }
+
     /// Raw passthrough: return lines unchanged, no processing at all.
     fn process_raw_passthrough(
         &mut self,
@@ -352,6 +382,61 @@ impl Pipeline {
             category,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Content-type detection
+// ---------------------------------------------------------------------------
+
+/// Minimum number of lines for high-entropy detection to activate.
+/// Below this threshold, output is too small to reliably distinguish
+/// source code from short build output.
+const HIGH_ENTROPY_MIN_LINES: usize = 20;
+
+/// Detect the content type of output lines to decide whether dedup should run.
+///
+/// - **Diff**: presence of `diff --git` or `--- a/` header AND >30% of lines
+///   start with `+` or `-`
+/// - **HighEntropy**: >80% unique templates after dedup-style normalization
+///   (numbers, hashes, URLs, paths all collapsed). Only activates for 20+ lines.
+/// - **Normal**: everything else (repetitive build/install output)
+fn detect_content_type(lines: &[Line]) -> ContentType {
+    if lines.is_empty() {
+        return ContentType::Normal;
+    }
+
+    let texts: Vec<&str> = lines.iter().map(|l| match l {
+        Line::Complete(s) | Line::Partial(s) | Line::Overwrite(s) => s.as_str(),
+    }).collect();
+
+    // Check for diff format
+    let has_diff_header = texts.iter().any(|l|
+        l.starts_with("diff --git") || l.starts_with("--- a/") || l.starts_with("--- b/")
+    );
+    if has_diff_header {
+        let diff_lines = texts.iter().filter(|l|
+            l.starts_with('+') || l.starts_with('-')
+        ).count();
+        if diff_lines as f64 / texts.len() as f64 > 0.30 {
+            return ContentType::Diff;
+        }
+    }
+
+    // Check for high entropy using template normalization.
+    // This prevents false positives on repetitive build output like
+    // "Downloading pkg1", "Downloading pkg2" which normalize to the same template.
+    if texts.len() >= HIGH_ENTROPY_MIN_LINES {
+        let dedup = DedupEngine::new();
+        let mut unique_templates = std::collections::HashSet::new();
+        for text in &texts {
+            unique_templates.insert(dedup.tokenize(text));
+        }
+        if unique_templates.len() as f64 / texts.len() as f64 > 0.80 {
+            return ContentType::HighEntropy;
+        }
+    }
+
+    ContentType::Normal
 }
 
 #[cfg(test)]

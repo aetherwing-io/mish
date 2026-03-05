@@ -93,11 +93,18 @@ pub async fn handle(
     let detected_grammar = detected.as_ref().map(|(g, _)| *g);
 
     // Capture llm_hints before detected is consumed by preflight.
+    // Filter out CLI-only hints (mode="cli") — MCP mode emits MCP-form and mode-agnostic hints.
     let tool_hints: Vec<LlmHint> = detected.as_ref()
-        .map(|(g, _)| g.llm_hints.clone()).unwrap_or_default();
+        .map(|(g, _)| g.llm_hints.iter()
+            .filter(|h| h.mode.as_deref() != Some("cli"))
+            .cloned().collect())
+        .unwrap_or_default();
     let action_hints: Vec<LlmHint> = detected.as_ref()
         .and_then(|(_, a)| *a)
-        .map(|a| a.llm_hints.clone()).unwrap_or_default();
+        .map(|a| a.llm_hints.iter()
+            .filter(|h| h.mode.as_deref() != Some("cli"))
+            .cloned().collect())
+        .unwrap_or_default();
 
     // Run preflight to gather recommendations (advisory only in MCP mode).
     let preflight_recommendations = {

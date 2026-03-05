@@ -264,6 +264,8 @@ pub struct ShHelpResponse {
     pub squasher_defaults: SquasherDefaults,
     pub resource_limits: ResourceLimits,
     pub resource_usage: ResourceUsage,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -633,6 +635,7 @@ mod tests {
                 active_sessions: 1,
                 active_processes: 3,
             },
+            tips: vec![],
         };
 
         let json = serde_json::to_value(&resp).unwrap();

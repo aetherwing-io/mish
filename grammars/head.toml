@@ -1,0 +1,13 @@
+[tool]
+name = "head"
+detect = ["head"]
+
+[[llm_hints]]
+prefer = "ss_session('read <path>')"
+reason = "slipstream reads files directly with line offset/limit support"
+mode = "mcp"
+
+[[llm_hints]]
+prefer = "ss 'read <path>'"
+reason = "slipstream reads files directly with line offset/limit support"
+mode = "cli"

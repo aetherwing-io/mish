@@ -67,7 +67,15 @@ pub fn format_warning(cmd: &str, reason: &str) -> String {
 ///
 /// Returns true only if the user explicitly types "y" or "Y".
 /// Default (empty input, "n", "N", or anything else) is false.
+/// Auto-denies if stdin is not a terminal (defense-in-depth for piped input).
 fn prompt_confirmation(warning: &str) -> bool {
+    let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
+    if !is_tty {
+        eprintln!("{}", warning);
+        eprintln!("! stdin is not a terminal -- dangerous command auto-denied");
+        return false;
+    }
+
     eprint!("{} ", warning);
 
     let mut input = String::new();
@@ -218,11 +226,11 @@ mod tests {
                 reason: "Opens all permissions recursively".to_string(),
             },
             DangerousPattern {
-                pattern: Regex::new(r"^dd\s+").unwrap(),
+                pattern: Regex::new(r"(?:^|&&|\|\||;|\|)\s*dd\s+").unwrap(),
                 reason: "Direct disk write".to_string(),
             },
             DangerousPattern {
-                pattern: Regex::new(r"^mkfs\.").unwrap(),
+                pattern: Regex::new(r"(?:^|&&|\|\||;|\|)\s*mkfs\.").unwrap(),
                 reason: "Create filesystem (overwrites partition)".to_string(),
             },
         ]

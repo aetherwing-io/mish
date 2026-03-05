@@ -52,7 +52,7 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::core::grammar::Grammar;
+use crate::core::grammar::{Grammar, resolve_action};
 
 // ---------------------------------------------------------------------------
 // Display for Category
@@ -235,9 +235,9 @@ pub fn categorize(
         }
     }
 
-    // Step 2: Check grammar front matter category
+    // Step 2: Check action-level category, then grammar front matter category
     let cmd_name = &command[0];
-    if let Some((_grammar, category)) = find_grammar_category(cmd_name, grammars) {
+    if let Some((_grammar, category)) = find_grammar_category(cmd_name, command, grammars) {
         return category;
     }
 
@@ -250,13 +250,25 @@ pub fn categorize(
     Category::default()
 }
 
-/// Find the grammar for a command and return its declared category, if any.
+/// Find the grammar for a command and return its category, if any.
+///
+/// Resolution order:
+/// 1. Action-level category (e.g., `git diff` -> passthrough)
+/// 2. Grammar-level category (e.g., `git` -> structured)
 fn find_grammar_category<'a>(
     cmd_name: &str,
+    command: &[String],
     grammars: &'a HashMap<String, Grammar>,
 ) -> Option<(&'a Grammar, Category)> {
     for grammar in grammars.values() {
         if grammar.detect.iter().any(|d| d == cmd_name) {
+            // Check action-level category first
+            if let Some(action) = resolve_action(grammar, command) {
+                if let Some(cat) = action.category {
+                    return Some((grammar, cat));
+                }
+            }
+            // Fall back to grammar-level category
             if let Some(cat) = grammar.category {
                 return Some((grammar, cat));
             }

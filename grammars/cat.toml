@@ -1,0 +1,13 @@
+[tool]
+name = "cat"
+detect = ["cat"]
+
+[[llm_hints]]
+prefer = "ss_session('read <path>')"
+reason = "slipstream reads files directly — faster, no shell overhead"
+mode = "mcp"
+
+[[llm_hints]]
+prefer = "ss 'read <path>'"
+reason = "slipstream reads files directly — faster, no shell overhead"
+mode = "cli"

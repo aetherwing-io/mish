@@ -7,6 +7,7 @@ inherit = ["ansi-progress"]
 
 [actions.log]
 detect = ["log"]
+category = "passthrough"
 
 [[actions.log.llm_hints]]
 prefer = "--oneline -20"
@@ -25,10 +26,17 @@ reason = "one char/file vs prose; stable across git versions"
 
 [actions.diff]
 detect = ["diff"]
+category = "passthrough"
 
 [[actions.diff.llm_hints]]
 prefer = "--stat"
 reason = "file-level summary before reading full diff; O(files) not O(lines)"
+
+# ---- show action ----
+
+[actions.show]
+detect = ["show"]
+category = "passthrough"
 
 # ---- push action ----
 
