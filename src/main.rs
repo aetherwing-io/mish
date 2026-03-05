@@ -17,8 +17,12 @@ struct Cli {
     #[arg(long)]
     context: bool,
 
+    /// Print agent usage guide (patterns for LLM tool use)
+    #[arg(long)]
+    agents: bool,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -152,10 +156,24 @@ enum ConfigCommands {
 async fn main() {
     let cli = Cli::parse();
 
+    // --agents: print agent usage guide and exit.
+    if cli.agents {
+        print!("{}", mish::cli::agents::AGENT_GUIDE);
+        std::process::exit(0);
+    }
+
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            eprintln!("usage: mish <command> [args...] or mish serve");
+            std::process::exit(1);
+        }
+    };
+
     // In MCP serve mode, stdout is the JSON-RPC transport — tracing must
     // not write there.  Disable tracing entirely so nothing leaks to
     // stdout or stderr.  Other subcommands keep the default subscriber.
-    match &cli.command {
+    match &command {
         Commands::Serve { .. } => {
             // No tracing subscriber installed — all tracing macros become
             // no-ops.  This guarantees zero output on both stdout and stderr.
@@ -165,7 +183,7 @@ async fn main() {
         }
     }
 
-    match cli.command {
+    match command {
         Commands::Serve { config } => {
             if let Err(e) = mish::mcp::server::run_server(config.as_deref()).await {
                 eprintln!("mish serve: {e}");
