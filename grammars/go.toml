@@ -33,6 +33,10 @@ partial = "... building ({lines} lines)"
 [actions.test]
 detect = ["test"]
 
+[[actions.test.llm_hints]]
+prefer = "-json"
+reason = "structured JSON per test event; parseable without regex"
+
 [[actions.test.noise]]
 # Individual test run announcements
 pattern = '^=== RUN\s+'

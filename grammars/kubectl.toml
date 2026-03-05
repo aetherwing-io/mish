@@ -53,6 +53,10 @@ partial = "... applying ({lines} lines)"
 [actions.get]
 detect = ["get"]
 
+[[actions.get.llm_hints]]
+prefer = "-o json"
+reason = "structured output vs tabular; use -o name for minimal listing"
+
 [[actions.get.noise]]
 # Column headers (NAME, READY, STATUS, etc.)
 pattern = '^NAME\s+'

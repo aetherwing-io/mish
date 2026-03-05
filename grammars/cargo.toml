@@ -54,6 +54,10 @@ action = "strip"
 pattern = '^test .+ \.\.\. ok$'
 action = "dedup"
 
+[[actions.test.llm_hints]]
+prefer = "-- --nocapture"
+reason = "surfaces panic output suppressed by default"
+
 [[actions.test.outcome]]
 pattern = '^test result: ok\. (?P<passed>\d+) passed'
 action = "promote"

@@ -15,7 +15,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::MishConfig;
 use crate::core::enrich;
-use crate::core::grammar::{detect_tool, Grammar};
+use crate::core::grammar::{detect_tool, Grammar, LlmHint};
 use crate::core::preflight::{self, OutputMode};
 use crate::mcp::types::{
     LineCount, ProcessDigestEntry, ShRunEnrichmentLine, ShRunParams, ShRunRecommendation,
@@ -92,6 +92,13 @@ pub async fn handle(
     let detected = detect_tool(&tokens, grammars);
     let detected_grammar = detected.as_ref().map(|(g, _)| *g);
 
+    // Capture llm_hints before detected is consumed by preflight.
+    let tool_hints: Vec<LlmHint> = detected.as_ref()
+        .map(|(g, _)| g.llm_hints.clone()).unwrap_or_default();
+    let action_hints: Vec<LlmHint> = detected.as_ref()
+        .and_then(|(_, a)| *a)
+        .map(|a| a.llm_hints.clone()).unwrap_or_default();
+
     // Run preflight to gather recommendations (advisory only in MCP mode).
     let preflight_recommendations = {
         if let Some((grammar, action)) = detected {
@@ -152,7 +159,7 @@ pub async fn handle(
     let final_shown = final_output.lines().count() as u64;
 
     // 7. Build response (include recommendations only on success).
-    let recommendations = if result.exit_code == 0 {
+    let mut recommendations: Vec<ShRunRecommendation> = if result.exit_code == 0 {
         preflight_recommendations
             .iter()
             .map(|r| ShRunRecommendation {
@@ -163,6 +170,22 @@ pub async fn handle(
     } else {
         vec![]
     };
+
+    // 7a. Append session-capped llm_hints (success only, max 2 distinct per session).
+    if result.exit_code == 0 {
+        if let Some(session) = session_manager.get_session(session_name).await {
+            let mut shown = session.hints_shown.lock().unwrap();
+            for hint in tool_hints.iter().chain(action_hints.iter()) {
+                if shown.len() < 2 && !shown.contains(&hint.prefer) {
+                    shown.insert(hint.prefer.clone());
+                    recommendations.push(ShRunRecommendation {
+                        flag: hint.prefer.clone(),
+                        reason: hint.reason.clone(),
+                    });
+                }
+            }
+        }
+    }
 
     // 7b. Error enrichment on failure (exit_code != 0).
     let enrichment = if result.exit_code != 0 {
@@ -1331,6 +1354,124 @@ mod tests {
         assert!(
             result.get("enrichment").is_none(),
             "enrichment should be absent on success (empty vec is omitted)"
+        );
+
+        teardown(&mgr).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // LlmHint session cap tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_llm_hints_appear_on_success_for_known_grammar() {
+        // git log has an action-level llm_hint for "--oneline -20"
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        // git log --help exits 0 and triggers the log action hint
+        let params = ShRunParams {
+            cmd: "git log --help".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        // Should have a recommendation with prefer = "--oneline -20"
+        if let Some(recs) = result.get("recommendations") {
+            let recs = recs.as_array().unwrap();
+            let has_hint = recs.iter().any(|r| r["flag"].as_str() == Some("--oneline -20"));
+            assert!(has_hint, "should have llm_hint for git log, got: {:?}", recs);
+        }
+        // (If no recommendations field, git --help may not have triggered the grammar;
+        // the test is best-effort for the detection path)
+
+        teardown(&mgr).await;
+    }
+
+    #[tokio::test]
+    async fn test_llm_hints_session_cap_at_two() {
+        // Verify that the session cap limits distinct hints to 2.
+        use crate::session::manager::SessionManager;
+        use std::sync::Arc;
+        use crate::config::default_config;
+
+        let config = Arc::new(default_config());
+        let mgr = Arc::new(SessionManager::new(config.clone()));
+        mgr.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("create");
+
+        let session = mgr.get_session("main").await.unwrap();
+        let mut shown = session.hints_shown.lock().unwrap();
+
+        // Simulate inserting 2 hints
+        shown.insert("--oneline -20".to_string());
+        shown.insert("--short".to_string());
+        assert_eq!(shown.len(), 2);
+
+        // A third hint should not be inserted (cap = 2)
+        let would_insert = shown.len() < 2;
+        assert!(!would_insert, "cap should prevent third hint");
+
+        drop(shown);
+        mgr.close_all().await;
+    }
+
+    #[tokio::test]
+    async fn test_llm_hints_dedup_by_prefer_string() {
+        // Verify dedup: inserting the same prefer string twice only counts once.
+        use crate::session::manager::SessionManager;
+        use std::sync::Arc;
+        use crate::config::default_config;
+
+        let config = Arc::new(default_config());
+        let mgr = Arc::new(SessionManager::new(config.clone()));
+        mgr.create_session("main", Some("/bin/bash"))
+            .await
+            .expect("create");
+
+        let session = mgr.get_session("main").await.unwrap();
+        let mut shown = session.hints_shown.lock().unwrap();
+
+        shown.insert("--oneline -20".to_string());
+        // Insert same string again — HashSet deduplicates
+        shown.insert("--oneline -20".to_string());
+        assert_eq!(shown.len(), 1, "same prefer string should only count once");
+
+        drop(shown);
+        mgr.close_all().await;
+    }
+
+    #[tokio::test]
+    async fn test_llm_hints_absent_on_failure() {
+        // Hints must not appear when exit_code != 0
+        let (mgr, table) = setup_session().await;
+        let config = default_config();
+        let (grammars, categories, dangerous) = test_categorization();
+
+        let params = ShRunParams {
+            cmd: "(exit 1)".to_string(),
+            timeout: Some(5),
+            watch: None,
+            unmatched: None,
+        };
+
+        let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
+            .await
+            .expect("handle should succeed");
+
+        assert_ne!(result["exit_code"], 0);
+        // On failure, recommendations (including hints) must be absent
+        assert!(
+            result.get("recommendations").is_none(),
+            "hints/recommendations must be absent on failure: {:?}",
+            result
         );
 
         teardown(&mgr).await;

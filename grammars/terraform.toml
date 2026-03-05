@@ -3,6 +3,10 @@ name = "terraform"
 detect = ["terraform", "tf"]
 inherit = ["ansi-progress"]
 
+[[llm_hints]]
+prefer = "-no-color"
+reason = "removes ANSI from plan/apply; halves squasher work"
+
 [[global_noise]]
 # Resource action symbol legend
 pattern = '^Resource actions are indicated'

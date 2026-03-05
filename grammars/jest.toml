@@ -3,6 +3,10 @@ name = "jest"
 detect = ["jest", "npx jest", "react-scripts test"]
 inherit = ["ansi-progress", "node-stacktrace"]
 
+[[llm_hints]]
+prefer = "--silent"
+reason = "suppresses console.log noise; errors still shown"
+
 [[global_noise]]
 # Snapshot count line
 pattern = '^Snapshots:\s+'
