@@ -67,9 +67,75 @@ enum Commands {
         subcommand: ConfigCommands,
     },
 
+    /// Persistent interpreter sessions
+    Session {
+        #[command(subcommand)]
+        subcommand: SessionCommands,
+    },
+
+    /// Send input to the sole active session (shorthand)
+    Send {
+        /// Input to send
+        input: String,
+
+        /// Timeout in seconds
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+    },
+
     /// CLI proxy mode — run a command with category-aware output
     #[command(external_subcommand)]
     Proxy(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Start a persistent interpreter session
+    Start {
+        /// Session alias (e.g. "py")
+        alias: String,
+
+        /// Command to run (e.g. "python3")
+        #[arg(long)]
+        cmd: String,
+
+        /// Run in foreground (for debugging)
+        #[arg(long)]
+        fg: bool,
+    },
+
+    /// Send input to a named session
+    Send {
+        /// Session alias
+        alias: String,
+
+        /// Input to send
+        input: String,
+
+        /// Timeout in seconds
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+    },
+
+    /// List active sessions
+    List,
+
+    /// Close a session
+    Close {
+        /// Session alias
+        alias: String,
+    },
+
+    /// Internal host process (hidden)
+    #[command(hide = true)]
+    Host {
+        /// Session alias
+        alias: String,
+
+        /// Command to run
+        #[arg(long)]
+        cmd: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -133,6 +199,30 @@ async fn main() {
                 std::process::exit(mish::cli::management::cmd_config_check(config.as_deref()));
             }
         },
+        Commands::Session { subcommand } => match subcommand {
+            SessionCommands::Start { alias, cmd, fg } => {
+                std::process::exit(mish::cli::session::cmd_session_start(&alias, &cmd, fg));
+            }
+            SessionCommands::Send {
+                alias,
+                input,
+                timeout,
+            } => {
+                std::process::exit(mish::cli::session::cmd_session_send(&alias, &input, timeout));
+            }
+            SessionCommands::List => {
+                std::process::exit(mish::cli::session::cmd_session_list());
+            }
+            SessionCommands::Close { alias } => {
+                std::process::exit(mish::cli::session::cmd_session_close(&alias));
+            }
+            SessionCommands::Host { alias, cmd } => {
+                std::process::exit(mish::cli::session::cmd_session_host(&alias, &cmd));
+            }
+        },
+        Commands::Send { input, timeout } => {
+            std::process::exit(mish::cli::session::cmd_send(&input, timeout));
+        }
         Commands::Proxy(args) => {
             if args.is_empty() {
                 eprintln!("usage: mish <command> [args...]");
