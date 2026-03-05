@@ -284,6 +284,21 @@ impl SessionManager {
         self.create_session("main", None).await
     }
 
+    /// Ensure the default "main" session exists, creating it if needed.
+    /// Returns `Ok(true)` if newly created, `Ok(false)` if it already existed.
+    pub async fn ensure_default_session(&self) -> Result<bool, SessionError> {
+        // Fast path: session exists (read lock only).
+        if self.get_session("main").await.is_some() {
+            return Ok(false);
+        }
+        // Cold path: create it.
+        match self.create_session("main", None).await {
+            Ok(_) => Ok(true),
+            Err(SessionError::AlreadyExists(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Get a session by name.
     pub async fn get_session(&self, name: &str) -> Option<Arc<Session>> {
         self.sessions.read().await.get(name).cloned()
@@ -789,5 +804,34 @@ mod tests {
 
         mgr.close_all().await;
         assert_eq!(mgr.session_count().await, 0);
+    }
+
+    // Test 19: ensure_default_session creates "main" when missing.
+    #[tokio::test]
+    async fn test_ensure_default_session_creates() {
+        let mgr = SessionManager::new(test_config());
+        assert_eq!(mgr.session_count().await, 0);
+
+        let created = mgr.ensure_default_session().await.expect("ensure");
+        assert!(created, "should report newly created");
+        assert_eq!(mgr.session_count().await, 1);
+        assert!(mgr.get_session("main").await.is_some());
+
+        mgr.close_all().await;
+    }
+
+    // Test 20: ensure_default_session returns false when "main" already exists.
+    #[tokio::test]
+    async fn test_ensure_default_session_already_exists() {
+        let mgr = SessionManager::new(test_config());
+        mgr.create_session("main", Some(bash_path()))
+            .await
+            .expect("create");
+
+        let created = mgr.ensure_default_session().await.expect("ensure");
+        assert!(!created, "should report already existed");
+        assert_eq!(mgr.session_count().await, 1);
+
+        mgr.close_all().await;
     }
 }

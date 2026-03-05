@@ -178,6 +178,13 @@ impl Presets {
                 r"===.*===".to_string(),
                 r"(?i)TOTAL".to_string(),
             ],
+            "@test_failures" => vec![
+                r"(?i)\bFAILED\b".to_string(),
+                r"(?i)\bfailures?\b".to_string(),
+                r"(?i)\berror\b".to_string(),
+                r"(?i)\bpanic\b".to_string(),
+                r"test result:".to_string(),
+            ],
             other => {
                 // Strip @ prefix, use as literal
                 let name = other.strip_prefix('@').unwrap_or(other);
@@ -290,6 +297,23 @@ mod tests {
         assert!(pm.matches("npm ERR! code ENOENT"));
         assert!(pm.matches("5 vulnerabilities found"));
         assert!(!pm.matches("added 142 packages"));
+    }
+
+    #[test]
+    fn test_preset_test_failures_expansion() {
+        let patterns = Presets::expand("@test_failures");
+        assert!(!patterns.is_empty());
+        let pm = PatternMatcher::new(&patterns.iter().map(|s| s.as_str()).collect::<Vec<_>>()).unwrap();
+        assert!(pm.matches("FAILED: some test"));
+        assert!(pm.matches("2 failures"));
+        assert!(pm.matches("failure in test_foo"));
+        assert!(pm.matches("error in test_bar"));
+        assert!(pm.matches("thread 'main' panic at line 42"));
+        assert!(pm.matches("test result: FAILED. 1 passed; 2 failed"));
+        // Should NOT match passing tests
+        assert!(!pm.matches("test foo ... ok"));
+        assert!(!pm.matches("47 passed"));
+        assert!(!pm.matches("compiling crate foo"));
     }
 
     // is_preset detection

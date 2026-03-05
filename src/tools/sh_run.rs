@@ -106,8 +106,12 @@ pub async fn handle(
         }
     };
 
-    // 2. Resolve session name (default "main").
+    // 2. Resolve session name (default "main"), auto-creating if needed.
     let session_name = DEFAULT_SESSION;
+    session_manager
+        .ensure_default_session()
+        .await
+        .map_err(ToolError::from_session_error)?;
 
     // 3. Resolve timeout: explicit > per-scope > config default.
     let timeout = resolve_timeout(&params, cmd, config);

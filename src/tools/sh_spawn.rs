@@ -13,7 +13,7 @@ use regex::Regex;
 use crate::config::MishConfig;
 use crate::mcp::types::{
     ShSpawnParams, ShSpawnResponse,
-    ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SESSION_NOT_FOUND, ERR_SHELL_ERROR,
+    ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SHELL_ERROR,
 };
 use crate::safety;
 use crate::process::spool::OutputSpool;
@@ -122,11 +122,11 @@ pub async fn setup(
         ));
     }
 
-    // Verify session exists.
-    let _session = session_manager
-        .get_session(session_name)
+    // Ensure default session exists (auto-create if needed).
+    session_manager
+        .ensure_default_session()
         .await
-        .ok_or_else(|| ToolError::new(ERR_SESSION_NOT_FOUND, format!("session not found: {session_name}")))?;
+        .map_err(ToolError::from_session_error)?;
 
     // Send command as background job to the session shell.
     // Single line: cmd backgrounds, then echo captures $! (PID of last bg job).
