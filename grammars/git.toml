@@ -3,6 +3,33 @@ name = "git"
 detect = ["git"]
 inherit = ["ansi-progress"]
 
+# ---- log action ----
+
+[actions.log]
+detect = ["log"]
+
+[[actions.log.llm_hints]]
+prefer = "--oneline -20"
+reason = "default emits 6 lines/commit; --oneline = 1 line, 20 entries ~400 tokens"
+
+# ---- status action ----
+
+[actions.status]
+detect = ["status"]
+
+[[actions.status.llm_hints]]
+prefer = "--short"
+reason = "one char/file vs prose; stable across git versions"
+
+# ---- diff action ----
+
+[actions.diff]
+detect = ["diff"]
+
+[[actions.diff.llm_hints]]
+prefer = "--stat"
+reason = "file-level summary before reading full diff; O(files) not O(lines)"
+
 # ---- push action ----
 
 [actions.push]

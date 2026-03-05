@@ -73,6 +73,7 @@ pub struct Grammar {
     pub enrich: Option<EnrichConfig>,
     pub category: Option<Category>,
     pub block: Vec<BlockRule>,
+    pub llm_hints: Vec<LlmHint>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +88,7 @@ pub struct Action {
     pub hazard: Vec<Rule>,
     pub outcome: Vec<Rule>,
     pub summary: SummaryTemplate,
+    pub llm_hints: Vec<LlmHint>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +157,13 @@ pub struct EnrichActionConfig {
     pub on_failure: Vec<String>,
 }
 
+/// An LLM hint declaring a preferred invocation form for a tool or action.
+#[derive(Debug, Clone)]
+pub struct LlmHint {
+    pub prefer: String,
+    pub reason: String,
+}
+
 /// A block compression rule for collapsing multi-line diagnostic blocks
 /// (e.g., rustc warnings/errors) into single dense digest lines.
 #[derive(Debug, Clone)]
@@ -198,6 +207,8 @@ struct RawGrammar {
     category: Option<String>,
     #[serde(default)]
     block: Vec<RawBlockRule>,
+    #[serde(default)]
+    llm_hints: Vec<RawLlmHint>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +247,12 @@ struct RawRule {
 }
 
 #[derive(Deserialize)]
+struct RawLlmHint {
+    prefer: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
 struct RawAction {
     #[serde(default)]
     detect: Option<Vec<String>>,
@@ -247,6 +264,8 @@ struct RawAction {
     outcome: Vec<RawRule>,
     #[serde(default)]
     summary: Option<RawSummaryTemplate>,
+    #[serde(default)]
+    llm_hints: Vec<RawLlmHint>,
 }
 
 #[derive(Deserialize)]
@@ -425,12 +444,18 @@ impl TryFrom<RawAction> for Action {
             },
             None => SummaryTemplate::default(),
         };
+        let llm_hints = raw
+            .llm_hints
+            .into_iter()
+            .map(|h| LlmHint { prefer: h.prefer, reason: h.reason })
+            .collect();
         Ok(Action {
             detect,
             noise,
             hazard,
             outcome,
             summary,
+            llm_hints,
         })
     }
 }
@@ -511,6 +536,12 @@ fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
         .map(BlockRule::try_from)
         .collect::<Result<Vec<_>, _>>()?;
 
+    let llm_hints = raw
+        .llm_hints
+        .into_iter()
+        .map(|h| LlmHint { prefer: h.prefer, reason: h.reason })
+        .collect();
+
     Ok(Grammar {
         tool: ToolInfo {
             name: raw.tool.name,
@@ -525,6 +556,7 @@ fn convert_raw_grammar(raw: RawGrammar) -> Result<Grammar, GrammarError> {
         enrich,
         category,
         block,
+        llm_hints,
     })
 }
 
@@ -1968,5 +2000,80 @@ action = "strip"
         let result = evaluate_line(grammar, None, "gcc -Wall -O2 -c main.c -o main.o");
         assert!(matches!(result, RuleMatch::Noise { .. }),
             "gcc command should be Noise (inherited), got {:?}", result);
+    }
+
+    // -----------------------------------------------------------------------
+    // LlmHint tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_llm_hint_toml_deserialization_tool_level() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        // pytest has a tool-level llm_hint
+        let pytest = grammars.get("pytest").unwrap();
+        assert_eq!(pytest.llm_hints.len(), 1, "pytest should have 1 tool-level hint");
+        assert_eq!(pytest.llm_hints[0].prefer, "--tb=short");
+        assert!(!pytest.llm_hints[0].reason.is_empty());
+
+        // terraform has a tool-level llm_hint
+        let tf = grammars.get("terraform").unwrap();
+        assert_eq!(tf.llm_hints.len(), 1, "terraform should have 1 tool-level hint");
+        assert_eq!(tf.llm_hints[0].prefer, "-no-color");
+
+        // jest has a tool-level llm_hint
+        let jest = grammars.get("jest").unwrap();
+        assert_eq!(jest.llm_hints.len(), 1, "jest should have 1 tool-level hint");
+        assert_eq!(jest.llm_hints[0].prefer, "--silent");
+    }
+
+    #[test]
+    fn test_llm_hint_toml_deserialization_action_level() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        // git log action has a hint
+        let git = grammars.get("git").unwrap();
+        let log = git.actions.get("log").unwrap();
+        assert_eq!(log.llm_hints.len(), 1, "git log should have 1 hint");
+        assert_eq!(log.llm_hints[0].prefer, "--oneline -20");
+
+        // git status action has a hint
+        let status = git.actions.get("status").unwrap();
+        assert_eq!(status.llm_hints.len(), 1, "git status should have 1 hint");
+        assert_eq!(status.llm_hints[0].prefer, "--short");
+
+        // cargo test action has a hint
+        let cargo = grammars.get("cargo").unwrap();
+        let test = cargo.actions.get("test").unwrap();
+        assert_eq!(test.llm_hints.len(), 1, "cargo test should have 1 hint");
+        assert_eq!(test.llm_hints[0].prefer, "-- --nocapture");
+
+        // go test action has a hint
+        let go = grammars.get("go").unwrap();
+        let go_test = go.actions.get("test").unwrap();
+        assert_eq!(go_test.llm_hints.len(), 1, "go test should have 1 hint");
+        assert_eq!(go_test.llm_hints[0].prefer, "-json");
+
+        // kubectl get action has a hint
+        let kubectl = grammars.get("kubectl").unwrap();
+        let get = kubectl.actions.get("get").unwrap();
+        assert_eq!(get.llm_hints.len(), 1, "kubectl get should have 1 hint");
+        assert_eq!(get.llm_hints[0].prefer, "-o json");
+    }
+
+    #[test]
+    fn test_llm_hint_grammar_without_hints_is_empty() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("grammars");
+        let grammars = load_all_grammars(&dir).unwrap();
+
+        // cargo build action has no llm_hints
+        let cargo = grammars.get("cargo").unwrap();
+        let build = cargo.actions.get("build").unwrap();
+        assert!(build.llm_hints.is_empty(), "cargo build should have no hints");
+
+        // cargo itself has no tool-level hints
+        assert!(cargo.llm_hints.is_empty(), "cargo tool should have no tool-level hints");
     }
 }

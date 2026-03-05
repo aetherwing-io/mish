@@ -206,7 +206,7 @@ fn format_human(input: &FormatInput) -> String {
     // Recommendation lines (only on success)
     if input.exit_code == 0 && !input.recommendations.is_empty() {
         for r in &input.recommendations {
-            lines.push(format!("\u{2192} consider {} ({})", r.flag, r.reason));
+            lines.push(format!("\u{2192} prefer: {} ({})", r.flag, r.reason));
         }
     }
 
@@ -976,7 +976,7 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("\u{2192} consider --prefer-offline"),
+            output.contains("\u{2192} prefer: --prefer-offline"),
             "should show recommendation with \u{2192} prefix: {}",
             output
         );
@@ -1098,12 +1098,12 @@ mod tests {
 
         let output = format_result(&input, OutputMode::Human);
         assert!(
-            output.contains("\u{2192} consider --no-progress"),
+            output.contains("\u{2192} prefer: --no-progress"),
             "should show first recommendation: {}",
             output
         );
         assert!(
-            output.contains("\u{2192} consider --prefer-offline"),
+            output.contains("\u{2192} prefer: --prefer-offline"),
             "should show second recommendation: {}",
             output
         );

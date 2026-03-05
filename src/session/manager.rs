@@ -108,6 +108,7 @@ pub struct Session {
     last_activity: std::sync::Mutex<Instant>,
     cwd: std::sync::Mutex<String>,
     ready: AtomicBool,
+    pub hints_shown: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Session {
@@ -255,6 +256,7 @@ impl SessionManager {
             last_activity: std::sync::Mutex::new(now),
             cwd: std::sync::Mutex::new(cwd),
             ready: AtomicBool::new(true),
+            hints_shown: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
 
         let info = session.info();

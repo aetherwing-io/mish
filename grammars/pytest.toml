@@ -3,6 +3,10 @@ name = "pytest"
 detect = ["pytest", "py.test"]
 inherit = ["python-traceback"]
 
+[[llm_hints]]
+prefer = "--tb=short"
+reason = "3 lines/failure instead of 10+; use --tb=long for full detail"
+
 [[global_noise]]
 # Separator lines (=== and ___)
 pattern = '^[=_\-]{10,}$'

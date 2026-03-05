@@ -447,7 +447,7 @@ mod tests {
         });
 
         let text = format_sh_run(&result);
-        assert!(text.contains("\u{2192} consider --prefer-offline"), "rec: {}", text);
+        assert!(text.contains("\u{2192} prefer: --prefer-offline"), "rec: {}", text);
     }
 
     // ── format_sh_spawn ─────────────────────────────────────────────────
