@@ -175,31 +175,31 @@ fn test_sh_run_battery() {
     );
 
     // -- response structure (test_04) --
-    // Compact text format: {symbol} exit:{code} {elapsed} {category} ({total}→{shown})\n{body}
+    // Compact text format: {symbol} exit:{code} {elapsed}\n{body}
     let resp = server.request(
         r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo structure_check","timeout":10}}}"#,
     );
     assert!(resp["error"].is_null(), "sh_run structure failed: {resp}");
     let text = MishServer::extract_tool_text(&resp);
     assert!(text.contains("exit:0"), "should have exit code: {}", text);
-    // Category should be in the header (passthrough or condense)
+    // Category should NOT appear in the header (removed in e535c0e)
     let first_line = text.lines().next().unwrap();
     assert!(
-        first_line.contains("passthrough") || first_line.contains("condense"),
-        "header should contain category: {}",
+        !first_line.contains("passthrough") && !first_line.contains("condense"),
+        "header should not contain category: {}",
         first_line
     );
 
-    // -- category present (test_05) --
+    // -- no category in header (test_05) --
     let resp = server.request(
         r#"{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"sh_run","arguments":{"cmd":"echo hello","timeout":10}}}"#,
     );
-    assert!(resp["error"].is_null(), "sh_run category failed: {resp}");
+    assert!(resp["error"].is_null(), "sh_run no-category check failed: {resp}");
     let text = MishServer::extract_tool_text(&resp);
     let first_line = text.lines().next().unwrap();
     assert!(
-        first_line.contains("passthrough") || first_line.contains("condense"),
-        "header should contain category: {}",
+        !first_line.contains("passthrough") && !first_line.contains("condense"),
+        "header should not contain category: {}",
         first_line
     );
 
@@ -209,12 +209,9 @@ fn test_sh_run_battery() {
     );
     assert!(resp["error"].is_null(), "sh_run lines failed: {resp}");
     let text = MishServer::extract_tool_text(&resp);
-    // Compact format shows (total→shown) ratio
-    assert!(
-        text.contains("\u{2192}"),
-        "should contain arrow in line ratio: {}",
-        text
-    );
+    // Header should still have exit:0 and elapsed
+    assert!(text.contains("exit:0"), "should have exit code: {}", text);
+    // (total→shown) ratio only appears when condensing reduces lines; passthrough won't show it
 
     // -- digest on sh_help (test_07) --
     let resp = server.request(

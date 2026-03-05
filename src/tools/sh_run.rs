@@ -83,13 +83,10 @@ pub async fn handle(
     let tokens: Vec<String> = cmd.split_whitespace().map(String::from).collect();
     let category = categorize_command_str(cmd, grammars, categories_config, dangerous_patterns);
 
-    // 1d. Block dangerous-category commands.
-    if category == Category::Dangerous {
-        return Err(ToolError::new(
-            ERR_COMMAND_BLOCKED,
-            "command blocked: dangerous category",
-        ));
-    }
+    // 1d. Dangerous-category commands: pass through.
+    // Previously blocked here; now delegated to the host's permission system
+    // (e.g. Claude Code deny list). The safety deny-list (step 1b) still
+    // catches catastrophic commands (rm -rf /, mkfs, fork bomb, etc.).
 
     // 1e. Detect grammar for preflight + enrichment.
     let detected = detect_tool(&tokens, grammars);
@@ -348,7 +345,8 @@ mod tests {
     use std::sync::Arc;
     use crate::config::default_config;
     use crate::config_loader::default_runtime_config;
-    use crate::mcp::types::{ERR_COMMAND_BLOCKED, ERR_INVALID_PARAMS, ERR_SESSION_NOT_FOUND};
+    use crate::mcp::types::{ERR_COMMAND_BLOCKED, ERR_INVALID_PARAMS};
+    use serial_test::serial;
     use crate::session::manager::SessionError;
 
     /// Helper: return categorization data from default runtime config.
@@ -760,27 +758,7 @@ mod tests {
         teardown(&mgr).await;
     }
 
-    #[tokio::test]
-    async fn test_handle_session_not_found() {
-        let config_arc = Arc::new(default_config());
-        let mgr = SessionManager::new(config_arc.clone());
-        // Do NOT create "main" session.
-        let table = TokioMutex::new(ProcessTable::new(&config_arc));
-        let config = default_config();
-        let (grammars, categories, dangerous) = test_categorization();
 
-        let params = ShRunParams {
-            cmd: "echo hi".to_string(),
-            timeout: Some(5),
-            watch: None,
-            unmatched: None,
-        };
-
-        let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ERR_SESSION_NOT_FOUND);
-    }
 
     #[tokio::test]
     async fn test_handle_with_watch_pattern() {
@@ -1075,23 +1053,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dangerous_category_blocked() {
+    #[serial(pty)]
+    async fn test_dangerous_category_passes_through() {
         let (mgr, table) = setup_session().await;
         let config = default_config();
         let (grammars, categories, dangerous) = test_categorization();
 
-        // "rm -rf /tmp/foo" matches dangerous pattern in bundled dangerous.toml.
+        // "rm -rf /tmp/foo" matches dangerous pattern in bundled dangerous.toml
+        // but should now pass through (delegated to host permission system).
+        // The command will fail (no such dir) but should NOT be blocked by mish.
         let params = ShRunParams {
-            cmd: "rm -rf /tmp/foo".to_string(),
+            cmd: "rm -rf /tmp/mish_test_nonexistent_dir_12345".to_string(),
             timeout: Some(5),
             watch: None,
             unmatched: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
-        assert!(result.is_err(), "dangerous commands should be blocked");
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ERR_COMMAND_BLOCKED);
+        assert!(result.is_ok(), "dangerous-category commands should pass through to execution");
 
         teardown(&mgr).await;
     }

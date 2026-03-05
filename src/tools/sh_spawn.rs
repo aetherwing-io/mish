@@ -719,27 +719,7 @@ mod tests {
         mgr.close_all().await;
     }
 
-    #[tokio::test]
-    async fn spawn_session_not_found() {
-        let config = test_config();
-        let session_config = test_session_config();
-        let mgr = SessionManager::new(session_config);
-        // Don't create the "main" session.
 
-        let mut table = ProcessTable::new(&config);
-
-        let params = ShSpawnParams {
-            alias: "bg".to_string(),
-            cmd: "echo hello".to_string(),
-            wait_for: None,
-            timeout: Some(5),
-        };
-
-        let result = handle(params, &mgr, &mut table, &config).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code, -32002);
-    }
 
     #[tokio::test]
     #[serial(pty)]

@@ -8,10 +8,21 @@
 </p>
 
 <p align="center">
-  <a href="https://ohitsmish.com">ohitsmish.com</a> · <a href="https://github.com/aetherwing-io/mish/releases">Releases</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/SHOWCASE.md">Showcase</a>
+  <a href="https://ohitsmish.com">ohitsmish.com</a> · <a href="https://github.com/aetherwing-io/mish/releases">Releases</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/SHOWCASE.md">Benchmarks</a>
 </p>
 
 ---
+
+```
+Before:  agent → Bash("cargo test")        → 1,319 lines raw output
+After:   agent → sh_run("cargo test")      → 201 lines (6.6× reduction)
+
+Before:  agent → Bash("cargo test") + watch → 1,319 lines raw output
+After:   agent → sh_run watch="warning"     → 3 lines (440× reduction)
+
+Before:  agent → Bash("cp missing dest/")  → "No such file" + 4 follow-up calls
+After:   agent → sh_run("cp missing dest/") → error + path walk + permissions + nearest dirs
+```
 
 ## Install
 
@@ -45,20 +56,7 @@ Restart your client. Five tools appear:
 
 ## What it does
 
-mish sits between the shell and its caller — whether that's an LLM agent, a human, or both — and returns structured, context-efficient responses. It categorizes every command and applies the right handler. Pure heuristics, no LLM in the loop.
-
-```
-Before:  agent → Bash("cargo test")        → 1,319 lines raw output
-After:   agent → sh_run("cargo test")      → 201 lines (6.6× reduction)
-
-Before:  agent → Bash("cargo test") + watch → 1,319 lines raw output
-After:   agent → sh_run watch="warning"     → 3 lines (440× reduction)
-
-Before:  agent → Bash("cp missing dest/")  → "No such file" + 4 follow-up calls
-After:   agent → sh_run("cp missing dest/") → error + path walk + permissions + nearest dirs
-```
-
-Every response includes exit code, timing, and command category. On failure, mish pre-walks paths, checks permissions, and lists nearby files — before your agent has to ask.
+mish sits between the shell and its caller — whether that's an LLM agent, a human, or both — and returns structured, context-efficient responses. It categorizes every command and applies the right handler. Pure heuristics, no LLM in the loop. Every response includes exit code, timing, and command category. On failure, mish pre-walks paths, checks permissions, and lists nearby files — before your agent has to ask.
 
 ### Command routing
 
