@@ -156,15 +156,16 @@ fn format_human(input: &FormatInput) -> String {
             parts.push(elapsed);
         }
 
-        parts.push(input.category.clone());
-
         if let Some(total) = input.total_lines {
             let shown = if input.body.is_empty() {
                 0
             } else {
                 input.body.lines().count()
             };
-            parts.push(format!("({}\u{2192}{})", total, shown));
+            // Only show ratio when condensing actually reduced lines
+            if (total as usize) != shown {
+                parts.push(format!("({}\u{2192}{})", total, shown));
+            }
         }
 
         lines.push(parts.join(" "));
@@ -655,7 +656,7 @@ mod tests {
         let output = format_result(&input, OutputMode::Human);
         let first_line = output.lines().next().unwrap();
 
-        // Compact header: + exit:0 12.3s condense (1400→1)
+        // Compact header: + exit:0 12.3s (1400→1)
         assert!(
             first_line.starts_with("+ exit:0"),
             "header should start with symbol and exit code: {}",
@@ -667,8 +668,8 @@ mod tests {
             first_line
         );
         assert!(
-            first_line.contains("condense"),
-            "header should contain category: {}",
+            !first_line.contains("condense"),
+            "category should NOT appear in header: {}",
             first_line
         );
         assert!(
@@ -942,7 +943,7 @@ mod tests {
 
         // First result: compact header
         assert!(
-            output.contains("+ exit:0 12.3s condense (1400"),
+            output.contains("+ exit:0 12.3s (1400"),
             "first result should have compact header: {}",
             output
         );

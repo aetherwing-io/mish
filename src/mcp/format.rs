@@ -408,7 +408,7 @@ mod tests {
         let text = format_sh_run(&result);
         assert!(text.starts_with("+ exit:0"), "header: {}", text);
         assert!(text.contains("150ms"), "elapsed: {}", text);
-        assert!(text.contains("condense"), "category: {}", text);
+        assert!(!text.contains("condense"), "category should not appear: {}", text);
         assert!(text.contains("(47\u{2192}2)"), "ratio: {}", text);
         assert!(text.contains("Compiling mish"), "body: {}", text);
     }
