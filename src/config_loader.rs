@@ -41,6 +41,10 @@ const BUNDLED_BREW: &str = include_str!("../grammars/brew.toml");
 const BUNDLED_SYSTEMCTL: &str = include_str!("../grammars/systemctl.toml");
 const BUNDLED_ANSIBLE: &str = include_str!("../grammars/ansible.toml");
 const BUNDLED_CURL: &str = include_str!("../grammars/curl.toml");
+const BUNDLED_PYTHON3: &str = include_str!("../grammars/python3.toml");
+const BUNDLED_CAT: &str = include_str!("../grammars/cat.toml");
+const BUNDLED_SED: &str = include_str!("../grammars/sed.toml");
+const BUNDLED_HEAD: &str = include_str!("../grammars/head.toml");
 
 const BUNDLED_CATEGORIES: &str = include_str!("../grammars/_meta/categories.toml");
 const BUNDLED_DANGEROUS: &str = include_str!("../grammars/_meta/dangerous.toml");
@@ -68,6 +72,10 @@ const BUNDLED_GRAMMARS: &[(&str, &str)] = &[
     ("systemctl", BUNDLED_SYSTEMCTL),
     ("ansible", BUNDLED_ANSIBLE),
     ("curl", BUNDLED_CURL),
+    ("python3", BUNDLED_PYTHON3),
+    ("cat", BUNDLED_CAT),
+    ("sed", BUNDLED_SED),
+    ("head", BUNDLED_HEAD),
 ];
 
 // ---------------------------------------------------------------------------
@@ -299,7 +307,7 @@ mod tests {
                 "missing bundled grammar: {name}"
             );
         }
-        assert_eq!(rc.grammars.len(), 21);
+        assert_eq!(rc.grammars.len(), 25);
     }
 
     // -----------------------------------------------------------------------
@@ -543,7 +551,7 @@ detect = ["good"]
             result.err()
         );
         let rc = result.unwrap();
-        assert_eq!(rc.grammars.len(), 21);
+        assert_eq!(rc.grammars.len(), 25);
     }
 
     // -----------------------------------------------------------------------
