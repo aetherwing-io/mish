@@ -4,6 +4,7 @@
 //! (`sh_spawn` + `sh_interact` for REPLs).
 
 pub mod dedicated;
+pub mod keys;
 pub mod managed;
 pub mod managed_process;
 pub mod session;

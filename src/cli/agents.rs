@@ -78,11 +78,12 @@ For TUI apps, other agents, or interactive tools that need their own terminal,
 use `dedicated_pty=true` in MCP mode (`mish serve`):
 
   sh_spawn(alias="cc", cmd="claude", dedicated_pty=true, wait_for="❯")
-  sh_interact(alias="cc", action="send_input", input="hello\n")
+  sh_interact(alias="cc", action="send_input", input="hello<enter>")
   sh_interact(alias="cc", action="read_tail")
   sh_interact(alias="cc", action="kill")
 
 All I/O is fire-and-forget: send_input writes bytes, read_tail polls output.
+Special keys: <enter> <tab> <esc> <ctrl-c> <up> <down> <left> <right> <backspace>
 No sentinel wrapping — raw PTY I/O for full TUI compatibility.
 
 ## When commands fail

@@ -8,6 +8,7 @@ use std::time::Duration;
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 
+use crate::interpreter::keys;
 use crate::mcp::types::{
     InteractAction, ShInteractParams, ShInteractKillResponse, ShInteractReadTailResponse,
     ShInteractSendResponse, ShInteractSignalResponse, ShInteractStatusResponse,
@@ -196,7 +197,13 @@ async fn handle_send_input(
     if let Some(ref managed) = entry.interpreter {
         // Dedicated PTY or background mode: raw write (fire-and-forget).
         if params.background.unwrap_or(false) || !managed.supports_execute() {
-            let bytes_written = managed.write_raw(input).await.map_err(|e| {
+            // For dedicated PTY: expand <key> tokens to terminal bytes
+            let bytes_written = if !managed.supports_execute() {
+                let expanded = keys::expand_keys(input);
+                managed.write_raw_bytes(&expanded).await
+            } else {
+                managed.write_raw(input).await
+            }.map_err(|e| {
                 ToolError::new(ERR_SHELL_ERROR, format!("write_raw error: {e}"))
             })?;
 

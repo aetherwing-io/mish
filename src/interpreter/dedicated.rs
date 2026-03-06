@@ -27,12 +27,17 @@ impl DedicatedPtyProcess {
 
     /// Write raw bytes to the PTY stdin.
     pub async fn write_raw(&self, input: &str) -> Result<usize, String> {
+        self.write_raw_bytes(input.as_bytes()).await
+    }
+
+    /// Write raw bytes to the PTY stdin (takes `&[u8]` directly).
+    pub async fn write_raw_bytes(&self, input: &[u8]) -> Result<usize, String> {
         let pty = self.pty.clone();
-        let input = input.to_string();
+        let input = input.to_vec();
 
         tokio::task::spawn_blocking(move || {
             let pty = pty.lock().map_err(|e| format!("lock poisoned: {e}"))?;
-            pty.write_stdin(input.as_bytes())
+            pty.write_stdin(&input)
                 .map_err(|e| format!("PTY write error: {e}"))
         })
         .await

@@ -238,7 +238,7 @@ fn build_sh_interact_summary() -> ToolSummary {
                 r#type: "string".to_string(),
                 required: false,
                 default: None,
-                description: "For send: string to write (include \\n for enter)".to_string(),
+                description: "For send: string to write. Dedicated PTY: use <enter>, <tab>, <esc>, <ctrl-c>, arrows. REPLs: use \\n".to_string(),
             },
             ParamSummary {
                 name: "lines".to_string(),

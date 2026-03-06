@@ -23,6 +23,14 @@ impl ManagedProcess {
         }
     }
 
+    /// Write raw bytes to the underlying PTY (takes `&[u8]` directly).
+    pub async fn write_raw_bytes(&self, input: &[u8]) -> Result<usize, String> {
+        match self {
+            ManagedProcess::Interpreter(i) => i.write_raw(&String::from_utf8_lossy(input)).await,
+            ManagedProcess::Dedicated(d) => d.write_raw_bytes(input).await,
+        }
+    }
+
     /// Drain available PTY output to the spool.
     pub async fn drain_to_spool(&self) -> Result<(), String> {
         match self {

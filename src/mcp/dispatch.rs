@@ -412,11 +412,12 @@ Node REPL:
 ## Interactive/TUI apps (sh_spawn with dedicated_pty)
 For apps that need their own terminal (TUI apps, other agents, interactive tools):
   sh_spawn(alias="app", cmd="claude", dedicated_pty=true, wait_for="ready")
-  sh_interact(alias="app", action="send_input", input="hello\n")
+  sh_interact(alias="app", action="send_input", input="hello<enter>")
   sh_interact(alias="app", action="read_tail")
   sh_interact(alias="app", action="kill")
 
 All I/O is fire-and-forget: send_input writes bytes, read_tail polls output.
+Special keys: <enter> <tab> <esc> <ctrl-c> <up> <down> <left> <right> <backspace>
 
 ## Operator hand-off
   sh_interact(alias="server", action="status")   — check if still running
@@ -471,7 +472,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "alias": { "type": "string", "description": "Target process alias" },
                     "action": { "type": "string", "enum": ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"], "description": "Action to perform" },
-                    "input": { "type": "string", "description": "For send_input: string to write (include \\n for enter). For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
+                    "input": { "type": "string", "description": "For send_input: string to write. For dedicated PTY processes, use <enter> for Enter/submit, <tab>, <esc>, <ctrl-c>, <up>/<down>/<left>/<right>, <backspace>. For REPLs, include \\n for newline. For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
                     "lines": { "type": "integer", "description": "For read_tail: number of lines", "default": 50 },
                     "background": { "type": "boolean", "description": "For send_input on REPLs: fire-and-forget mode. Returns immediately, use read_tail to check output later.", "default": false }
                 },
