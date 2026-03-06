@@ -136,4 +136,78 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Arc<DedicatedPtyProcess>>();
     }
+
+    #[test]
+    fn read_screen_returns_parser_contents() {
+        // Directly test the parser integration without a real PTY
+        let parser = vt100::Parser::new(24, 80, 0);
+        let parser = Arc::new(Mutex::new(parser));
+
+        // Feed some data
+        {
+            let mut p = parser.lock().unwrap();
+            p.process(b"hello world\r\nline two");
+        }
+
+        let p = parser.lock().unwrap();
+        let contents = p.screen().contents();
+        assert!(contents.contains("hello world"), "contents: {contents}");
+        assert!(contents.contains("line two"), "contents: {contents}");
+    }
+
+    #[test]
+    fn parser_handles_cursor_movement() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+
+        // Write "ABCDE", move cursor back 3, overwrite with "XY"
+        // Result should be "ABXYE" (not "ABCDEXY")
+        parser.process(b"ABCDE\x1b[3DXY");
+
+        let contents = parser.screen().contents();
+        let first_line = contents.lines().next().unwrap_or("");
+        assert_eq!(first_line.trim(), "ABXYE", "cursor overwrite: {contents}");
+    }
+
+    #[test]
+    fn parser_handles_screen_clear() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+
+        parser.process(b"old content");
+        parser.process(b"\x1b[2J\x1b[H"); // clear screen + home
+        parser.process(b"new content");
+
+        let contents = parser.screen().contents();
+        assert!(!contents.contains("old content"), "should be cleared: {contents}");
+        assert!(contents.contains("new content"), "should have new: {contents}");
+    }
+
+    #[test]
+    fn parser_scrollback_preserves_history() {
+        let mut parser = vt100::Parser::new(3, 80, 100);
+
+        // Fill more lines than the screen can hold (3 rows)
+        parser.process(b"line1\r\nline2\r\nline3\r\nline4\r\nline5\r\n");
+
+        // Visible screen should have the latest lines
+        let visible = parser.screen().contents();
+        assert!(visible.contains("line5"), "visible should have line5: {visible}");
+
+        // Scrollback should preserve earlier lines
+        let screen = parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let scrolled = screen.contents();
+        assert!(scrolled.contains("line1"), "scrollback should have line1: {scrolled}");
+        screen.set_scrollback(0);
+    }
+
+    #[test]
+    fn clear_and_write_replaces_spool_contents() {
+        let spool = OutputSpool::new(1024);
+        spool.write(b"old data");
+        assert_eq!(spool.read_all(), b"old data");
+
+        spool.clear_and_write(b"new snapshot");
+        assert_eq!(spool.read_all(), b"new snapshot");
+        assert!(!String::from_utf8_lossy(&spool.read_all()).contains("old data"));
+    }
 }
