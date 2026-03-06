@@ -5,6 +5,7 @@ pub mod config_loader;
 pub mod core;
 pub mod handoff;
 pub mod handlers;
+pub mod interpreter;
 pub mod mcp;
 pub mod process;
 pub mod router;

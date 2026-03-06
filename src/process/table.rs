@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::MishConfig;
+use crate::interpreter::ManagedInterpreter;
 use crate::mcp::types::{
     ProcessDigestEntry, ERR_ALIAS_NOT_FOUND, ERR_ALIAS_IN_USE, ERR_PROCESS_LIMIT,
     ERR_INVALID_ACTION,
@@ -81,6 +82,9 @@ pub struct ProcessEntry {
     // Completion-related:
     pub output_summary: Option<String>,
     pub error_tail: Option<String>,
+
+    // Interpreter (REPL mode):
+    pub interpreter: Option<Arc<ManagedInterpreter>>,
 
     // Tracking:
     pub last_modified_seq: u64,
@@ -178,12 +182,20 @@ impl ProcessTable {
             prompt_tail: None,
             output_summary: None,
             error_tail: None,
+            interpreter: None,
             last_modified_seq: seq,
             seen_by_client: false,
         };
 
         self.entries.insert(alias.to_string(), entry);
         Ok(())
+    }
+
+    /// Attach a managed interpreter to a process entry.
+    pub fn set_interpreter(&mut self, alias: &str, interp: Arc<ManagedInterpreter>) {
+        if let Some(entry) = self.entries.get_mut(alias) {
+            entry.interpreter = Some(interp);
+        }
     }
 
     /// Update the state of a process. Validates state transition.
@@ -1016,5 +1028,17 @@ mod tests {
 
         table.dismiss("a").unwrap();
         assert!(table.register("c", "default", 3, None).is_ok());
+    }
+
+    // ── Interpreter field ─────────────────────────────────────────────
+
+    #[test]
+    fn interpreter_field_defaults_to_none() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+        table.register("py", "interpreter", 100, None).unwrap();
+
+        let entry = table.get("py").unwrap();
+        assert!(entry.interpreter.is_none());
     }
 }

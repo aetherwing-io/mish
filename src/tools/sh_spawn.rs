@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use regex::Regex;
 use crate::config::MishConfig;
+use crate::interpreter::{self, ManagedInterpreter, InterpreterSession};
 use crate::mcp::types::{
     ShSpawnParams, ShSpawnResponse,
     ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SHELL_ERROR,
@@ -98,7 +99,6 @@ pub async fn setup(
     process_table: &mut ProcessTable,
     config: &MishConfig,
 ) -> Result<SpawnSetup, ToolError> {
-    let session_name = DEFAULT_SESSION;
     let alias = params.alias.clone();
     let timeout = resolve_spawn_timeout(params.timeout, &params.cmd, config);
 
@@ -121,6 +121,15 @@ pub async fn setup(
             &ProcessTableError::AliasInUse,
         ));
     }
+
+    // REPL detection: if the command is a bare interpreter invocation,
+    // spawn it in a dedicated PTY via InterpreterSession instead of
+    // backgrounding it in the shell session.
+    if interpreter::is_repl_command(&params.cmd) {
+        return setup_repl(params, process_table, timeout).await;
+    }
+
+    let session_name = DEFAULT_SESSION;
 
     // Ensure default session exists (auto-create if needed).
     session_manager
@@ -174,6 +183,54 @@ pub async fn setup(
         alias,
         pid,
         session: session_name.to_string(),
+        spool,
+        wait_for: params.wait_for,
+        timeout,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// REPL setup (dedicated PTY via InterpreterSession)
+// ---------------------------------------------------------------------------
+
+/// Spawn a REPL interpreter in a dedicated PTY and register it in the process table.
+async fn setup_repl(
+    params: ShSpawnParams,
+    process_table: &mut ProcessTable,
+    timeout: Duration,
+) -> Result<SpawnSetup, ToolError> {
+    let alias = params.alias.clone();
+    let cmd = params.cmd.clone();
+
+    // Spawn the interpreter in a blocking task (PTY allocation is blocking).
+    let interpreter_session = tokio::task::spawn_blocking(move || {
+        InterpreterSession::spawn(&cmd)
+    })
+    .await
+    .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("spawn_blocking join error: {e}")))?
+    .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("interpreter spawn failed: {e}")))?;
+
+    let pid = interpreter_session.pid();
+
+    // Register in process table with session="interpreter".
+    process_table
+        .register(&alias, "interpreter", pid, None)
+        .map_err(|e| ToolError::from_process_table_error(&e))?;
+
+    // Clone spool Arc from the registered entry.
+    let spool = process_table
+        .get(&alias)
+        .map(|e| e.spool.clone())
+        .expect("just registered");
+
+    // Create ManagedInterpreter and attach to the process entry.
+    let managed = Arc::new(ManagedInterpreter::new(interpreter_session, spool.clone()));
+    process_table.set_interpreter(&alias, managed);
+
+    Ok(SpawnSetup {
+        alias,
+        pid,
+        session: "interpreter".to_string(),
         spool,
         wait_for: params.wait_for,
         timeout,
