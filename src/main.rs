@@ -233,30 +233,31 @@ fn invoked_as_shell() -> bool {
         .unwrap_or(false)
 }
 
-/// Emit an LLM-visible interstitial to stdout when mish is invoked as a shell symlink.
-/// First invocation only, then silent permanently.
-fn emit_shim_hint() {
+/// Check if this is the first shim invocation; if so, print interstitial and
+/// return `true` (caller should exit 2). Subsequent calls return `false`.
+fn shim_interstitial() -> bool {
     if std::env::var("MISH_QUIET").is_ok() {
-        return;
+        return false;
     }
     if !invoked_as_shell() {
-        return;
+        return false;
     }
 
-    // First invocation only — one-shot interstitial
+    // First invocation only — one-shot interstitial, then silent permanently
     let counter_path = std::path::PathBuf::from("/tmp/.mish_shim_hint_count");
     let count = std::fs::read_to_string(&counter_path)
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(0);
     if count >= 1 {
-        return;
+        return false;
     }
     let _ = std::fs::write(&counter_path, (count + 1).to_string());
 
     println!(
         "\u{26a0} bash compatibility mode \u{2014} output is uncompressed. Run `mish --agents` for capabilities."
     );
+    true
 }
 
 /// Pre-clap intercept for `mish -c "cmd"` and `mish -lc "cmd"`.
@@ -266,6 +267,13 @@ fn emit_shim_hint() {
 /// output mode flags still work (e.g. `mish --json -c "echo hi"`).
 fn try_shell_dash_c() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
+
+    // First-ever shim invocation: show interstitial warning and bail.
+    // The LLM sees the warning instead of command output and retries,
+    // at which point the counter file exists and execution proceeds normally.
+    if shim_interstitial() {
+        return Some(2);
+    }
 
     // Find the position of -c or -lc (skip argv[0])
     let mut c_pos = None;
@@ -333,10 +341,9 @@ fn try_shell_dash_c() -> Option<i32> {
     if !stdout_is_tty {
         if std::env::var("MISH_COMPRESS").map_or(false, |v| v == "1") {
             let code = run_dash_c_content_only(&proxy_args);
-            emit_shim_hint();
+
             return Some(code);
         }
-        emit_shim_hint(); // before execvp replaces this process
         return Some(exec_real_shell(&proxy_args));
     }
 
@@ -360,13 +367,11 @@ fn try_shell_dash_c() -> Option<i32> {
     let stdin_is_pipe = unsafe { libc::isatty(libc::STDIN_FILENO) } == 0;
     if stdin_is_pipe {
         let code = run_dash_c_piped(&proxy_args, &cmd_str, mode);
-        emit_shim_hint();
         return Some(code);
     }
 
     match mish::cli::proxy::run_with_mode(&proxy_args, mode) {
         Ok(exit_code) => {
-            emit_shim_hint();
             Some(exit_code)
         }
         Err(e) => {
