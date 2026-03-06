@@ -67,6 +67,20 @@ impl OutputSpool {
         inner.total_written += data.len();
     }
 
+    /// Replace all spool contents with new data.
+    /// Used by dedicated PTY processes where the screen buffer
+    /// is a snapshot, not an append stream.
+    pub fn clear_and_write(&self, data: &[u8]) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.buffer.fill(0);
+        inner.write_pos = 0;
+        inner.len = 0;
+        inner.total_written = 0;
+        drop(inner);
+        // Re-use the existing write logic for proper wrap handling
+        self.write(data);
+    }
+
     /// Read the last `max_bytes` bytes from the spool.
     ///
     /// Returns fewer bytes if the spool contains less data than requested.
