@@ -1591,15 +1591,8 @@ fn test_82_dash_c_non_tty_passthrough() {
         .expect("mish should run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Content-only mode: body first, then footer — not JSON
-    assert!(
-        stdout.starts_with("json_compat"),
-        "body should start with command output"
-    );
-    assert!(
-        stdout.contains("\u{2500}\u{2500}") && stdout.contains("exit:0"),
-        "should have content-only footer"
-    );
+    // Raw output, not JSON — just the echo output
+    assert_eq!(stdout.trim(), "json_compat");
 
     // exit code preserved through passthrough
     let output = mish()
@@ -1668,8 +1661,8 @@ fn test_84_dash_c_edge_cases() {
 
 #[test]
 #[serial(pty)]
-fn test_85_dash_c_non_tty_deduplicates() {
-    // Non-TTY stdout → content-only mode: squasher deduplicates repeated lines
+fn test_85_dash_c_non_tty_preserves_all_lines() {
+    // Non-TTY stdout → byte-exact passthrough (default), no dedup
     let output = mish()
         .args([
             "-c",
@@ -1682,20 +1675,9 @@ fn test_85_dash_c_non_tty_deduplicates() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line_count = stdout.lines().count();
-    // Dedup should reduce 100 identical lines significantly
-    assert!(
-        line_count < 100,
-        "content-only mode should dedup, got {line_count} lines (expected < 100)"
-    );
-    // Should contain dedup marker
-    assert!(
-        stdout.contains("(x"),
-        "deduped output should contain (xN) marker"
-    );
-    // Should end with footer
-    assert!(
-        stdout.contains("\u{2500}\u{2500}"),
-        "content-only output should have footer"
+    assert_eq!(
+        line_count, 100,
+        "non-TTY passthrough must preserve all 100 lines, got {line_count}"
     );
 }
 
@@ -1704,8 +1686,8 @@ fn test_85_dash_c_non_tty_deduplicates() {
 #[test]
 #[serial(pty)]
 fn test_85b_dash_c_diff_fidelity() {
-    // Verify that diff-like output is not deduped (content-type detection).
-    // Footer is appended but diff lines themselves are preserved.
+    // Verify that diff-like output passes through byte-for-byte when stdout
+    // is not a TTY (default passthrough mode).
     let output = mish()
         .args(["-c", r#"printf -- '-  old line\n+  new line\n-  foo bar\n+  foo baz\n'"#])
         .output()
@@ -1713,38 +1695,20 @@ fn test_85b_dash_c_diff_fidelity() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-    // Diff lines should be present and unmodified (footer is last line)
-    assert!(
-        stdout.contains("-  old line"),
-        "diff line '-  old line' must be preserved"
-    );
-    assert!(
-        stdout.contains("+  new line"),
-        "diff line '+  new line' must be preserved"
-    );
-    assert!(
-        stdout.contains("-  foo bar"),
-        "diff line '-  foo bar' must be preserved"
-    );
-    assert!(
-        stdout.contains("+  foo baz"),
-        "diff line '+  foo baz' must be preserved"
-    );
-    // Last line should be the footer
-    assert!(
-        lines.last().unwrap().contains("\u{2500}\u{2500}"),
-        "last line should be footer, got: {}",
-        lines.last().unwrap()
+    assert_eq!(
+        stdout.trim(),
+        "-  old line\n+  new line\n-  foo bar\n+  foo baz",
+        "diff lines must pass through unmodified (no dedup)"
     );
 }
 
-// ── Content-only mode (non-TTY) tests ──
+// ── Content-only mode (MISH_COMPRESS=1) tests ──
 
 #[test]
-fn test_85c_content_only_no_header() {
-    // Output starts with command output, not a mish header
+fn test_85c_compress_no_header() {
+    // MISH_COMPRESS=1: output starts with command output, not a mish header
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args(["-c", "echo hello_world"])
         .output()
         .expect("mish should run");
@@ -1759,9 +1723,10 @@ fn test_85c_content_only_no_header() {
 }
 
 #[test]
-fn test_85d_content_only_footer() {
-    // Piped output ends with ── + exit:0 ── footer line
+fn test_85d_compress_footer() {
+    // MISH_COMPRESS=1: piped output ends with ── + exit:0 ── footer line
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args(["-c", "echo hello"])
         .output()
         .expect("mish should run");
@@ -1776,9 +1741,10 @@ fn test_85d_content_only_footer() {
 }
 
 #[test]
-fn test_85e_content_only_dedup() {
-    // 50 identical lines → deduped with (xN) marker
+fn test_85e_compress_dedup() {
+    // MISH_COMPRESS=1: 50 identical lines → deduped with (xN) marker
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args(["-c", "for i in $(seq 1 50); do echo same_line; done"])
         .output()
         .expect("mish should run");
@@ -1792,9 +1758,10 @@ fn test_85e_content_only_dedup() {
 }
 
 #[test]
-fn test_85f_content_only_complete_task_bypass() {
-    // COMPLETE_TASK sentinel → byte-exact passthrough, no footer
+fn test_85f_compress_complete_task_bypass() {
+    // MISH_COMPRESS=1: COMPLETE_TASK sentinel → byte-exact passthrough, no footer
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args([
             "-c",
             "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && echo patch_line",
@@ -1820,9 +1787,10 @@ fn test_85f_content_only_complete_task_bypass() {
 }
 
 #[test]
-fn test_85g_content_only_exit_code() {
-    // Exit code is preserved
+fn test_85g_compress_exit_code() {
+    // MISH_COMPRESS=1: exit code is preserved
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args(["-c", "exit 42"])
         .output()
         .expect("mish should run");
@@ -1831,10 +1799,9 @@ fn test_85g_content_only_exit_code() {
 }
 
 #[test]
-fn test_85h_content_only_passthrough_escape() {
-    // MISH_PASSTHROUGH=1 → all lines preserved, no dedup, no footer
+fn test_85h_default_passthrough_no_compress() {
+    // Default (no MISH_COMPRESS): all lines preserved, no dedup, no footer
     let output = mish()
-        .env("MISH_PASSTHROUGH", "1")
         .args([
             "-c",
             "for i in $(seq 1 100); do echo repeated_line; done",
@@ -1847,18 +1814,19 @@ fn test_85h_content_only_passthrough_escape() {
     let line_count = stdout.lines().count();
     assert_eq!(
         line_count, 100,
-        "MISH_PASSTHROUGH=1 must preserve all 100 lines, got {line_count}"
+        "default non-TTY must preserve all 100 lines, got {line_count}"
     );
     assert!(
         !stdout.contains("\u{2500}\u{2500}"),
-        "MISH_PASSTHROUGH=1 must not add footer"
+        "default non-TTY must not add footer"
     );
 }
 
 #[test]
-fn test_85i_content_only_diff_preserved() {
-    // Diff-like output should not be deduped (content-type detection)
+fn test_85i_compress_diff_preserved() {
+    // MISH_COMPRESS=1: diff-like output should not be deduped (content-type detection)
     let output = mish()
+        .env("MISH_COMPRESS", "1")
         .args(["-c", r#"printf -- '--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3\n'"#])
         .output()
         .expect("mish should run");

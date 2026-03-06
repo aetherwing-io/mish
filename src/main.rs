@@ -285,16 +285,17 @@ fn try_shell_dash_c() -> Option<i32> {
         proxy_args.extend_from_slice(&args[c_pos + 2..]);
     }
 
-    // Non-TTY stdout → content-only mode: squasher pipeline (dedup, truncation)
-    // but no mish headers. Footer goes to stdout so the model sees compression
-    // metadata. MISH_PASSTHROUGH=1 forces exec_real_shell() (byte-exact passthrough).
-    // COMPLETE_TASK sentinel bypasses squasher entirely (SWE-bench submission).
+    // Non-TTY stdout → byte-exact passthrough by default. The squasher can't
+    // distinguish file content (cat, head, sed) from build output, so dedup
+    // corrupts source code reads (blank lines become "(x62)", repeated patterns
+    // collapse). MISH_COMPRESS=1 opts in to squasher pipeline for environments
+    // where all non-TTY output is known to be build/test output.
     let stdout_is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) } != 0;
     if !stdout_is_tty {
-        if std::env::var("MISH_PASSTHROUGH").map_or(false, |v| v == "1") {
-            return Some(exec_real_shell(&proxy_args));
+        if std::env::var("MISH_COMPRESS").map_or(false, |v| v == "1") {
+            return Some(run_dash_c_content_only(&proxy_args));
         }
-        return Some(run_dash_c_content_only(&proxy_args));
+        return Some(exec_real_shell(&proxy_args));
     }
 
     tracing_subscriber::fmt::init();
