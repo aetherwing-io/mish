@@ -76,17 +76,29 @@ async fn handle_read_tail(
         .get(&params.alias)
         .ok_or_else(|| ToolError::alias_not_found(&params.alias))?;
 
-    // Drain interpreter PTY output to spool before reading
-    if let Some(ref interpreter) = entry.interpreter {
-        interpreter.drain_to_spool().await.ok();
+    // Drain PTY output before reading
+    if let Some(ref managed) = entry.interpreter {
+        managed.drain_to_spool().await.ok();
     }
 
     let lines_requested = params.lines.unwrap_or(50);
 
-    // Read raw bytes from spool, strip ANSI, then extract last N lines.
-    let raw = entry.spool.read_all();
-    let text = String::from_utf8_lossy(&raw);
-    let stripped = vte_strip::strip_ansi(&text);
+    // For dedicated PTY processes, read from virtual terminal screen buffer.
+    // For everything else, read from spool with VTE stripping.
+    let stripped = if let Some(ref managed) = entry.interpreter {
+        if let Some(Ok(screen)) = managed.read_screen() {
+            screen
+        } else {
+            let raw = entry.spool.read_all();
+            let text = String::from_utf8_lossy(&raw);
+            vte_strip::strip_ansi(&text)
+        }
+    } else {
+        let raw = entry.spool.read_all();
+        let text = String::from_utf8_lossy(&raw);
+        vte_strip::strip_ansi(&text)
+    };
+
     let all_lines: Vec<&str> = stripped.lines().collect();
 
     let start = all_lines.len().saturating_sub(lines_requested);
@@ -119,14 +131,27 @@ async fn handle_read_full(
         .get(&params.alias)
         .ok_or_else(|| ToolError::alias_not_found(&params.alias))?;
 
-    // Drain interpreter PTY output to spool before reading
-    if let Some(ref interpreter) = entry.interpreter {
-        interpreter.drain_to_spool().await.ok();
+    // Drain PTY output before reading
+    if let Some(ref managed) = entry.interpreter {
+        managed.drain_to_spool().await.ok();
     }
 
-    let raw = entry.spool.read_all();
-    let text = String::from_utf8_lossy(&raw);
-    let output = vte_strip::strip_ansi(&text);
+    // For dedicated PTY processes, read from virtual terminal screen buffer (with scrollback).
+    // For everything else, read from spool with VTE stripping.
+    let output = if let Some(ref managed) = entry.interpreter {
+        if let Some(Ok(screen)) = managed.read_screen_full() {
+            screen
+        } else {
+            let raw = entry.spool.read_all();
+            let text = String::from_utf8_lossy(&raw);
+            vte_strip::strip_ansi(&text)
+        }
+    } else {
+        let raw = entry.spool.read_all();
+        let text = String::from_utf8_lossy(&raw);
+        vte_strip::strip_ansi(&text)
+    };
+
     let lines_count = output.lines().count();
 
     let resp = ShInteractReadTailResponse {
