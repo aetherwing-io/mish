@@ -71,11 +71,30 @@ DON'T run `mish python3` bare — it opens a REPL that hangs.
 Don't fall back to bare bash. mish isn't broken — check your syntax and retry.
 Raw output will waste more tokens than fixing the command.
 
+## Piping and output capture
+
+`mish <cmd>` (proxy mode) always compresses output. Do not pipe it:
+
+  WRONG: mish grep pattern src/ | wc -l    (compressed count is wrong)
+  RIGHT: mish grep pattern src/             (read the output directly)
+
+`mish -c "cmd"` and `bash -c "cmd"` (when bash is symlinked to mish) detect
+whether stdout is a terminal. If stdout is piped, redirected, or captured by a
+subshell, mish execs the real shell directly — no headers, no dedup, no
+compression. Output is byte-for-byte identical to /bin/bash.
+
+  bash -c "cat patch.diff" | git apply     # safe — raw passthrough
+  result=$(bash -c "python3 script.py")    # safe — raw passthrough
+  bash -c "echo hello"                     # terminal — mish compresses
+
+This means harnesses, test runners, and pipelines that invoke `bash -c` through
+a mish symlink get clean output automatically. No special handling needed.
+
 ## Anti-patterns
 
   DON'T drop the mish prefix after a failure
   DON'T use cat/head/tail to read files — use file tools
   DON'T use sed/awk/heredoc to edit files — use file tools
   DON'T run mish python3 bare — use mish session for REPLs
-  DON'T pipe mish output to other commands — mish IS the pipe
+  DON'T pipe mish proxy output to other commands — mish IS the pipe
 "#;
