@@ -152,8 +152,255 @@ enum ConfigCommands {
     },
 }
 
+/// Detect mish subcommands that are pathological inside a PTY wrapper.
+///
+/// Returns `Some(error_message)` if the command should be rejected.
+///
+/// Hazardous patterns:
+/// - `mish serve` — stdout is JSON-RPC transport, PTY corrupts framing
+/// - `mish attach` — needs direct terminal access for operator handoff
+/// - `mish session start --fg` — blocks forever inside captured PTY
+/// - `mish session host` — same as --fg (internal, but guard anyway)
+fn check_nested_mish_hazard(cmd: &str) -> Option<&'static str> {
+    // Tokenize: split on whitespace, pipes, semicolons, && to find mish invocations.
+    // We scan for "mish" followed by a hazardous subcommand anywhere in the string,
+    // since the command may be "cd /foo && mish serve" or similar.
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        // Match "mish" or a path ending in "/mish"
+        let w = words[i];
+        let is_mish = w == "mish" || w.ends_with("/mish");
+        if !is_mish {
+            i += 1;
+            continue;
+        }
+
+        // Look at the subcommand (next non-flag word)
+        let sub = words.get(i + 1).copied().unwrap_or("");
+        match sub {
+            "serve" => {
+                return Some(
+                    "refusing to run `mish serve` inside -c (stdout is JSON-RPC transport; \
+                     PTY capture would corrupt framing)",
+                );
+            }
+            "attach" => {
+                return Some(
+                    "refusing to run `mish attach` inside -c (needs direct terminal access \
+                     for operator handoff)",
+                );
+            }
+            "session" => {
+                let sub2 = words.get(i + 2).copied().unwrap_or("");
+                match sub2 {
+                    "host" => {
+                        return Some(
+                            "refusing to run `mish session host` inside -c (blocks forever \
+                             inside captured PTY)",
+                        );
+                    }
+                    "start" => {
+                        // Only --fg is hazardous; detached start is fine
+                        let rest = &words[i + 3..];
+                        if rest.iter().any(|w| *w == "--fg") {
+                            return Some(
+                                "refusing to run `mish session start --fg` inside -c \
+                                 (blocks forever inside captured PTY; remove --fg to detach)",
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Pre-clap intercept for `mish -c "cmd"` and `mish -lc "cmd"`.
+///
+/// Returns `Some(exit_code)` if `-c`/`-lc` was found, `None` otherwise.
+/// Also scans for `--json`, `--passthrough`, `--context` before `-c` so
+/// output mode flags still work (e.g. `mish --json -c "echo hi"`).
+fn try_shell_dash_c() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Find the position of -c or -lc (skip argv[0])
+    let mut c_pos = None;
+    let mut json = false;
+    let mut passthrough = false;
+    let mut context = false;
+
+    for (i, arg) in args.iter().enumerate().skip(1) {
+        match arg.as_str() {
+            "-c" | "-lc" => {
+                c_pos = Some(i);
+                break;
+            }
+            "--json" => json = true,
+            "--passthrough" => passthrough = true,
+            "--context" => context = true,
+            _ => {
+                // Any other arg before -c means this isn't a shell-compat invocation
+                return None;
+            }
+        }
+    }
+
+    let c_pos = c_pos?;
+
+    // The command string is the next argument after -c
+    let cmd_str = args.get(c_pos + 1).cloned().unwrap_or_default();
+    if cmd_str.is_empty() {
+        eprintln!("mish: -c: option requires an argument");
+        return Some(2);
+    }
+
+    // Reject commands that are pathological inside a PTY wrapper.
+    // These need direct terminal access or use stdout as a protocol transport.
+    if let Some(msg) = check_nested_mish_hazard(&cmd_str) {
+        eprintln!("mish: -c: {msg}");
+        return Some(1);
+    }
+
+    // Any remaining args after the command string are positional params ($0, $1, ...)
+    // passed through to /bin/sh -c
+    // Use /bin/bash for bashism support (process substitution, [[ ]], arrays).
+    // Agent frameworks call `bash -c`; if we route through /bin/sh, bashisms
+    // break on Linux where /bin/sh is dash. Fall back to /bin/sh if no bash.
+    let shell = if std::path::Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    };
+    let mut proxy_args = vec![
+        shell.to_string(),
+        "-c".to_string(),
+        cmd_str.clone(),
+    ];
+    if args.len() > c_pos + 2 {
+        proxy_args.extend_from_slice(&args[c_pos + 2..]);
+    }
+
+    tracing_subscriber::fmt::init();
+
+    let mode = if json {
+        OutputMode::Json
+    } else if passthrough {
+        OutputMode::Passthrough
+    } else if context {
+        OutputMode::Context
+    } else {
+        OutputMode::Human
+    };
+
+    // When stdin is a pipe (agent frameworks, test harnesses), bypass the PTY
+    // entirely and use Command with inherited stdin. PTYs can't forward piped
+    // stdin reliably (no clean EOF signaling). Command handles it natively —
+    // the child inherits the parent's pipe fd and the kernel delivers EOF when
+    // the write end closes.
+    let stdin_is_pipe = unsafe { libc::isatty(libc::STDIN_FILENO) } == 0;
+    if stdin_is_pipe {
+        return Some(run_dash_c_piped(&proxy_args, &cmd_str, mode));
+    }
+
+    match mish::cli::proxy::run_with_mode(&proxy_args, mode) {
+        Ok(exit_code) => Some(exit_code),
+        Err(e) => {
+            eprintln!("mish: {e}");
+            Some(1)
+        }
+    }
+}
+
+/// Run a `-c` command when stdin is a pipe.
+///
+/// Bypasses the PTY (which can't forward piped stdin) and uses
+/// `std::process::Command` with `Stdio::inherit()` for stdin.
+/// Output is still processed through the squasher pipeline.
+fn run_dash_c_piped(args: &[String], cmd_str: &str, mode: OutputMode) -> i32 {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let start = Instant::now();
+
+    let child = Command::new(&args[0])
+        .args(&args[1..])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("mish: {e}");
+            return 1;
+        }
+    };
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("mish: {e}");
+            return 1;
+        }
+    };
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let exit_code = output.status.code().unwrap_or(1);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let combined = if stderr.is_empty() {
+        stdout.into_owned()
+    } else {
+        format!("{}{}", stdout, stderr)
+    };
+
+    // Run through squasher pipeline for condensed output
+    let lines: Vec<mish::core::line_buffer::Line> = combined
+        .lines()
+        .map(|l| mish::core::line_buffer::Line::Complete(l.to_string()))
+        .collect();
+    let total_lines = lines.len() as u64;
+    let (processed, _metrics) = mish::handlers::condense::post_process(lines, None);
+    let body = processed.join("\n");
+
+    let result = mish::core::format::FormatInput {
+        command: cmd_str.to_string(),
+        exit_code,
+        category: "condense".to_string(),
+        body,
+        raw_output: Some(combined),
+        total_lines: Some(total_lines),
+        elapsed_secs: Some(elapsed),
+        outcomes: vec![],
+        hazards: vec![],
+        enrichment: vec![],
+        recommendations: vec![],
+    };
+
+    let formatted = mish::core::format::format_result(&result, mode);
+    println!("{}", formatted);
+
+    exit_code
+}
+
 #[tokio::main]
 async fn main() {
+    // Pre-clap intercept: handle `-c` and `-lc` for shell-compatible invocation.
+    // Agents invoke `mish -c "command"` or `mish -lc "command"` (Docker login shell).
+    // Clap can't handle these because `-c` collides with top-level flag parsing
+    // before reaching the external_subcommand variant.
+    if let Some(result) = try_shell_dash_c() {
+        std::process::exit(result);
+    }
+
     let cli = Cli::parse();
 
     // --agents: print agent usage guide and exit.

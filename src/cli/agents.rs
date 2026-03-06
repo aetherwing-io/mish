@@ -1,159 +1,81 @@
 //! `mish --agents` — usage guide for LLM agents.
 
-pub const AGENT_GUIDE: &str = r#"# mish agent guide
+pub const AGENT_GUIDE: &str = r#"# mish — agent guide
 
-mish is an MCP server that gives you 5 tools for running and managing shell
-commands. This guide teaches you WHEN and HOW to use each one.
+## The Rule
 
-## The 5 Tools
+Prefix ALL shell commands with `mish`.
 
-  sh_run      Run a command, wait for it to finish, get output
-  sh_spawn    Start a background process, don't wait for it to finish
-  sh_interact Send input / read output / signal a spawned process
-  sh_session  Manage named PTY sessions
-  sh_help     Show the reference card (tool params, watch presets, limits)
+Raw terminal output is full of noise that humans need but wastes your tokens —
+ANSI escape codes, progress bars, spinner animations, repeated status lines.
+mish dampens this noise and boosts the signal you actually reason about: errors,
+results, diagnostics, and meaningful content.
 
-## sh_run — synchronous commands
+## Examples
 
-Use for commands that finish quickly and whose output you need now.
+  mish grep -rn "pattern" src/       (not: grep -rn "pattern" src/)
+  mish python3 script.py             (not: python3 script.py)
+  mish find . -name "*.py"           (not: find . -name "*.py")
+  mish ls -la                        (not: ls -la)
+  mish cargo test 2>&1               (not: cargo test)
+  mish git diff HEAD~1               (not: git diff HEAD~1)
 
-  GOOD: sh_run("ls -la src/")
-  GOOD: sh_run("cargo check 2>&1")
-  GOOD: sh_run("git diff HEAD~1")
-  GOOD: sh_run("python3 -c 'print(1+1)'")
+## How mish enhances your signal
 
-  BAD:  sh_run("cargo build")          — may take minutes, blocks you
-  BAD:  sh_run("npm start")            — server never exits, you'll timeout
-  BAD:  sh_run("tail -f /var/log/sys") — infinite stream, you'll timeout
+grep — raw bash dumps ANSI color codes into your context:
 
-Rule: if a command might take more than ~30s or runs forever, use sh_spawn.
+  raw:  \x1b[35msrc/foo.rs\x1b[0m:\x1b[32m42\x1b[0m:    let x = \x1b[1;31mpattern\x1b[0m;
+  mish: src/foo.rs:42:    let x = pattern;
 
-### watch — filter noisy output
+npm install — 150 progress lines become 1:
 
-  sh_run("make test", watch="FAIL|error")        — only lines matching regex
-  sh_run("cargo test", watch="@errors")           — use a preset filter
-  sh_run("cargo test", watch="@errors", unmatched="drop")  — hide non-matches
+  raw:  ⠋ reify:lodash: timing reifyNode...  (x150 similar lines)
+        added 247 packages in 12s
+  mish: added 247 packages in 12s
+        -- + 1 line (152 compressed) --
 
-## sh_spawn — background processes
+cargo test — passing tests are noise, failures are signal:
 
-Use for anything long-running: builds, servers, watchers, test suites.
+  raw:  test foo::bar ... ok  (x200)
+        test foo::qux ... FAILED
+        <failures section buried in 200 lines>
+  mish: test foo::qux ... FAILED
+        panicked at src/foo.rs:42
+        test result: 1 passed; 1 failed
 
-  sh_spawn(alias="build", cmd="cargo build 2>&1")
-  sh_spawn(alias="server", cmd="python3 -m http.server 8080")
-  sh_spawn(alias="tests", cmd="cargo test 2>&1", wait_for="test result")
+In each case: noise dampened, signal preserved, tokens saved.
 
-### wait_for — confirm startup before moving on
+## File operations
 
-  sh_spawn(alias="api", cmd="node server.js", wait_for="listening on port")
+Use your platform's file tools (slipstream, Read/Edit, etc.) for file reads and
+edits. Don't pipe through mish — it's for commands, not file content.
 
-  wait_for is a regex. sh_spawn returns as soon as a matching line appears.
-  This lets you confirm a server is ready before using it.
+  WRONG: cat src/foo.py
+  WRONG: sed -i 's/old/new/' src/foo.py
+  WRONG: cat > file.py << 'EOF'
+  RIGHT: slipstream / structured file tools for reads, edits, and creation
 
-### Naming aliases
+## Persistent sessions
 
-  GOOD: alias="build", alias="api", alias="db"    — short, meaningful
-  BAD:  alias="process1", alias="thing"            — unhelpful when you have 5
+For interactive interpreters (Python REPL, node, psql), use `mish session`:
 
-## sh_interact — work with spawned processes
+  mish session start py --cmd python3
+  mish session send py "import json; print(json.dumps({'a': 1}))"
+  mish session send py "result = some_function(); print(result)"
+  mish session close py
 
-After sh_spawn, use sh_interact to monitor and control the process.
+DON'T run `mish python3` bare — it opens a REPL that hangs.
 
-### read_tail — check recent output
+## When commands fail
 
-  sh_interact(alias="build", action="read_tail")
-  sh_interact(alias="build", action="read_tail", lines=100)
+Don't fall back to bare bash. mish isn't broken — check your syntax and retry.
+Raw output will waste more tokens than fixing the command.
 
-  This is your main feedback loop. Spawn something, do other work, then
-  read_tail to see what happened.
+## Anti-patterns
 
-### send — provide input
-
-  sh_interact(alias="db", action="send", input="SELECT 1;\n")
-
-  Always include \n — that's the Enter key.
-
-### signal / kill — manage lifecycle
-
-  sh_interact(alias="server", action="signal", input="SIGINT")
-  sh_interact(alias="server", action="kill")
-
-### status — check if still running
-
-  sh_interact(alias="build", action="status")
-
-## sh_session — PTY session lifecycle
-
-  sh_session(action="list")   — see all active sessions and processes
-
-  The process table digest is included in every response, so you rarely
-  need to call this explicitly. It's there when you need a full picture.
-
-## Patterns
-
-### 1. Fire and check back
-
-  Start a build, do other work, check later:
-
-    sh_spawn(alias="build", cmd="cargo build 2>&1")
-    ... edit files, read docs, whatever ...
-    sh_interact(alias="build", action="read_tail")
-
-  DO NOT sh_run a long build and sit there waiting.
-
-### 2. Start server, confirm ready, then use it
-
-    sh_spawn(alias="api", cmd="./start-server.sh", wait_for="ready on :3000")
-    sh_run("curl localhost:3000/health")
-
-### 3. Run tests, filter to failures
-
-    sh_run("cargo test 2>&1", watch="FAILED|panicked|error\\[")
-
-  Or for a large test suite:
-
-    sh_spawn(alias="tests", cmd="cargo test 2>&1", wait_for="test result")
-    sh_interact(alias="tests", action="read_tail")
-
-### 4. Interactive REPL (python, node, psql)
-
-    sh_spawn(alias="py", cmd="python3")
-    sh_interact(alias="py", action="send", input="import json\n")
-    sh_interact(alias="py", action="send", input="json.dumps({'a': 1})\n")
-    sh_interact(alias="py", action="read_tail")
-
-### 5. Multiple concurrent tasks
-
-    sh_spawn(alias="build-fe", cmd="cd frontend && npm run build 2>&1")
-    sh_spawn(alias="build-be", cmd="cargo build 2>&1")
-    ... later ...
-    sh_interact(alias="build-fe", action="read_tail")
-    sh_interact(alias="build-be", action="read_tail")
-
-## Anti-Patterns
-
-  DON'T sh_run a server or daemon        — it blocks until timeout
-  DON'T sh_run a build you can't predict  — spawn it, check back
-  DON'T poll in a tight loop              — use wait_for on spawn
-  DON'T ignore the process table          — every response shows it
-  DON'T spawn without a meaningful alias  — you'll lose track
-  DON'T send input without \n             — nothing happens without Enter
-  DON'T sh_run("cat bigfile.txt")         — use your file-read tools instead
-  DON'T sh_run("sleep 60 && cmd")         — spawn it, interact later
-
-## Output Behavior
-
-mish squashes output to save tokens:
-  - ANSI escape codes are stripped
-  - Progress bars and spinners are removed
-  - Repeated/similar lines are deduplicated
-  - Long output is truncated with head/tail (Oreo style)
-
-Use watch="" to filter further. Use read_tail with lines=N for more context.
-
-## Process Table Digest
-
-Every mish response includes a process table showing all running processes,
-their PIDs, aliases, uptimes, and states. Use this ambient awareness instead
-of manually checking each process. If something exited or errored, you'll
-see it without asking.
+  DON'T drop the mish prefix after a failure
+  DON'T use cat/head/tail to read files — use file tools
+  DON'T use sed/awk/heredoc to edit files — use file tools
+  DON'T run mish python3 bare — use mish session for REPLs
+  DON'T pipe mish output to other commands — mish IS the pipe
 "#;

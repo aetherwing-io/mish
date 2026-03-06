@@ -198,6 +198,7 @@ pub fn handle(
     action: Option<&Action>,
 ) -> Result<CondenseResult, Box<dyn std::error::Error>> {
     // 1. Spawn command in PTY
+    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
     let pty = PtyCapture::spawn(args)?;
 
     // 2. Install signal handlers (restored on drop)
@@ -218,7 +219,6 @@ pub fn handle(
     let mut last_flush = now;
 
     // Interactive mode state — for raw mode detection and passthrough
-    let stdin_is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
     let mut interactive_mode = false;
     let mut _terminal_guard: Option<TerminalGuard> = None;
 

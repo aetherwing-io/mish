@@ -1198,3 +1198,669 @@ fn test_71_unknown_command_condense_category() {
         parsed["category"]
     );
 }
+
+// =========================================================================
+// 22. Shell-compatible -c flag
+//
+// Comprehensive drop-in compatibility tests: mish -c must match bash -c
+// on exit codes, side effects, and shell construct support. Output format
+// differs (mish squashes), but command output must be present.
+// Note: PTY merges stdout+stderr — stderr separation is not testable.
+// =========================================================================
+
+// ── Exit codes ──
+
+#[test]
+#[serial(pty)]
+fn test_72_dash_c_exit_codes() {
+    // true → 0
+    mish().args(["-c", "true"]).assert().code(0);
+    // false → 1
+    mish().args(["-c", "false"]).assert().code(1);
+    // explicit exit codes
+    mish().args(["-c", "exit 0"]).assert().code(0);
+    mish().args(["-c", "exit 1"]).assert().code(1);
+    mish().args(["-c", "exit 42"]).assert().code(42);
+    mish().args(["-c", "exit 127"]).assert().code(127);
+    // nonexistent command → 127
+    mish()
+        .args(["-c", "nonexistent_command_xyz_72"])
+        .assert()
+        .code(127);
+    // test builtin failures
+    mish().args(["-c", "test -f /nonexistent"]).assert().code(1);
+    mish().args(["-c", "[ 1 -eq 2 ]"]).assert().code(1);
+}
+
+// ── Basic output ──
+
+#[test]
+#[serial(pty)]
+fn test_73_dash_c_basic_output() {
+    mish()
+        .args(["-c", "echo hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    mish()
+        .args(["-c", "echo hello world"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello world"));
+    mish()
+        .args(["-c", "printf 'abc\\ndef\\n'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("abc"));
+    mish()
+        .args(["-c", "echo 'single quotes'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("single quotes"));
+    mish()
+        .args(["-c", r#"echo "double quotes""#])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("double quotes"));
+    mish()
+        .args(["-c", "printf 'a\\tb\\tc\\n'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a"));
+}
+
+// ── Shell constructs (&&, ||, ;) ──
+
+#[test]
+#[serial(pty)]
+fn test_74_dash_c_shell_constructs() {
+    mish()
+        .args(["-c", "true && true && true"])
+        .assert()
+        .code(0);
+    mish()
+        .args(["-c", "true && false && true"])
+        .assert()
+        .code(1);
+    mish()
+        .args(["-c", "false || false || true"])
+        .assert()
+        .code(0);
+    mish().args(["-c", "false; true"]).assert().code(0);
+    mish()
+        .args(["-c", "echo aaa && echo bbb"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aaa"))
+        .stdout(predicate::str::contains("bbb"));
+    mish()
+        .args(["-c", "false || echo fallback"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fallback"));
+    mish()
+        .args(["-c", "echo first; echo second"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("second"));
+}
+
+// ── Pipes ──
+
+#[test]
+#[serial(pty)]
+fn test_75_dash_c_pipes() {
+    mish()
+        .args(["-c", "echo hello | cat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    mish()
+        .args(["-c", "echo hello | grep hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    mish()
+        .args(["-c", "echo hello | cat | cat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    // pipe exit code from last command
+    mish().args(["-c", "echo x | grep y"]).assert().code(1);
+    mish()
+        .args(["-c", "echo -e 'a\\nb\\nc' | wc -l"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3"));
+    mish()
+        .args(["-c", "printf 'c\\na\\nb\\n' | sort"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a"));
+    mish()
+        .args(["-c", "seq 1 100 | head -n 3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3"));
+}
+
+// ── Redirects & file side effects ──
+
+#[test]
+#[serial(pty)]
+fn test_76_dash_c_redirects_and_side_effects() {
+    let dir = TempDir::new().unwrap();
+    let dp = dir.path();
+
+    // stdout redirect creates file
+    let f1 = dp.join("redir.txt");
+    mish()
+        .args(["-c", &format!("echo mish_out > {}", f1.display())])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&f1).unwrap().trim(), "mish_out");
+
+    // append redirect
+    let f2 = dp.join("append.txt");
+    mish()
+        .args([
+            "-c",
+            &format!(
+                "echo line1 > {} && echo line2 >> {}",
+                f2.display(),
+                f2.display()
+            ),
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(&f2).unwrap(),
+        "line1\nline2\n"
+    );
+
+    // redirect to /dev/null
+    mish()
+        .args(["-c", "echo silent > /dev/null"])
+        .assert()
+        .code(0);
+
+    // here-string
+    mish()
+        .args(["-c", "cat <<< 'here_string_test'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("here_string_test"));
+}
+
+// ── Subshells & command substitution ──
+
+#[test]
+#[serial(pty)]
+fn test_77_dash_c_subshells() {
+    mish()
+        .args(["-c", "(echo subshell_out)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("subshell_out"));
+    mish()
+        .args(["-c", "(echo a; (echo nested_b))"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nested_b"));
+    mish()
+        .args(["-c", "echo $(echo cmd_sub)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cmd_sub"));
+    mish()
+        .args(["-c", "echo `echo backtick`"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backtick"));
+    mish().args(["-c", "(exit 7)"]).assert().code(7);
+}
+
+// ── Variables & environment ──
+
+#[test]
+#[serial(pty)]
+fn test_78_dash_c_variables() {
+    mish()
+        .args(["-c", "X=hello; echo $X"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    mish()
+        .args(["-c", "export V=val; echo $V"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("val"));
+    mish()
+        .args(["-c", "echo $((2 + 3))"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5"));
+    mish()
+        .args(["-c", "echo $PATH"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/usr"));
+}
+
+// ── Complex file operations ──
+
+#[test]
+#[serial(pty)]
+fn test_79_dash_c_file_operations() {
+    let dir = TempDir::new().unwrap();
+    let dp = dir.path();
+
+    // printf to file — byte-exact match with bash
+    let mf = dp.join("mish.txt");
+    let bf = dp.join("bash.txt");
+    mish()
+        .args([
+            "-c",
+            &format!("printf 'line1\\nline2\\nline3\\n' > {}", mf.display()),
+        ])
+        .assert()
+        .success();
+    std::process::Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!("printf 'line1\\nline2\\nline3\\n' > {}", bf.display()),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(fs::read(&mf).unwrap(), fs::read(&bf).unwrap());
+
+    // sed -i via -c
+    let ms = dp.join("mish_sed.txt");
+    let bs = dp.join("bash_sed.txt");
+    fs::write(&ms, "hello world\n").unwrap();
+    fs::write(&bs, "hello world\n").unwrap();
+    mish()
+        .args([
+            "-c",
+            &format!("sed -i '' 's/hello/goodbye/' {}", ms.display()),
+        ])
+        .assert()
+        .success();
+    std::process::Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!("sed -i '' 's/hello/goodbye/' {}", bs.display()),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(fs::read(&ms).unwrap(), fs::read(&bs).unwrap());
+
+    // mkdir + touch chain
+    let sub = dp.join("subdir").join("file.txt");
+    mish()
+        .args([
+            "-c",
+            &format!(
+                "mkdir -p {} && touch {}",
+                dp.join("subdir").display(),
+                sub.display()
+            ),
+        ])
+        .assert()
+        .success();
+    assert!(sub.exists());
+
+    // cp via -c
+    let src = dp.join("src.txt");
+    let dst = dp.join("dst.txt");
+    fs::write(&src, "content\n").unwrap();
+    mish()
+        .args([
+            "-c",
+            &format!("cp {} {}", src.display(), dst.display()),
+        ])
+        .assert()
+        .success();
+    assert_eq!(fs::read(&src).unwrap(), fs::read(&dst).unwrap());
+}
+
+// ── Loops & conditionals ──
+
+#[test]
+#[serial(pty)]
+fn test_80_dash_c_loops_and_conditionals() {
+    mish()
+        .args(["-c", "for i in a b c; do echo $i; done"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("c"));
+    mish()
+        .args(["-c", "i=0; while [ $i -lt 3 ]; do i=$((i+1)); done; echo $i"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3"));
+    mish()
+        .args(["-c", "if true; then echo yes; else echo no; fi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("yes"));
+    mish()
+        .args(["-c", "if false; then echo yes; else echo no; fi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no"));
+    mish()
+        .args(["-c", "if false; then exit 0; else exit 3; fi"])
+        .assert()
+        .code(3);
+}
+
+// ── -lc (Docker login shell compat) ──
+
+#[test]
+#[serial(pty)]
+fn test_81_dash_lc_docker_compat() {
+    mish()
+        .args(["-lc", "echo docker_compat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("docker_compat"));
+
+    let dir = TempDir::new().unwrap();
+    let f = dir.path().join("lc_file.txt");
+    mish()
+        .args(["-lc", &format!("echo lc_content > {}", f.display())])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&f).unwrap().trim(), "lc_content");
+
+    mish().args(["-lc", "exit 7"]).assert().code(7);
+}
+
+// ── --json + -c ──
+
+#[test]
+#[serial(pty)]
+fn test_82_dash_c_json_mode() {
+    let output = mish()
+        .args(["--json", "-c", "echo json_compat"])
+        .output()
+        .expect("mish should run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+    assert_eq!(parsed["exit_code"], 0);
+    assert!(
+        parsed["body"].as_str().unwrap().contains("json_compat"),
+        "JSON body should contain command output"
+    );
+
+    // failure exit code in JSON
+    let output = mish()
+        .args(["--json", "-c", "exit 5"])
+        .output()
+        .expect("mish should run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+    assert_eq!(parsed["exit_code"], 5);
+}
+
+// ── Positional parameters ($0, $1, $@) ──
+
+#[test]
+#[serial(pty)]
+fn test_83_dash_c_positional_parameters() {
+    // $0
+    mish()
+        .args(["-c", "echo $0", "myarg"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myarg"));
+    // $1
+    mish()
+        .args(["-c", "echo $1", "_", "argone"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("argone"));
+    // $@
+    mish()
+        .args(["-c", "echo $@", "_", "x", "y", "z"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x y z"));
+}
+
+// ── Edge cases ──
+
+#[test]
+#[serial(pty)]
+fn test_84_dash_c_edge_cases() {
+    // empty command → error exit 2
+    mish().args(["-c", ""]).assert().code(2);
+
+    // whitespace in output
+    mish()
+        .args(["-c", "echo '   spaces   '"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("spaces"));
+
+    // special characters
+    mish()
+        .args(["-c", "echo 'hello!@#'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello!@#"));
+
+    // multi-line output
+    mish()
+        .args(["-c", "printf 'line1\\nline2\\nline3\\n'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("line2"));
+}
+
+// ── Squasher condensation ──
+
+#[test]
+#[serial(pty)]
+fn test_85_dash_c_squashes_output() {
+    let output = mish()
+        .args([
+            "--json",
+            "-c",
+            "for i in $(seq 1 100); do echo repeated_line; done",
+        ])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+
+    let body = parsed["body"].as_str().unwrap();
+    assert!(
+        body.len() < 5000,
+        "squasher should condense 100 identical lines, got {} bytes",
+        body.len()
+    );
+}
+
+// ── Nested mish hazard detection ──
+
+#[test]
+fn test_86_dash_c_rejects_mish_serve() {
+    mish()
+        .args(["-c", "mish serve"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish serve`"));
+}
+
+#[test]
+fn test_87_dash_c_rejects_mish_attach() {
+    mish()
+        .args(["-c", "mish attach hf_abc123"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish attach`"));
+}
+
+#[test]
+fn test_88_dash_c_rejects_session_host() {
+    mish()
+        .args(["-c", "mish session host py --cmd python3"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish session host`"));
+}
+
+#[test]
+fn test_89_dash_c_rejects_session_start_fg() {
+    mish()
+        .args(["-c", "mish session start py --cmd python3 --fg"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish session start --fg`"));
+}
+
+#[test]
+fn test_90_dash_c_allows_session_start_detached() {
+    // session start without --fg is safe (host detaches)
+    // Just check it doesn't get rejected — it will fail on "already running" or similar,
+    // but NOT with a "refusing" error
+    let output = mish()
+        .args(["-c", "mish session start test_90_safe --cmd echo"])
+        .output()
+        .expect("mish should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("refusing"),
+        "detached session start should not be rejected, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_91_dash_c_rejects_serve_in_compound() {
+    // "cd /tmp && mish serve" should still be caught
+    mish()
+        .args(["-c", "cd /tmp && mish serve"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish serve`"));
+}
+
+#[test]
+fn test_92_dash_c_rejects_path_qualified_mish() {
+    mish()
+        .args(["-c", "/opt/homebrew/bin/mish serve"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("refusing to run `mish serve`"));
+}
+
+// ── Piped stdin forwarding ──
+
+#[test]
+#[serial(pty)]
+fn test_93_dash_c_piped_stdin() {
+    let output = mish()
+        .args(["-c", "cat"])
+        .write_stdin("piped_stdin_test\n")
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("piped_stdin_test"),
+        "piped stdin should reach the command, got: {stdout}"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_94_dash_c_piped_stdin_multiline() {
+    let output = mish()
+        .args(["-c", "cat"])
+        .write_stdin("line1\nline2\nline3\n")
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("line1"), "should contain line1");
+    assert!(stdout.contains("line2"), "should contain line2");
+    assert!(stdout.contains("line3"), "should contain line3");
+}
+
+#[test]
+#[serial(pty)]
+fn test_95_dash_c_piped_stdin_to_grep() {
+    let output = mish()
+        .args(["-c", "grep target_line"])
+        .write_stdin("noise\ntarget_line\nmore_noise\n")
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("target_line"),
+        "grep should find the piped line, got: {stdout}"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_96_dash_c_piped_stdin_to_wc() {
+    let output = mish()
+        .args(["-c", "wc -l"])
+        .write_stdin("a\nb\nc\n")
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("3") || stdout.contains("4"),
+        "wc should count piped lines, got: {stdout}"
+    );
+}
+
+// ── Bashism support (process substitution) ──
+
+#[test]
+#[serial(pty)]
+fn test_97_dash_c_process_substitution() {
+    // Process substitution requires /bin/bash, not /bin/sh
+    let output = mish()
+        .args(["-c", "diff <(echo aaa) <(echo bbb)"])
+        .output()
+        .expect("mish should run");
+
+    // diff returns exit 1 when files differ
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("aaa") && stdout.contains("bbb"),
+        "process substitution should work via /bin/bash, got: {stdout}"
+    );
+}
+
+#[test]
+#[serial(pty)]
+fn test_98_dash_c_no_piped_stdin_no_hang() {
+    // Commands that don't read stdin should not hang when stdin is a pipe
+    // (agent frameworks often connect stdin to a pipe but never send data).
+    // assert_cmd connects stdin to a pipe by default.
+    mish()
+        .args(["-c", "echo no_stdin_needed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no_stdin_needed"));
+}
