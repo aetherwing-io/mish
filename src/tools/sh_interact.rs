@@ -168,10 +168,11 @@ async fn handle_send_input(
     }
 
     // Interpreter mode: execute input synchronously, or fire-and-forget in background.
-    if let Some(ref interpreter) = entry.interpreter {
-        if params.background.unwrap_or(false) {
-            let bytes_written = interpreter.write_raw(input).await.map_err(|e| {
-                ToolError::new(ERR_SHELL_ERROR, format!("interpreter write_raw error: {e}"))
+    if let Some(ref managed) = entry.interpreter {
+        // Dedicated PTY or background mode: raw write (fire-and-forget).
+        if params.background.unwrap_or(false) || !managed.supports_execute() {
+            let bytes_written = managed.write_raw(input).await.map_err(|e| {
+                ToolError::new(ERR_SHELL_ERROR, format!("write_raw error: {e}"))
             })?;
 
             let resp = serde_json::json!({
@@ -185,8 +186,9 @@ async fn handle_send_input(
             return Ok(resp);
         }
 
+        // REPL foreground: sentinel-wrapped execute.
         let timeout = Duration::from_secs(30);
-        let result = interpreter.execute(input, timeout).await.map_err(|e| {
+        let result = managed.execute(input, timeout).await.map_err(|e| {
             ToolError::new(ERR_SHELL_ERROR, format!("interpreter execute error: {e}"))
         })?;
 

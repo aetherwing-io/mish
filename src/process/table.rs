@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::MishConfig;
-use crate::interpreter::ManagedInterpreter;
+use crate::interpreter::ManagedProcess;
 use crate::mcp::types::{
     ProcessDigestEntry, ERR_ALIAS_NOT_FOUND, ERR_ALIAS_IN_USE, ERR_PROCESS_LIMIT,
     ERR_INVALID_ACTION,
@@ -83,8 +83,8 @@ pub struct ProcessEntry {
     pub output_summary: Option<String>,
     pub error_tail: Option<String>,
 
-    // Interpreter (REPL mode):
-    pub interpreter: Option<Arc<ManagedInterpreter>>,
+    // Managed process (REPL interpreter or dedicated PTY):
+    pub interpreter: Option<Arc<ManagedProcess>>,
 
     // Tracking:
     pub last_modified_seq: u64,
@@ -191,8 +191,8 @@ impl ProcessTable {
         Ok(())
     }
 
-    /// Attach a managed interpreter to a process entry.
-    pub fn set_interpreter(&mut self, alias: &str, interp: Arc<ManagedInterpreter>) {
+    /// Attach a managed process (interpreter or dedicated PTY) to a process entry.
+    pub fn set_interpreter(&mut self, alias: &str, interp: Arc<ManagedProcess>) {
         if let Some(entry) = self.entries.get_mut(alias) {
             entry.interpreter = Some(interp);
         }

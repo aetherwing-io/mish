@@ -72,6 +72,19 @@ For interactive interpreters (Python REPL, node, psql), use `mish session`:
 
 DON'T run `mish python3` bare — it opens a REPL that hangs.
 
+## Interactive/TUI apps
+
+For TUI apps, other agents, or interactive tools that need their own terminal,
+use `dedicated_pty=true` in MCP mode (`mish serve`):
+
+  sh_spawn(alias="cc", cmd="claude", dedicated_pty=true, wait_for="❯")
+  sh_interact(alias="cc", action="send_input", input="hello\n")
+  sh_interact(alias="cc", action="read_tail")
+  sh_interact(alias="cc", action="kill")
+
+All I/O is fire-and-forget: send_input writes bytes, read_tail polls output.
+No sentinel wrapping — raw PTY I/O for full TUI compatibility.
+
 ## When commands fail
 
 Don't fall back to bare bash. mish isn't broken — check your syntax and retry.

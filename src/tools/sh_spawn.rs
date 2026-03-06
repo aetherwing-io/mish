@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use regex::Regex;
 use crate::config::MishConfig;
-use crate::interpreter::{self, ManagedInterpreter, InterpreterSession};
+use crate::core::pty::PtyCapture;
+use crate::interpreter::{self, DedicatedPtyProcess, ManagedInterpreter, ManagedProcess, InterpreterSession};
 use crate::mcp::types::{
     ShSpawnParams, ShSpawnResponse,
     ERR_INVALID_PARAMS, ERR_COMMAND_BLOCKED, ERR_SHELL_ERROR,
@@ -85,6 +86,9 @@ pub struct SpawnSetup {
     pub spool: Arc<OutputSpool>,
     pub wait_for: Option<String>,
     pub timeout: Duration,
+    /// Managed process for draining output (interpreters and dedicated PTYs).
+    /// None for regular background processes (those use session manager).
+    pub managed: Option<Arc<ManagedProcess>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +124,12 @@ pub async fn setup(
         return Err(ToolError::from_process_table_error(
             &ProcessTableError::AliasInUse,
         ));
+    }
+
+    // Dedicated PTY: spawn in its own PTY as foreground process.
+    // For TUI/interactive apps (claude, htop, vim) that need their own terminal.
+    if params.dedicated_pty.unwrap_or(false) {
+        return setup_dedicated_pty(params, process_table, timeout).await;
     }
 
     // REPL detection: if the command is a bare interpreter invocation,
@@ -186,6 +196,64 @@ pub async fn setup(
         spool,
         wait_for: params.wait_for,
         timeout,
+        managed: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated PTY setup (raw PTY for TUI/interactive apps)
+// ---------------------------------------------------------------------------
+
+/// Spawn a process in a dedicated PTY with raw I/O (no sentinels).
+/// For TUI apps, other agents, and interactive tools.
+async fn setup_dedicated_pty(
+    params: ShSpawnParams,
+    process_table: &mut ProcessTable,
+    timeout: Duration,
+) -> Result<SpawnSetup, ToolError> {
+    let alias = params.alias.clone();
+    let cmd = params.cmd.clone();
+
+    // Spawn in a blocking task (PTY allocation is blocking).
+    let pty = tokio::task::spawn_blocking(move || {
+        // If the command contains shell metacharacters, wrap in /bin/sh -c
+        // Always wrap in /bin/sh -c to handle shell syntax, PATH lookup, etc.
+        // This mirrors how InterpreterSession::spawn works.
+        let args = vec!["/bin/sh".to_string(), "-c".to_string(), cmd];
+
+        PtyCapture::spawn(&args)
+    })
+    .await
+    .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("spawn_blocking join error: {e}")))?
+    .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("dedicated PTY spawn failed: {e}")))?;
+
+    let pid = pty.pid().as_raw() as u32;
+
+    // Register in process table with session="dedicated".
+    process_table
+        .register(&alias, "dedicated", pid, None)
+        .map_err(|e| ToolError::from_process_table_error(&e))?;
+
+    // Clone spool Arc from the registered entry.
+    let spool = process_table
+        .get(&alias)
+        .map(|e| e.spool.clone())
+        .expect("just registered");
+
+    // Create DedicatedPtyProcess, wrap in ManagedProcess, attach to entry.
+    let managed = Arc::new(ManagedProcess::Dedicated(
+        DedicatedPtyProcess::new(pty, spool.clone()),
+    ));
+    process_table.set_interpreter(&alias, managed.clone());
+
+    Ok(SpawnSetup {
+        alias,
+        pid,
+        session: "dedicated".to_string(),
+        spool,
+        wait_for: params.wait_for,
+        timeout,
+        managed: Some(managed),
     })
 }
 
@@ -223,9 +291,11 @@ async fn setup_repl(
         .map(|e| e.spool.clone())
         .expect("just registered");
 
-    // Create ManagedInterpreter and attach to the process entry.
-    let managed = Arc::new(ManagedInterpreter::new(interpreter_session, spool.clone()));
-    process_table.set_interpreter(&alias, managed);
+    // Create ManagedInterpreter, wrap in ManagedProcess, and attach to the process entry.
+    let managed = Arc::new(ManagedProcess::Interpreter(
+        ManagedInterpreter::new(interpreter_session, spool.clone()),
+    ));
+    process_table.set_interpreter(&alias, managed.clone());
 
     Ok(SpawnSetup {
         alias,
@@ -234,6 +304,7 @@ async fn setup_repl(
         spool,
         wait_for: params.wait_for,
         timeout,
+        managed: Some(managed),
     })
 }
 
@@ -327,16 +398,22 @@ pub async fn wait_for_match(
 
         tokio::time::sleep(WAIT_POLL_INTERVAL).await;
 
-        // Read new output from session directly into spool.
-        let mut buf = vec![0u8; 4096];
-        match session_manager
-            .read_from_session(&setup.session, &mut buf)
-            .await
-        {
-            Ok(n) if n > 0 => {
-                setup.spool.write(&buf[..n]);
+        // Read new output into spool.
+        // For managed processes (interpreters, dedicated PTYs), drain from the PTY.
+        // For regular background processes, read from the session manager.
+        if let Some(ref managed) = setup.managed {
+            let _ = managed.drain_to_spool().await;
+        } else {
+            let mut buf = vec![0u8; 4096];
+            match session_manager
+                .read_from_session(&setup.session, &mut buf)
+                .await
+            {
+                Ok(n) if n > 0 => {
+                    setup.spool.write(&buf[..n]);
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         // Check spool for match.
@@ -694,6 +771,7 @@ mod tests {
             cmd: "echo hello_from_bg".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -724,6 +802,7 @@ mod tests {
             cmd: "echo first".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
         handle(params1, &mgr, &mut table, &config)
             .await
@@ -735,6 +814,7 @@ mod tests {
             cmd: "echo second".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
         let result = handle(params2, &mgr, &mut table, &config).await;
         assert!(result.is_err());
@@ -757,6 +837,7 @@ mod tests {
             cmd: "echo 'server is ready to serve'".to_string(),
             wait_for: Some("ready".to_string()),
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -789,6 +870,7 @@ mod tests {
             cmd: "echo hello".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -810,6 +892,7 @@ mod tests {
             cmd: "echo hello".to_string(),
             wait_for: Some("[invalid".to_string()),
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -834,6 +917,7 @@ mod tests {
             cmd: "echo hello_world".to_string(),
             wait_for: Some("never_matches_this".to_string()),
             timeout: Some(1),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -865,6 +949,7 @@ mod tests {
             cmd: "rm -rf /".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -890,6 +975,7 @@ mod tests {
             cmd: "mkfs.ext4 /dev/sda".to_string(),
             wait_for: None,
             timeout: Some(5),
+            dedicated_pty: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;

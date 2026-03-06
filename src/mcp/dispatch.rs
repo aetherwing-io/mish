@@ -409,6 +409,15 @@ Node REPL:
   sh_spawn(alias="node", cmd="node")
   sh_interact(alias="node", action="send_input", input="const fs = require('fs')\n")
 
+## Interactive/TUI apps (sh_spawn with dedicated_pty)
+For apps that need their own terminal (TUI apps, other agents, interactive tools):
+  sh_spawn(alias="app", cmd="claude", dedicated_pty=true, wait_for="ready")
+  sh_interact(alias="app", action="send_input", input="hello\n")
+  sh_interact(alias="app", action="read_tail")
+  sh_interact(alias="app", action="kill")
+
+All I/O is fire-and-forget: send_input writes bytes, read_tail polls output.
+
 ## Operator hand-off
   sh_interact(alias="server", action="status")   — check if still running
   sh_interact(alias="server", action="kill")      — stop when done
@@ -441,14 +450,15 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sh_spawn".to_string(),
-            description: "Start a background process — servers, builds, REPLs. Optionally wait for a regex match before returning.".to_string(),
+            description: "Start a background process, REPL, or dedicated PTY for interactive/TUI apps. Optionally wait for a regex match before returning.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "alias": { "type": "string", "description": "Unique name for this process" },
                     "cmd": { "type": "string", "description": "Command to execute" },
                     "wait_for": { "type": "string", "description": "Regex to match before returning success" },
-                    "timeout": { "type": "integer", "description": "Seconds to wait", "default": 300 }
+                    "timeout": { "type": "integer", "description": "Seconds to wait", "default": 300 },
+                    "dedicated_pty": { "type": "boolean", "description": "Spawn in a dedicated PTY as foreground process. Use for TUI/interactive apps (claude, htop, vim) that need their own terminal.", "default": false }
                 },
                 "required": ["alias", "cmd"]
             }),

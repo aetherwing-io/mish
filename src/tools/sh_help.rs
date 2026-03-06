@@ -204,6 +204,13 @@ fn build_sh_spawn_summary() -> ToolSummary {
                 default: Some("300".to_string()),
                 description: "Seconds to wait".to_string(),
             },
+            ParamSummary {
+                name: "dedicated_pty".to_string(),
+                r#type: "boolean".to_string(),
+                required: false,
+                default: Some("false".to_string()),
+                description: "Spawn in a dedicated PTY for TUI/interactive apps".to_string(),
+            },
         ],
     }
 }
@@ -550,7 +557,7 @@ mod tests {
 
         let tool = &response.tools[0];
         assert_eq!(tool.name, "sh_spawn");
-        assert_eq!(tool.params.len(), 4);
+        assert_eq!(tool.params.len(), 5);
 
         // alias and cmd are required.
         let alias_param = tool.params.iter().find(|p| p.name == "alias").unwrap();

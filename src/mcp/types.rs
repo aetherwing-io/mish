@@ -103,6 +103,8 @@ pub struct ShSpawnParams {
     pub cmd: String,
     pub wait_for: Option<String>,
     pub timeout: Option<u64>,
+    #[serde(default)]
+    pub dedicated_pty: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

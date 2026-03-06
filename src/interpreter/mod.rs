@@ -3,10 +3,14 @@
 //! Used by both CLI sessions (`mish session`) and MCP interpreter mode
 //! (`sh_spawn` + `sh_interact` for REPLs).
 
+pub mod dedicated;
 pub mod managed;
+pub mod managed_process;
 pub mod session;
 
+pub use dedicated::DedicatedPtyProcess;
 pub use managed::ManagedInterpreter;
+pub use managed_process::ManagedProcess;
 pub use session::{
     ExecuteResult, InterpreterKind, InterpreterSession, make_sentinel, squash_session_output,
     strip_prompt,
