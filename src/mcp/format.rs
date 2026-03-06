@@ -696,4 +696,7 @@ mod tests {
         assert!(text.contains("\"foo\""));
         assert!(text.contains("\"bar\""));
     }
+
+    // ── llm_hint ──────────────────────────────────────────────────────
+
 }

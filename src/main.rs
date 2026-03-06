@@ -233,8 +233,8 @@ fn invoked_as_shell() -> bool {
         .unwrap_or(false)
 }
 
-/// Emit an LLM-visible hint to stderr when mish is invoked as a shell symlink.
-/// Rate-limited to first 2 invocations, then goes silent permanently.
+/// Emit an LLM-visible interstitial to stdout when mish is invoked as a shell symlink.
+/// First invocation only, then silent permanently.
 fn emit_shim_hint() {
     if std::env::var("MISH_QUIET").is_ok() {
         return;
@@ -243,19 +243,19 @@ fn emit_shim_hint() {
         return;
     }
 
-    // Rate-limit: first 2 invocations only
+    // First invocation only — one-shot interstitial
     let counter_path = std::path::PathBuf::from("/tmp/.mish_shim_hint_count");
     let count = std::fs::read_to_string(&counter_path)
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(0);
-    if count >= 2 {
+    if count >= 1 {
         return;
     }
     let _ = std::fs::write(&counter_path, (count + 1).to_string());
 
-    eprintln!(
-        "[mish] 'bash -c' handled by mish. Run `mish --agents` to unlock noise-dampened output, background processes, and persistent REPLs."
+    println!(
+        "\u{26a0} bash compatibility mode \u{2014} output is uncompressed. Run `mish --agents` for capabilities."
     );
 }
 

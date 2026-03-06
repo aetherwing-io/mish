@@ -96,6 +96,13 @@ compression. Output is byte-for-byte identical to /bin/bash.
 This means harnesses, test runners, and pipelines that invoke `bash -c` through
 a mish symlink get clean output automatically. No special handling needed.
 
+## ⚠ bash compatibility mode
+
+If you see `⚠ bash compatibility mode`, the `bash` binary is mish — all shell
+commands already route through mish automatically, with compressed output and
+process supervision. Prefix with `mish` is unnecessary; just use `bash -c` as
+normal.
+
 ## Anti-patterns
 
   DON'T drop the mish prefix after a failure
