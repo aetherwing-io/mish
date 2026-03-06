@@ -388,20 +388,26 @@ Start a build or server, keep working, check back later:
   sh_interact(alias="build", action="read_tail")
 
 ## Interactive REPLs (sh_spawn + sh_interact)
+Bare interpreter commands (python3, node, psql, etc.) are auto-detected as REPLs.
+send_input returns output directly — no need for read_tail after each command.
+
 Python REPL:
   sh_spawn(alias="py", cmd="python3")
   sh_interact(alias="py", action="send_input", input="import json\n")
-  sh_interact(alias="py", action="send_input", input="data = json.loads(open('config.json').read())\n")
+  → returns output directly (e.g., "4" for "2+2\n")
   sh_interact(alias="py", action="send_input", input="print(data['version'])\n")
+
+Background mode (fire-and-forget for long-running REPL commands):
+  sh_interact(alias="py", action="send_input", input="exec(open('analysis.py').read())\n", background=true)
+  → returns immediately with bytes_written
   sh_interact(alias="py", action="read_tail")
+  → shows accumulated output so far
+  sh_interact(alias="py", action="send_input", input="print(summary)\n")
+  → auto-fences: captures bg output, then returns clean fg result
 
 Node REPL:
   sh_spawn(alias="node", cmd="node")
   sh_interact(alias="node", action="send_input", input="const fs = require('fs')\n")
-
-psql:
-  sh_spawn(alias="db", cmd="psql -U postgres mydb")
-  sh_interact(alias="db", action="send_input", input="SELECT count(*) FROM users;\n")
 
 ## Operator hand-off
   sh_interact(alias="server", action="status")   — check if still running
@@ -456,7 +462,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "alias": { "type": "string", "description": "Target process alias" },
                     "action": { "type": "string", "enum": ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"], "description": "Action to perform" },
                     "input": { "type": "string", "description": "For send_input: string to write (include \\n for enter). For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
-                    "lines": { "type": "integer", "description": "For read_tail: number of lines", "default": 50 }
+                    "lines": { "type": "integer", "description": "For read_tail: number of lines", "default": 50 },
+                    "background": { "type": "boolean", "description": "For send_input on REPLs: fire-and-forget mode. Returns immediately, use read_tail to check output later.", "default": false }
                 },
                 "required": ["alias", "action"]
             }),

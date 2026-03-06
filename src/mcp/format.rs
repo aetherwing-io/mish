@@ -162,8 +162,25 @@ fn format_sh_interact(result: &serde_json::Value) -> String {
             text
         }
         "send_input" | "send" => {
-            let bytes = result["bytes_written"].as_u64().unwrap_or(0);
-            format!("+ {} send_input {}B {}", alias, bytes, state)
+            // Background mode: fire-and-forget REPL send.
+            if result["background"].as_bool().unwrap_or(false) {
+                let bytes = result["bytes_written"].as_u64().unwrap_or(0);
+                format!("+ {} send_input(bg) {}B {}", alias, bytes, state)
+            // Interpreter mode: response has "output" field with actual result.
+            } else if let Some(output) = result["output"].as_str() {
+                let elapsed_ms = result["elapsed_ms"].as_u64().unwrap_or(0);
+                let elapsed = format::format_elapsed(Some(elapsed_ms as f64 / 1000.0));
+                let mut text = format!("+ {} send_input {} {}", alias, elapsed, state);
+                if !output.is_empty() {
+                    text.push('\n');
+                    text.push_str(output);
+                }
+                text
+            } else {
+                // Regular mode: response has "bytes_written" field.
+                let bytes = result["bytes_written"].as_u64().unwrap_or(0);
+                format!("+ {} send_input {}B {}", alias, bytes, state)
+            }
         }
         "signal" | "send_signal" => {
             let signal = result["signal_sent"].as_str().unwrap_or("?");
@@ -555,6 +572,53 @@ mod tests {
 
         let text = format_sh_interact(&result);
         assert_eq!(text, "+ app send_input 5B running");
+    }
+
+    #[test]
+    fn sh_interact_send_input_interpreter_mode() {
+        let result = json!({
+            "alias": "py",
+            "action": "send_input",
+            "output": "4",
+            "exit_code": 0,
+            "elapsed_ms": 150,
+            "state": "running"
+        });
+
+        let text = format_sh_interact(&result);
+        assert!(text.starts_with("+ py send_input"), "header: {}", text);
+        assert!(text.contains("150ms"), "elapsed: {}", text);
+        assert!(text.contains("4"), "output: {}", text);
+    }
+
+    #[test]
+    fn sh_interact_send_input_interpreter_empty_output() {
+        let result = json!({
+            "alias": "py",
+            "action": "send_input",
+            "output": "",
+            "exit_code": 0,
+            "elapsed_ms": 50,
+            "state": "running"
+        });
+
+        let text = format_sh_interact(&result);
+        assert!(text.starts_with("+ py send_input"), "header: {}", text);
+        assert!(!text.contains('\n'), "empty output should not add newline: {}", text);
+    }
+
+    #[test]
+    fn sh_interact_send_input_background_mode() {
+        let result = json!({
+            "alias": "py",
+            "action": "send_input",
+            "bytes_written": 42,
+            "background": true,
+            "state": "running"
+        });
+
+        let text = format_sh_interact(&result);
+        assert_eq!(text, "+ py send_input(bg) 42B running");
     }
 
     #[test]

@@ -122,6 +122,49 @@ pub struct ShInteractParams {
     pub action: InteractAction,
     pub input: Option<String>,
     pub lines: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_bool_or_string")]
+    pub background: Option<bool>,
+}
+
+/// Accept both `true` (boolean) and `"true"` (string) for boolean params.
+/// MCP clients may send string values from XML parameter encoding.
+fn deserialize_bool_or_string<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct BoolOrString;
+
+    impl<'de> de::Visitor<'de> for BoolOrString {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a boolean or string \"true\"/\"false\"")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v {
+                "true" => Ok(Some(true)),
+                "false" => Ok(Some(false)),
+                _ => Err(E::custom(format!("expected \"true\" or \"false\", got \"{v}\""))),
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(BoolOrString)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1045,6 +1088,17 @@ mod tests {
         assert_eq!(params.action, InteractAction::Status);
         assert!(params.input.is_none());
         assert!(params.lines.is_none());
+        assert!(params.background.is_none());
+    }
+
+    #[test]
+    fn sh_interact_params_deserialize_with_background() {
+        let json_str = r#"{"alias": "py", "action": "send_input", "input": "print(1)\n", "background": true}"#;
+        let params: ShInteractParams = serde_json::from_str(json_str).unwrap();
+        assert_eq!(params.alias, "py");
+        assert_eq!(params.action, InteractAction::SendInput);
+        assert_eq!(params.input, Some("print(1)\n".to_string()));
+        assert_eq!(params.background, Some(true));
     }
 
     #[test]

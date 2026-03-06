@@ -3,6 +3,8 @@
 //! Provides actions to interact with spawned processes: read output,
 //! send input, send signals, kill, and query status.
 
+use std::time::Duration;
+
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 
@@ -51,8 +53,8 @@ pub async fn handle(
     process_table: &mut ProcessTable,
 ) -> Result<serde_json::Value, ToolError> {
     match params.action {
-        InteractAction::ReadTail => handle_read_tail(params, process_table),
-        InteractAction::ReadFull => handle_read_full(params, process_table),
+        InteractAction::ReadTail => handle_read_tail(params, process_table).await,
+        InteractAction::ReadFull => handle_read_full(params, process_table).await,
         InteractAction::SendInput => handle_send_input(params, session_manager, process_table).await,
         InteractAction::SendSignal => handle_send_signal(params, process_table),
         InteractAction::Kill => handle_kill(params, process_table),
@@ -65,13 +67,19 @@ pub async fn handle(
 // ---------------------------------------------------------------------------
 
 /// Return the last N lines from the process output spool.
-fn handle_read_tail(
+/// For interpreter entries, drains available PTY output to spool first.
+async fn handle_read_tail(
     params: ShInteractParams,
     process_table: &ProcessTable,
 ) -> Result<serde_json::Value, ToolError> {
     let entry = process_table
         .get(&params.alias)
         .ok_or_else(|| ToolError::alias_not_found(&params.alias))?;
+
+    // Drain interpreter PTY output to spool before reading
+    if let Some(ref interpreter) = entry.interpreter {
+        interpreter.drain_to_spool().await.ok();
+    }
 
     let lines_requested = params.lines.unwrap_or(50);
 
@@ -102,13 +110,19 @@ fn handle_read_tail(
 // ---------------------------------------------------------------------------
 
 /// Return the entire output spool contents.
-fn handle_read_full(
+/// For interpreter entries, drains available PTY output to spool first.
+async fn handle_read_full(
     params: ShInteractParams,
     process_table: &ProcessTable,
 ) -> Result<serde_json::Value, ToolError> {
     let entry = process_table
         .get(&params.alias)
         .ok_or_else(|| ToolError::alias_not_found(&params.alias))?;
+
+    // Drain interpreter PTY output to spool before reading
+    if let Some(ref interpreter) = entry.interpreter {
+        interpreter.drain_to_spool().await.ok();
+    }
 
     let raw = entry.spool.read_all();
     let text = String::from_utf8_lossy(&raw);
@@ -130,7 +144,7 @@ fn handle_read_full(
 // Action: send_input
 // ---------------------------------------------------------------------------
 
-/// Write a string to the process stdin via SessionManager.
+/// Write a string to the process stdin via SessionManager, or execute in interpreter.
 async fn handle_send_input(
     params: ShInteractParams,
     session_manager: &SessionManager,
@@ -153,6 +167,42 @@ async fn handle_send_input(
         )));
     }
 
+    // Interpreter mode: execute input synchronously, or fire-and-forget in background.
+    if let Some(ref interpreter) = entry.interpreter {
+        if params.background.unwrap_or(false) {
+            let bytes_written = interpreter.write_raw(input).await.map_err(|e| {
+                ToolError::new(ERR_SHELL_ERROR, format!("interpreter write_raw error: {e}"))
+            })?;
+
+            let resp = serde_json::json!({
+                "alias": params.alias,
+                "action": "send_input",
+                "bytes_written": bytes_written,
+                "background": true,
+                "state": entry.state.as_str(),
+            });
+
+            return Ok(resp);
+        }
+
+        let timeout = Duration::from_secs(30);
+        let result = interpreter.execute(input, timeout).await.map_err(|e| {
+            ToolError::new(ERR_SHELL_ERROR, format!("interpreter execute error: {e}"))
+        })?;
+
+        let resp = serde_json::json!({
+            "alias": params.alias,
+            "action": "send_input",
+            "output": result.output,
+            "exit_code": result.exit_code,
+            "elapsed_ms": result.elapsed_ms,
+            "state": entry.state.as_str(),
+        });
+
+        return Ok(resp);
+    }
+
+    // Regular mode: write bytes to shell session.
     let session_name = entry.session.clone();
     let bytes = input.as_bytes();
 
@@ -244,7 +294,7 @@ fn handle_send_signal(
 // Action: kill
 // ---------------------------------------------------------------------------
 
-/// SIGKILL the process group and transition state to Killed.
+/// SIGKILL the process group (or interpreter) and transition state to Killed.
 fn handle_kill(
     params: ShInteractParams,
     process_table: &mut ProcessTable,
@@ -262,19 +312,24 @@ fn handle_kill(
         )));
     }
 
-    let pid = entry.pid;
+    // Interpreter mode: kill via the managed interpreter.
+    if let Some(ref interpreter) = entry.interpreter {
+        interpreter.kill();
+    } else {
+        let pid = entry.pid;
 
-    // Guard against PID 0: killpg(0) sends signal to caller's own process group.
-    if pid == 0 {
-        return Err(ToolError::new(
-            ERR_SHELL_ERROR,
-            format!("process '{}' has invalid PID 0 — cannot kill", params.alias),
-        ));
+        // Guard against PID 0: killpg(0) sends signal to caller's own process group.
+        if pid == 0 {
+            return Err(ToolError::new(
+                ERR_SHELL_ERROR,
+                format!("process '{}' has invalid PID 0 — cannot kill", params.alias),
+            ));
+        }
+
+        // Send SIGKILL to the process group.
+        let pgid = Pid::from_raw(pid as i32);
+        let _ = killpg(pgid, Signal::SIGKILL);
     }
-
-    // Send SIGKILL to the process group.
-    let pgid = Pid::from_raw(pid as i32);
-    let _ = killpg(pgid, Signal::SIGKILL);
 
     // Update process state to Killed.
     process_table.update_state(&params.alias, ProcessState::Killed)?;
@@ -370,6 +425,7 @@ mod tests {
             action,
             input: None,
             lines: None,
+            background: None,
         }
     }
 
@@ -379,6 +435,7 @@ mod tests {
             action,
             input: Some(input.to_string()),
             lines: None,
+            background: None,
         }
     }
 
@@ -388,18 +445,19 @@ mod tests {
             action,
             input: None,
             lines: Some(lines),
+            background: None,
         }
     }
 
     // ── read_tail ─────────────────────────────────────────────────────
 
-    #[test]
-    fn read_tail_returns_last_n_lines() {
+    #[tokio::test]
+    async fn read_tail_returns_last_n_lines() {
         let table = make_table_with_running_process("server");
         let entry = table.get("server").unwrap();
         entry.spool.write(b"line1\nline2\nline3\nline4\nline5\n");
 
-        let result = handle_read_tail(params_with_lines("server", InteractAction::ReadTail, 3), &table);
+        let result = handle_read_tail(params_with_lines("server", InteractAction::ReadTail, 3), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -416,25 +474,25 @@ mod tests {
         assert!(!output.contains("line2"));
     }
 
-    #[test]
-    fn read_tail_with_default_lines() {
+    #[tokio::test]
+    async fn read_tail_with_default_lines() {
         let table = make_table_with_running_process("server");
         let entry = table.get("server").unwrap();
         // Write fewer lines than default (50).
         entry.spool.write(b"line1\nline2\nline3\n");
 
-        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
         assert_eq!(json["lines_returned"], 3);
     }
 
-    #[test]
-    fn read_tail_empty_spool() {
+    #[tokio::test]
+    async fn read_tail_empty_spool() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -442,38 +500,38 @@ mod tests {
         assert_eq!(json["output"], "");
     }
 
-    #[test]
-    fn read_tail_on_completed_process_succeeds() {
+    #[tokio::test]
+    async fn read_tail_on_completed_process_succeeds() {
         let table = make_table_with_completed_process("build");
         // Write some data before completing.
         let entry = table.get("build").unwrap();
         entry.spool.write(b"Build succeeded\n");
 
-        let result = handle_read_tail(params("build", InteractAction::ReadTail), &table);
+        let result = handle_read_tail(params("build", InteractAction::ReadTail), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
         assert_eq!(json["state"], "completed");
     }
 
-    #[test]
-    fn read_tail_unknown_alias_returns_error() {
+    #[tokio::test]
+    async fn read_tail_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_tail(params("nonexistent", InteractAction::ReadTail), &table);
+        let result = handle_read_tail(params("nonexistent", InteractAction::ReadTail), &table).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, ERR_ALIAS_NOT_FOUND);
     }
 
-    #[test]
-    fn read_tail_strips_ansi_escape_sequences() {
+    #[tokio::test]
+    async fn read_tail_strips_ansi_escape_sequences() {
         let table = make_table_with_running_process("server");
         let entry = table.get("server").unwrap();
         // Write ANSI-colored output: \x1b[33m = yellow, \x1b[39m = default fg
         entry.spool.write(b"\x1b[33mwarning: something\x1b[39m\n\x1b[31merror: bad\x1b[0m\n");
 
-        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table);
+        let result = handle_read_tail(params("server", InteractAction::ReadTail), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -494,13 +552,13 @@ mod tests {
 
     // ── read_full ─────────────────────────────────────────────────────
 
-    #[test]
-    fn read_full_returns_entire_spool() {
+    #[tokio::test]
+    async fn read_full_returns_entire_spool() {
         let table = make_table_with_running_process("server");
         let entry = table.get("server").unwrap();
         entry.spool.write(b"line1\nline2\nline3\n");
 
-        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -515,11 +573,11 @@ mod tests {
         assert!(output.contains("line3"));
     }
 
-    #[test]
-    fn read_full_empty_spool() {
+    #[tokio::test]
+    async fn read_full_empty_spool() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -527,14 +585,14 @@ mod tests {
         assert_eq!(json["output"], "");
     }
 
-    #[test]
-    fn read_full_strips_ansi_escape_sequences() {
+    #[tokio::test]
+    async fn read_full_strips_ansi_escape_sequences() {
         let table = make_table_with_running_process("server");
         let entry = table.get("server").unwrap();
         // Write ANSI-colored output
         entry.spool.write(b"\x1b[32mok\x1b[0m\n\x1b[1;31mFATAL\x1b[0m\n");
 
-        let result = handle_read_full(params("server", InteractAction::ReadFull), &table);
+        let result = handle_read_full(params("server", InteractAction::ReadFull), &table).await;
         assert!(result.is_ok());
 
         let json = result.unwrap();
@@ -547,11 +605,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_full_unknown_alias_returns_error() {
+    #[tokio::test]
+    async fn read_full_unknown_alias_returns_error() {
         let table = make_table_with_running_process("server");
 
-        let result = handle_read_full(params("ghost", InteractAction::ReadFull), &table);
+        let result = handle_read_full(params("ghost", InteractAction::ReadFull), &table).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ERR_ALIAS_NOT_FOUND);
     }
