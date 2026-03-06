@@ -220,6 +220,45 @@ fn check_nested_mish_hazard(cmd: &str) -> Option<&'static str> {
     None
 }
 
+/// Returns true if argv[0] indicates mish is being invoked as a shell symlink (bash/sh).
+fn invoked_as_shell() -> bool {
+    std::env::args()
+        .next()
+        .and_then(|a| {
+            std::path::Path::new(&a)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+        })
+        .map(|name| matches!(name.as_str(), "bash" | "sh" | "zsh"))
+        .unwrap_or(false)
+}
+
+/// Emit an LLM-visible hint to stderr when mish is invoked as a shell symlink.
+/// Rate-limited to first 2 invocations, then goes silent permanently.
+fn emit_shim_hint() {
+    if std::env::var("MISH_QUIET").is_ok() {
+        return;
+    }
+    if !invoked_as_shell() {
+        return;
+    }
+
+    // Rate-limit: first 2 invocations only
+    let counter_path = std::path::PathBuf::from("/tmp/.mish_shim_hint_count");
+    let count = std::fs::read_to_string(&counter_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if count >= 2 {
+        return;
+    }
+    let _ = std::fs::write(&counter_path, (count + 1).to_string());
+
+    eprintln!(
+        "[mish] 'bash -c' handled by mish. Run `mish --agents` to unlock noise-dampened output, background processes, and persistent REPLs."
+    );
+}
+
 /// Pre-clap intercept for `mish -c "cmd"` and `mish -lc "cmd"`.
 ///
 /// Returns `Some(exit_code)` if `-c`/`-lc` was found, `None` otherwise.
@@ -293,8 +332,11 @@ fn try_shell_dash_c() -> Option<i32> {
     let stdout_is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) } != 0;
     if !stdout_is_tty {
         if std::env::var("MISH_COMPRESS").map_or(false, |v| v == "1") {
-            return Some(run_dash_c_content_only(&proxy_args));
+            let code = run_dash_c_content_only(&proxy_args);
+            emit_shim_hint();
+            return Some(code);
         }
+        emit_shim_hint(); // before execvp replaces this process
         return Some(exec_real_shell(&proxy_args));
     }
 
@@ -317,11 +359,16 @@ fn try_shell_dash_c() -> Option<i32> {
     // the write end closes.
     let stdin_is_pipe = unsafe { libc::isatty(libc::STDIN_FILENO) } == 0;
     if stdin_is_pipe {
-        return Some(run_dash_c_piped(&proxy_args, &cmd_str, mode));
+        let code = run_dash_c_piped(&proxy_args, &cmd_str, mode);
+        emit_shim_hint();
+        return Some(code);
     }
 
     match mish::cli::proxy::run_with_mode(&proxy_args, mode) {
-        Ok(exit_code) => Some(exit_code),
+        Ok(exit_code) => {
+            emit_shim_hint();
+            Some(exit_code)
+        }
         Err(e) => {
             eprintln!("mish: {e}");
             Some(1)

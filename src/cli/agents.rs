@@ -2,14 +2,20 @@
 
 pub const AGENT_GUIDE: &str = r#"# mish — agent guide
 
+YOU NOW HAVE INTERACTIVE SHELL CONTROL WITH NOISE-DAMPENED OUTPUT.
+
+Without mish, every command is fire-and-forget and raw output floods your context.
+With mish, output is compressed to signal and processes stay alive:
+
+- Compressed output — build logs, test suites, and verbose tools condensed to what matters
+- Background processes — start a build, keep working, check back later
+- Persistent sessions — Python REPL, node, psql that stay alive between calls
+- Live interaction — send input to running processes, watch for specific output
+- Operator handoff — pause and hand terminal control to a human
+
 ## The Rule
 
 Prefix ALL shell commands with `mish`.
-
-Raw terminal output is full of noise that humans need but wastes your tokens —
-ANSI escape codes, progress bars, spinner animations, repeated status lines.
-mish dampens this noise and boosts the signal you actually reason about: errors,
-results, diagnostics, and meaningful content.
 
 ## Examples
 
