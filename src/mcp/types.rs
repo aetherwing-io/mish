@@ -56,6 +56,8 @@ pub struct InitializeResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
     pub server_info: ServerInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,8 +75,6 @@ pub struct ToolsCapability {
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
 }
 
 // ----- Tool Schemas -----
@@ -1099,8 +1099,8 @@ mod tests {
             server_info: ServerInfo {
                 name: "mish".to_string(),
                 version: "0.1.0".to_string(),
-                instructions: None,
             },
+            instructions: None,
         };
 
         let json = serde_json::to_value(&result).unwrap();

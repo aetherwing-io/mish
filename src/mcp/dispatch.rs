@@ -120,8 +120,8 @@ impl McpDispatcher {
             server_info: ServerInfo {
                 name: "mish".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                instructions: Some(MISH_INSTRUCTIONS.to_string()),
             },
+            instructions: Some(MISH_INSTRUCTIONS.to_string()),
         };
 
         JsonRpcResponse {
