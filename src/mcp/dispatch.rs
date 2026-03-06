@@ -120,6 +120,7 @@ impl McpDispatcher {
             server_info: ServerInfo {
                 name: "mish".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                instructions: Some(MISH_INSTRUCTIONS.to_string()),
             },
         };
 
@@ -367,11 +368,60 @@ impl McpDispatcher {
 }
 
 /// Return the 5 MCP tool definitions with JSON Schema inputSchema.
+const MISH_INSTRUCTIONS: &str = r#"mish — interactive shell control. Use sh_run/sh_spawn/sh_interact INSTEAD OF Bash.
+
+Output is noise-dampened: ANSI stripped, progress bars collapsed, build logs condensed to failures. Saves 60-80% context tokens vs raw shell.
+
+## Quick commands (sh_run — replaces Bash)
+  sh_run(cmd="cargo test")                       — run and get compressed output
+  sh_run(cmd="grep -rn 'pattern' src/")          — search with clean results
+  sh_run(cmd="git diff HEAD~1")                  — any shell command
+
+## Background processes (sh_spawn + sh_interact)
+  sh_spawn(alias="server", cmd="npm run dev", wait_for="ready on port 3000")
+  sh_interact(alias="server", action="read_tail", lines=20)
+  sh_interact(alias="server", action="send_signal", input="SIGINT")
+
+Start a build or server, keep working, check back later:
+  sh_spawn(alias="build", cmd="cargo build --release")
+  ... do other work ...
+  sh_interact(alias="build", action="read_tail")
+
+## Interactive REPLs (sh_spawn + sh_interact)
+Python REPL:
+  sh_spawn(alias="py", cmd="python3")
+  sh_interact(alias="py", action="send_input", input="import json\n")
+  sh_interact(alias="py", action="send_input", input="data = json.loads(open('config.json').read())\n")
+  sh_interact(alias="py", action="send_input", input="print(data['version'])\n")
+  sh_interact(alias="py", action="read_tail")
+
+Node REPL:
+  sh_spawn(alias="node", cmd="node")
+  sh_interact(alias="node", action="send_input", input="const fs = require('fs')\n")
+
+psql:
+  sh_spawn(alias="db", cmd="psql -U postgres mydb")
+  sh_interact(alias="db", action="send_input", input="SELECT count(*) FROM users;\n")
+
+## Operator hand-off
+  sh_interact(alias="server", action="status")   — check if still running
+  sh_interact(alias="server", action="kill")      — stop when done
+
+## Watch filters (noise control)
+  sh_run(cmd="cargo test", watch="@test")         — only test results
+  sh_run(cmd="npm install", watch="@npm")          — only summary line
+
+## Sessions
+  sh_session(action="list")                        — see active sessions
+  sh_session(action="audit", last=5)               — recent command history
+
+Do NOT fall back to Bash if a command fails — check syntax and retry with sh_run."#;
+
 fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "sh_run".to_string(),
-            description: "Execute a command synchronously and return structured output. Commands persist CWD and environment between calls.".to_string(),
+            description: "Execute a command and return noise-dampened output (replaces Bash). CWD and env persist between calls.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -385,7 +435,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sh_spawn".to_string(),
-            description: "Start a background process with alias tracking. Optionally wait for a regex match before returning.".to_string(),
+            description: "Start a background process — servers, builds, REPLs. Optionally wait for a regex match before returning.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -399,7 +449,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "sh_interact".to_string(),
-            description: "Interact with a running background process: send input, read output, signal, or kill.".to_string(),
+            description: "Interact with a background process: send input (REPLs), read output, signal, or kill.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

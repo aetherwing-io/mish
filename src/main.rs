@@ -255,7 +255,7 @@ fn shim_interstitial() -> bool {
     let _ = std::fs::write(&counter_path, (count + 1).to_string());
 
     println!(
-        "\u{26a0} bash compatibility mode \u{2014} output is uncompressed. Run `mish --agents` for capabilities."
+        "\u{26a0} bash compatibility mode. Run `mish --agents` to fix."
     );
     true
 }
