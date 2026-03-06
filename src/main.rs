@@ -285,6 +285,15 @@ fn try_shell_dash_c() -> Option<i32> {
         proxy_args.extend_from_slice(&args[c_pos + 2..]);
     }
 
+    // Non-TTY stdout → byte-for-byte passthrough to real shell.
+    // When mish is symlinked as bash, machine consumers (pipes, redirects,
+    // subshell captures) must not see mish headers, dedup, or compression.
+    // Same pattern as slipstream: early exit before any processing.
+    let stdout_is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) } != 0;
+    if !stdout_is_tty {
+        return Some(exec_real_shell(&proxy_args));
+    }
+
     tracing_subscriber::fmt::init();
 
     let mode = if json {
@@ -312,6 +321,48 @@ fn try_shell_dash_c() -> Option<i32> {
         Err(e) => {
             eprintln!("mish: {e}");
             Some(1)
+        }
+    }
+}
+
+/// Exec the real shell with no mish processing (non-TTY stdout passthrough).
+///
+/// Uses `execvp` so this process is replaced entirely — no headers, no dedup,
+/// no compression ratio, no timing. Byte-for-byte identical to the real shell.
+fn exec_real_shell(args: &[String]) -> i32 {
+    use std::ffi::CString;
+    use std::process::{Command, Stdio};
+
+    // Fast path: try execvp to replace this process entirely.
+    // If it fails (shouldn't happen), fall back to spawn + wait.
+    let c_args: Vec<CString> = args
+        .iter()
+        .map(|a| CString::new(a.as_str()).unwrap())
+        .collect();
+    let c_ptrs: Vec<*const libc::c_char> = c_args
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
+    unsafe {
+        libc::execvp(c_ptrs[0], c_ptrs.as_ptr());
+    }
+
+    // execvp only returns on error — fall back to Command
+    eprintln!("mish: execvp failed, falling back to spawn");
+    let status = Command::new(&args[0])
+        .args(&args[1..])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("mish: {e}");
+            1
         }
     }
 }

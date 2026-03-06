@@ -1577,34 +1577,29 @@ fn test_81_dash_lc_docker_compat() {
     mish().args(["-lc", "exit 7"]).assert().code(7);
 }
 
-// ── --json + -c ──
+// ── -c non-TTY passthrough ──
+// When stdout is not a TTY, -c execs the real shell with no mish processing.
+// --json/--passthrough/--context flags are ignored (passthrough is unconditional).
 
 #[test]
 #[serial(pty)]
-fn test_82_dash_c_json_mode() {
+fn test_82_dash_c_non_tty_passthrough() {
+    // stdout is piped (not a TTY) → raw shell output, no mish headers/JSON
     let output = mish()
         .args(["--json", "-c", "echo json_compat"])
         .output()
         .expect("mish should run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
-    assert_eq!(parsed["exit_code"], 0);
-    assert!(
-        parsed["body"].as_str().unwrap().contains("json_compat"),
-        "JSON body should contain command output"
-    );
+    // Raw output, not JSON — just the echo output
+    assert_eq!(stdout.trim(), "json_compat");
 
-    // failure exit code in JSON
+    // exit code preserved through passthrough
     let output = mish()
-        .args(["--json", "-c", "exit 5"])
+        .args(["-c", "exit 5"])
         .output()
         .expect("mish should run");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
-    assert_eq!(parsed["exit_code"], 5);
+    assert_eq!(output.status.code(), Some(5));
 }
 
 // ── Positional parameters ($0, $1, $@) ──
@@ -1666,10 +1661,10 @@ fn test_84_dash_c_edge_cases() {
 
 #[test]
 #[serial(pty)]
-fn test_85_dash_c_squashes_output() {
+fn test_85_dash_c_non_tty_preserves_all_lines() {
+    // When stdout is not a TTY, all 100 lines come through unmodified (no dedup)
     let output = mish()
         .args([
-            "--json",
             "-c",
             "for i in $(seq 1 100); do echo repeated_line; done",
         ])
@@ -1679,14 +1674,32 @@ fn test_85_dash_c_squashes_output() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
+    let line_count = stdout.lines().count();
+    assert_eq!(
+        line_count, 100,
+        "non-TTY passthrough must preserve all 100 lines, got {line_count}"
+    );
+}
 
-    let body = parsed["body"].as_str().unwrap();
-    assert!(
-        body.len() < 5000,
-        "squasher should condense 100 identical lines, got {} bytes",
-        body.len()
+// ── Diff fidelity through non-TTY passthrough ──
+
+#[test]
+#[serial(pty)]
+fn test_85b_dash_c_diff_fidelity() {
+    // Verify that diff-like output (- and + lines that differ by a few chars)
+    // passes through byte-for-byte when stdout is not a TTY.
+    // This is the SWE-bench failure case: dedup was collapsing diff hunks.
+    let output = mish()
+        .args(["-c", r#"printf -- '-  old line\n+  new line\n-  foo bar\n+  foo baz\n'"#])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "-  old line\n+  new line\n-  foo bar\n+  foo baz",
+        "diff lines must pass through unmodified (no dedup)"
     );
 }
 
