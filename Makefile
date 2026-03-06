@@ -27,3 +27,5 @@ build:
 release:
 	cargo build --release
 	ln -sf $(CURDIR)/target/release/mish /opt/homebrew/bin/mish
+	git tag v$(shell cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+	git push origin v$(shell cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
