@@ -285,13 +285,16 @@ fn try_shell_dash_c() -> Option<i32> {
         proxy_args.extend_from_slice(&args[c_pos + 2..]);
     }
 
-    // Non-TTY stdout → byte-for-byte passthrough to real shell.
-    // When mish is symlinked as bash, machine consumers (pipes, redirects,
-    // subshell captures) must not see mish headers, dedup, or compression.
-    // Same pattern as slipstream: early exit before any processing.
+    // Non-TTY stdout → content-only mode: squasher pipeline (dedup, truncation)
+    // but no mish headers. Footer goes to stdout so the model sees compression
+    // metadata. MISH_PASSTHROUGH=1 forces exec_real_shell() (byte-exact passthrough).
+    // COMPLETE_TASK sentinel bypasses squasher entirely (SWE-bench submission).
     let stdout_is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) } != 0;
     if !stdout_is_tty {
-        return Some(exec_real_shell(&proxy_args));
+        if std::env::var("MISH_PASSTHROUGH").map_or(false, |v| v == "1") {
+            return Some(exec_real_shell(&proxy_args));
+        }
+        return Some(run_dash_c_content_only(&proxy_args));
     }
 
     tracing_subscriber::fmt::init();
@@ -323,6 +326,96 @@ fn try_shell_dash_c() -> Option<i32> {
             Some(1)
         }
     }
+}
+
+/// Run a `-c` command in content-only mode (non-TTY stdout).
+///
+/// Captures stdout, runs it through the squasher pipeline (dedup, truncation),
+/// then emits compressed body + a single-line footer with exit code, elapsed
+/// time, and compression ratio. No mish headers — the body comes first so
+/// harness consumers that check `lines[0]` see real output.
+///
+/// Special cases:
+/// - Empty stdout → just the footer
+/// - `COMPLETE_TASK` sentinel on first line → byte-exact passthrough (no squasher)
+fn run_dash_c_content_only(args: &[String]) -> i32 {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let start = Instant::now();
+
+    let child = Command::new(&args[0])
+        .args(&args[1..])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn();
+
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("mish: {e}");
+            return 1;
+        }
+    };
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("mish: {e}");
+            return 1;
+        }
+    };
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let exit_code = output.status.code().unwrap_or(1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Empty output → just footer
+    if stdout.is_empty() {
+        let elapsed_str = mish::core::format::format_elapsed(Some(elapsed));
+        let symbol = if exit_code == 0 { "+" } else { "!" };
+        println!("\u{2500}\u{2500} {symbol} exit:{exit_code} {elapsed_str} \u{2500}\u{2500}");
+        return exit_code;
+    }
+
+    // Sentinel: COMPLETE_TASK submission → byte-exact passthrough
+    if stdout.trim_start().starts_with("COMPLETE_TASK") {
+        print!("{}", stdout);
+        return exit_code;
+    }
+
+    // Squasher pipeline
+    let lines: Vec<mish::core::line_buffer::Line> = stdout
+        .lines()
+        .map(|l| mish::core::line_buffer::Line::Complete(l.to_string()))
+        .collect();
+    let total_lines = lines.len();
+    let (processed, _metrics) = mish::handlers::condense::post_process(lines, None);
+    let body = processed.join("\n");
+
+    // Emit body
+    if !body.is_empty() {
+        println!("{}", body);
+    }
+
+    // Footer: ── {symbol} exit:{code} {elapsed} ({total}→{shown}) ──
+    let elapsed_str = mish::core::format::format_elapsed(Some(elapsed));
+    let symbol = if exit_code == 0 { "+" } else { "!" };
+    let shown = if body.is_empty() {
+        0
+    } else {
+        body.lines().count()
+    };
+
+    let mut footer = format!("\u{2500}\u{2500} {symbol} exit:{exit_code} {elapsed_str}");
+    if total_lines != shown {
+        footer.push_str(&format!(" ({total_lines}\u{2192}{shown})"));
+    }
+    footer.push_str(" \u{2500}\u{2500}");
+    println!("{}", footer);
+
+    exit_code
 }
 
 /// Exec the real shell with no mish processing (non-TTY stdout passthrough).

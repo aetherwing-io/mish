@@ -1591,8 +1591,15 @@ fn test_82_dash_c_non_tty_passthrough() {
         .expect("mish should run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Raw output, not JSON — just the echo output
-    assert_eq!(stdout.trim(), "json_compat");
+    // Content-only mode: body first, then footer — not JSON
+    assert!(
+        stdout.starts_with("json_compat"),
+        "body should start with command output"
+    );
+    assert!(
+        stdout.contains("\u{2500}\u{2500}") && stdout.contains("exit:0"),
+        "should have content-only footer"
+    );
 
     // exit code preserved through passthrough
     let output = mish()
@@ -1661,8 +1668,8 @@ fn test_84_dash_c_edge_cases() {
 
 #[test]
 #[serial(pty)]
-fn test_85_dash_c_non_tty_preserves_all_lines() {
-    // When stdout is not a TTY, all 100 lines come through unmodified (no dedup)
+fn test_85_dash_c_non_tty_deduplicates() {
+    // Non-TTY stdout → content-only mode: squasher deduplicates repeated lines
     let output = mish()
         .args([
             "-c",
@@ -1675,9 +1682,20 @@ fn test_85_dash_c_non_tty_preserves_all_lines() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line_count = stdout.lines().count();
-    assert_eq!(
-        line_count, 100,
-        "non-TTY passthrough must preserve all 100 lines, got {line_count}"
+    // Dedup should reduce 100 identical lines significantly
+    assert!(
+        line_count < 100,
+        "content-only mode should dedup, got {line_count} lines (expected < 100)"
+    );
+    // Should contain dedup marker
+    assert!(
+        stdout.contains("(x"),
+        "deduped output should contain (xN) marker"
+    );
+    // Should end with footer
+    assert!(
+        stdout.contains("\u{2500}\u{2500}"),
+        "content-only output should have footer"
     );
 }
 
@@ -1686,9 +1704,8 @@ fn test_85_dash_c_non_tty_preserves_all_lines() {
 #[test]
 #[serial(pty)]
 fn test_85b_dash_c_diff_fidelity() {
-    // Verify that diff-like output (- and + lines that differ by a few chars)
-    // passes through byte-for-byte when stdout is not a TTY.
-    // This is the SWE-bench failure case: dedup was collapsing diff hunks.
+    // Verify that diff-like output is not deduped (content-type detection).
+    // Footer is appended but diff lines themselves are preserved.
     let output = mish()
         .args(["-c", r#"printf -- '-  old line\n+  new line\n-  foo bar\n+  foo baz\n'"#])
         .output()
@@ -1696,10 +1713,165 @@ fn test_85b_dash_c_diff_fidelity() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    // Diff lines should be present and unmodified (footer is last line)
+    assert!(
+        stdout.contains("-  old line"),
+        "diff line '-  old line' must be preserved"
+    );
+    assert!(
+        stdout.contains("+  new line"),
+        "diff line '+  new line' must be preserved"
+    );
+    assert!(
+        stdout.contains("-  foo bar"),
+        "diff line '-  foo bar' must be preserved"
+    );
+    assert!(
+        stdout.contains("+  foo baz"),
+        "diff line '+  foo baz' must be preserved"
+    );
+    // Last line should be the footer
+    assert!(
+        lines.last().unwrap().contains("\u{2500}\u{2500}"),
+        "last line should be footer, got: {}",
+        lines.last().unwrap()
+    );
+}
+
+// ── Content-only mode (non-TTY) tests ──
+
+#[test]
+fn test_85c_content_only_no_header() {
+    // Output starts with command output, not a mish header
+    let output = mish()
+        .args(["-c", "echo hello_world"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("hello_world"),
+        "content-only output must start with command output, got: {:?}",
+        &stdout[..stdout.len().min(50)]
+    );
+}
+
+#[test]
+fn test_85d_content_only_footer() {
+    // Piped output ends with ── + exit:0 ── footer line
+    let output = mish()
+        .args(["-c", "echo hello"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let last_line = stdout.lines().last().unwrap();
+    assert!(
+        last_line.contains("\u{2500}\u{2500}") && last_line.contains("exit:0"),
+        "last line should be footer with exit:0, got: {last_line}"
+    );
+}
+
+#[test]
+fn test_85e_content_only_dedup() {
+    // 50 identical lines → deduped with (xN) marker
+    let output = mish()
+        .args(["-c", "for i in $(seq 1 50); do echo same_line; done"])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("(x"),
+        "50 identical lines should be deduped with (xN) marker"
+    );
+}
+
+#[test]
+fn test_85f_content_only_complete_task_bypass() {
+    // COMPLETE_TASK sentinel → byte-exact passthrough, no footer
+    let output = mish()
+        .args([
+            "-c",
+            "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && echo patch_line",
+        ])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_line = stdout.lines().next().unwrap();
     assert_eq!(
-        stdout.trim(),
-        "-  old line\n+  new line\n-  foo bar\n+  foo baz",
-        "diff lines must pass through unmodified (no dedup)"
+        first_line, "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+        "first line must be the sentinel exactly"
+    );
+    assert!(
+        stdout.contains("patch_line"),
+        "subsequent output must be preserved"
+    );
+    assert!(
+        !stdout.contains("\u{2500}\u{2500}"),
+        "COMPLETE_TASK bypass must not add footer"
+    );
+}
+
+#[test]
+fn test_85g_content_only_exit_code() {
+    // Exit code is preserved
+    let output = mish()
+        .args(["-c", "exit 42"])
+        .output()
+        .expect("mish should run");
+
+    assert_eq!(output.status.code(), Some(42));
+}
+
+#[test]
+fn test_85h_content_only_passthrough_escape() {
+    // MISH_PASSTHROUGH=1 → all lines preserved, no dedup, no footer
+    let output = mish()
+        .env("MISH_PASSTHROUGH", "1")
+        .args([
+            "-c",
+            "for i in $(seq 1 100); do echo repeated_line; done",
+        ])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line_count = stdout.lines().count();
+    assert_eq!(
+        line_count, 100,
+        "MISH_PASSTHROUGH=1 must preserve all 100 lines, got {line_count}"
+    );
+    assert!(
+        !stdout.contains("\u{2500}\u{2500}"),
+        "MISH_PASSTHROUGH=1 must not add footer"
+    );
+}
+
+#[test]
+fn test_85i_content_only_diff_preserved() {
+    // Diff-like output should not be deduped (content-type detection)
+    let output = mish()
+        .args(["-c", r#"printf -- '--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3\n'"#])
+        .output()
+        .expect("mish should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("-old_line") && stdout.contains("+new_line"),
+        "diff content must be preserved without dedup"
+    );
+    assert!(
+        !stdout.contains("(x"),
+        "diff content should not trigger dedup markers"
     );
 }
 
