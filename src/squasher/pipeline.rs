@@ -301,6 +301,12 @@ impl Pipeline {
     /// (>80% unique lines), dedup and truncation are skipped to avoid
     /// destroying high-value content like source code or diffs.
     fn process_condense(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
+        // Small output bypass: disable dedup when savings are negligible
+        // but keep progress removal, VTE strip, block compression, truncation
+        if raw_lines.len() < SMALL_OUTPUT_DEDUP_BYPASS {
+            self.config.dedup_all = false;
+        }
+
         let content_type = detect_content_type(&raw_lines);
         match content_type {
             ContentType::Normal => {
@@ -392,6 +398,11 @@ impl Pipeline {
 /// Below this threshold, output is too small to reliably distinguish
 /// source code from short build output.
 const HIGH_ENTROPY_MIN_LINES: usize = 20;
+
+/// Minimum number of lines for dedup to activate in condense mode.
+/// Below this threshold, dedup savings are negligible but risk destroying
+/// small data outputs (stat, ps, wc, etc.). Bypasses to VTE-strip-only.
+const SMALL_OUTPUT_DEDUP_BYPASS: usize = 10;
 
 /// Detect the content type of output lines to decide whether dedup should run.
 ///
@@ -634,14 +645,24 @@ mod tests {
     #[test]
     fn test_process_condense_matches_existing_pipeline() {
         // process() with Condense should produce the same output as feed+finalize_with_metrics
+        // Use >= SMALL_OUTPUT_DEDUP_BYPASS lines so the bypass doesn't activate
         let lines = vec![
             Line::Complete("Starting build...".into()),
             Line::Overwrite("compiling 1/10".into()),
+            Line::Overwrite("compiling 2/10".into()),
+            Line::Overwrite("compiling 3/10".into()),
+            Line::Overwrite("compiling 4/10".into()),
             Line::Overwrite("compiling 5/10".into()),
+            Line::Overwrite("compiling 6/10".into()),
+            Line::Overwrite("compiling 7/10".into()),
+            Line::Overwrite("compiling 8/10".into()),
+            Line::Overwrite("compiling 9/10".into()),
             Line::Overwrite("compiling 10/10".into()),
             Line::Complete("Build complete".into()),
             Line::Complete("\x1b[33mwarning: unused variable\x1b[0m".into()),
         ];
+        // Ensure we're above the bypass threshold
+        assert!(lines.len() >= 10, "test needs >= SMALL_OUTPUT_DEDUP_BYPASS lines");
 
         // Existing pipeline path
         let mut pipe_old = Pipeline::new(PipelineConfig::default());
@@ -1144,5 +1165,84 @@ mod tests {
                 result.output[0]
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Small-output dedup bypass tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_condense_small_output_skips_dedup() {
+        // 3 lines with similar structure but different data — like `stat` output.
+        // These would normally be deduped to (x3). With small-output bypass,
+        // all 3 lines should be preserved.
+        let lines = vec![
+            Line::Complete("1772834577 /Users/scott/.claude/projects/aaa.jsonl".into()),
+            Line::Complete("1772834361 /Users/scott/.claude/projects/bbb.jsonl".into()),
+            Line::Complete("1772832903 /Users/scott/.claude/projects/ccc.jsonl".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        // All 3 lines must be preserved — no dedup
+        assert_eq!(
+            result.output.len(),
+            3,
+            "small output should skip dedup, got: {:?}",
+            result.output
+        );
+        assert!(
+            !result.output.iter().any(|l| l.contains("(x")),
+            "small output should have no dedup markers, got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_condense_small_output_ps_like() {
+        // ps-style tabular output — each row is unique data
+        let lines = vec![
+            Line::Complete("  PID TTY           TIME CMD".into()),
+            Line::Complete("  501 ttys000    0:00.05 -zsh".into()),
+            Line::Complete("  502 ttys001    0:00.03 -zsh".into()),
+            Line::Complete("  831 ttys002    0:01.22 vim main.rs".into()),
+        ];
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert_eq!(
+            result.output.len(),
+            4,
+            "ps-like output should not be deduped, got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_condense_large_repetitive_output_still_deduped() {
+        // 30 repetitive lines — above threshold, should still dedup
+        let mut lines = Vec::new();
+        for i in 0..30 {
+            lines.push(Line::Complete(format!(
+                "Downloading https://registry.npmjs.org/pkg{}",
+                i
+            )));
+        }
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        // Should be deduped — fewer output lines than input
+        assert!(
+            result.output.len() < 30,
+            "large repetitive output should still be deduped, got {} lines",
+            result.output.len()
+        );
+        assert!(
+            result.output.iter().any(|l| l.contains("(x")),
+            "large repetitive output should have dedup markers"
+        );
     }
 }

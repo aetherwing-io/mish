@@ -122,7 +122,26 @@ pub fn categorize_command_str(
     dangerous_patterns: &[DangerousPattern],
 ) -> Category {
     let tokens: Vec<String> = cmd.split_whitespace().map(String::from).collect();
-    categories::categorize(&tokens, grammars, categories_config, dangerous_patterns)
+    let category = categories::categorize(&tokens, grammars, categories_config, dangerous_patterns);
+
+    // Pipeline heuristic: if the command contains a pipe and the category
+    // fell through to the default (Condense), upgrade to Passthrough.
+    // Piped commands are deliberate data extraction — the user wants the output.
+    // Explicit categories (grammar, categories.toml, dangerous) are preserved.
+    if category == Category::Condense && tokens.contains(&"|".to_string()) {
+        // Check if the first command was explicitly categorized as Condense
+        // (via grammar or categories.toml) — if so, respect it.
+        let first_cmd = &tokens[0];
+        let explicitly_condense = grammars.values().any(|g| {
+            g.detect.iter().any(|d| d == first_cmd) && g.category == Some(Category::Condense)
+        }) || categories_config.categories.get(first_cmd.as_str()) == Some(&Category::Condense);
+
+        if !explicitly_condense {
+            return Category::Passthrough;
+        }
+    }
+
+    category
 }
 
 /// Dispatch a categorized command to its handler, returning the handler output and exit code.
@@ -772,5 +791,105 @@ category = "interactive"
                 // Acceptable in constrained test environments
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pipeline detection: commands with | should default to Passthrough
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pipeline_unknown_command_defaults_passthrough() {
+        // "stat ... | sort | head" — stat is unknown, but pipeline → passthrough
+        let config = standard_config();
+        let category = categorize_command_str(
+            "stat -f '%m %N' foo.txt | sort -rn | head -3",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(
+            category,
+            Category::Passthrough,
+            "piped unknown command should default to passthrough"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_known_condense_command_stays_condense() {
+        // "cargo build | tee log" — cargo is explicitly Condense via grammar
+        let toml_str = r#"
+[tool]
+name = "cargo"
+detect = ["cargo"]
+category = "condense"
+"#;
+        let grammar = load_grammar_from_str(toml_str).unwrap();
+        let mut grammars = HashMap::new();
+        grammars.insert("cargo".to_string(), grammar);
+
+        let config = standard_config();
+        let category = categorize_command_str(
+            "cargo build 2>&1 | tee build.log",
+            &grammars,
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(
+            category,
+            Category::Condense,
+            "piped command with explicit condense grammar should stay condense"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_known_passthrough_stays_passthrough() {
+        // "grep pattern | sort" — grep is already passthrough
+        let config = standard_config();
+        let category = categorize_command_str(
+            "grep -rn 'pattern' src/ | sort",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(
+            category,
+            Category::Passthrough,
+            "piped passthrough command should stay passthrough"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_dangerous_still_dangerous() {
+        // Dangerous patterns should still match even in pipelines
+        let config = standard_config();
+        let dangerous = standard_dangerous();
+        let category = categorize_command_str(
+            "rm -rf /tmp/foo | cat",
+            &empty_grammars(),
+            &config,
+            &dangerous,
+        );
+        assert_eq!(
+            category,
+            Category::Dangerous,
+            "piped dangerous command should still be dangerous"
+        );
+    }
+
+    #[test]
+    fn test_no_pipeline_unknown_still_condense() {
+        // Non-piped unknown command should still fall back to condense
+        let config = standard_config();
+        let category = categorize_command_str(
+            "some-unknown-tool --flag",
+            &empty_grammars(),
+            &config,
+            &empty_dangerous(),
+        );
+        assert_eq!(
+            category,
+            Category::Condense,
+            "non-piped unknown command should still default to condense"
+        );
     }
 }
