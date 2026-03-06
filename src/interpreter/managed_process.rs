@@ -55,6 +55,23 @@ impl ManagedProcess {
         }
     }
 
+    /// Read current screen contents (dedicated PTY only).
+    /// Returns None for interpreter processes (they use spool).
+    pub fn read_screen(&self) -> Option<Result<String, String>> {
+        match self {
+            ManagedProcess::Dedicated(d) => Some(d.read_screen()),
+            ManagedProcess::Interpreter(_) => None,
+        }
+    }
+
+    /// Read full screen contents including scrollback (dedicated PTY only).
+    pub fn read_screen_full(&self) -> Option<Result<String, String>> {
+        match self {
+            ManagedProcess::Dedicated(d) => Some(d.read_screen_full()),
+            ManagedProcess::Interpreter(_) => None,
+        }
+    }
+
     /// Whether this process supports sentinel-wrapped `execute()`.
     /// Only interpreters do — dedicated PTY processes are raw I/O only.
     pub fn supports_execute(&self) -> bool {
