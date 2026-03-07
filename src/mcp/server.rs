@@ -183,6 +183,12 @@ impl McpServer {
 /// 6. Install signal handlers + run transport loop
 /// 7. On exit: audit ServerShutdown, flush, remove PID, close sessions
 pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    // 0. Check if daemon is running — if so, proxy stdio↔socket
+    let sock = daemon_socket_path();
+    if let Ok(stream) = tokio::net::UnixStream::connect(&sock).await {
+        return run_shim(stream).await;
+    }
+
     // 1. Load config
     let path = config_path.unwrap_or("~/.config/mish/mish.toml");
     let config = Arc::new(
@@ -361,6 +367,27 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
 // ---------------------------------------------------------------------------
 // Daemon mode — shared process table over Unix socket
 // ---------------------------------------------------------------------------
+
+/// Shim: proxy stdio↔daemon socket. Claude Code talks to us on stdio,
+/// we forward everything to the daemon and relay responses back.
+async fn run_shim(stream: tokio::net::UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("[mish] connected to daemon, proxying");
+    let (sock_read, sock_write) = stream.into_split();
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let mut sock_writer = tokio::io::BufWriter::new(sock_write);
+    let mut sock_reader = tokio::io::BufReader::new(sock_read);
+
+    let up = tokio::io::copy(&mut stdin, &mut sock_writer);
+    let down = tokio::io::copy(&mut sock_reader, &mut stdout);
+
+    // Run both directions concurrently. When either side closes, we're done.
+    tokio::select! {
+        r = up => { r?; }
+        r = down => { r?; }
+    }
+    Ok(())
+}
 
 /// Default daemon socket path.
 fn daemon_socket_path() -> std::path::PathBuf {

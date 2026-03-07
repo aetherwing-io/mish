@@ -28,6 +28,24 @@ The project is **mish**. Never use "llmsh" — that was the old name.
 | `VERBOSITY.md` | Verbose flag injection, file stat enrichment |
 | `ENRICH.md` | Error enrichment (failure diagnostics) |
 
+## Three Modes, One Binary
+
+### Daemon (`mish daemon`)
+
+Shared process table over Unix socket. All `mish serve` instances auto-connect to the daemon if running, enabling cross-agent visibility and coordination.
+
+```bash
+# Start daemon (background)
+mish daemon &
+
+# All subsequent `mish serve` instances proxy to the daemon
+# Agents can see each other's processes via sh_session(action="list")
+```
+
+- Socket: `~/.local/share/mish/mish.sock`
+- Proc log: `~/.local/share/mish/procs.jsonl` (crash recovery)
+- Orphan re-adoption: on startup, checks PIDs from log, re-adopts survivors
+
 ## Two Modes, One Binary
 
 ### MCP Server (`mish serve`)
