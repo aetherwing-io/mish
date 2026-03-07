@@ -199,6 +199,8 @@ impl ProcessTable {
     /// Create a new process table from config.
     pub fn new(config: &MishConfig) -> Self {
         let proc_log = ProcLog::new();
+        // Skip orphan adoption in test/standalone mode to keep tables clean
+        let skip_adopt = std::env::var("MISH_NO_DAEMON").is_ok();
         let mut table = Self {
             entries: HashMap::new(),
             sequence_counter: 0,
@@ -208,7 +210,9 @@ impl ProcessTable {
             spool_capacity: config.squasher.spool_bytes,
             proc_log,
         };
-        table.adopt_from_log();
+        if !skip_adopt {
+            table.adopt_from_log();
+        }
         table
     }
 

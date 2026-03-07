@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::sync::watch;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::RwLock as TokioRwLock;
 use tokio::task::JoinSet;
 
 use uuid::Uuid;
@@ -66,7 +66,7 @@ impl From<std::io::Error> for ServerError {
 /// The MCP server, holding all shared state for request processing.
 pub struct McpServer {
     session_manager: Arc<SessionManager>,
-    process_table: Arc<TokioMutex<ProcessTable>>,
+    process_table: Arc<TokioRwLock<ProcessTable>>,
     dispatcher: Arc<McpDispatcher>,
     _config: Arc<MishConfig>,
 }
@@ -75,7 +75,7 @@ impl McpServer {
     /// Create a new MCP server with all components wired together.
     pub fn new(config: Arc<MishConfig>) -> Result<Self, ServerError> {
         let session_manager = Arc::new(SessionManager::new(config.clone()));
-        let process_table = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let process_table = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = default_runtime_config();
         let dispatcher = McpDispatcher::new(
             session_manager.clone(),
@@ -263,7 +263,7 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
                 _ = interval.tick() => {
                     // Clean up expired process entries.
                     {
-                        let mut pt = cleanup_pt.lock().await;
+                        let mut pt = cleanup_pt.write().await;
                         pt.cleanup_expired(retention);
                     }
                     // Clean up idle sessions.
@@ -499,11 +499,18 @@ pub async fn run_daemon(socket_path: Option<&str>) -> Result<(), Box<dyn std::er
         }
     });
 
-    // Accept loop
+    // Accept loop — semaphore limits concurrent connections to prevent
+    // PTY buffer contention and tokio runtime starvation (BUG-009).
+    let sem = Arc::new(tokio::sync::Semaphore::new(10));
     loop {
         let (stream, _addr) = listener.accept().await?;
         let server = Arc::clone(&server);
+        let permit = Arc::clone(&sem);
         tokio::spawn(async move {
+            let _permit = match permit.acquire().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
             if let Err(e) = handle_daemon_connection(stream, &server).await {
                 tracing::warn!("daemon connection error: {e}");
             }

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::json;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{Mutex as TokioMutex, RwLock as TokioRwLock};
 use uuid::Uuid;
 
 use crate::audit::logger::{AuditEntry, AuditEvent, AuditLogger};
@@ -28,7 +28,7 @@ use crate::tools::sh_session::AuditContext;
 /// The MCP server dispatcher.
 pub struct McpDispatcher {
     session_manager: Arc<SessionManager>,
-    process_table: Arc<TokioMutex<ProcessTable>>,
+    process_table: Arc<TokioRwLock<ProcessTable>>,
     config: Arc<MishConfig>,
     grammars: HashMap<String, Grammar>,
     categories_config: CategoriesConfig,
@@ -41,7 +41,7 @@ pub struct McpDispatcher {
 impl McpDispatcher {
     pub fn new(
         session_manager: Arc<SessionManager>,
-        process_table: Arc<TokioMutex<ProcessTable>>,
+        process_table: Arc<TokioRwLock<ProcessTable>>,
         config: Arc<MishConfig>,
         grammars: HashMap<String, Grammar>,
         categories_config: CategoriesConfig,
@@ -236,7 +236,7 @@ impl McpDispatcher {
         message: impl Into<String>,
     ) -> JsonRpcResponse {
         let digest = {
-            let mut pt = self.process_table.lock().await;
+            let mut pt = self.process_table.write().await;
             pt.digest(DigestMode::Full)
         };
 
@@ -297,7 +297,7 @@ impl McpDispatcher {
 
         // Phase 1: Lock table, register process, clone spool Arc.
         let spawn_setup = {
-            let mut pt = self.process_table.lock().await;
+            let mut pt = self.process_table.write().await;
             sh_spawn::setup(params, &self.session_manager, &mut pt, &self.config)
                 .await
                 .map_err(|e| (e.code, e.message))?
@@ -311,7 +311,7 @@ impl McpDispatcher {
 
         // Phase 3: Re-acquire lock for digest only.
         let digest = {
-            let mut pt = self.process_table.lock().await;
+            let mut pt = self.process_table.write().await;
             pt.digest(DigestMode::Full)
         };
 
@@ -338,7 +338,7 @@ impl McpDispatcher {
 
             // Phase 1: Lock table, extract Arcs, release lock
             let (managed, spool, state_str) = {
-                let pt = self.process_table.lock().await;
+                let pt = self.process_table.read().await;
                 let entry = pt.get(&params.alias).ok_or_else(|| {
                     (crate::mcp::types::ERR_ALIAS_NOT_FOUND, format!("process alias not found: {}", params.alias))
                 })?;
@@ -363,7 +363,7 @@ impl McpDispatcher {
 
             // Phase 3: Re-acquire lock for digest
             let digest = {
-                let mut pt = self.process_table.lock().await;
+                let mut pt = self.process_table.write().await;
                 pt.digest(DigestMode::Full)
             };
 
@@ -379,7 +379,7 @@ impl McpDispatcher {
 
             // Phase 1: Lock table, extract Arcs + profile, release lock
             let (managed, spool, state_str, entry_profile) = {
-                let pt = self.process_table.lock().await;
+                let pt = self.process_table.read().await;
                 let entry = pt.get(&params.alias).ok_or_else(|| {
                     (crate::mcp::types::ERR_ALIAS_NOT_FOUND, format!("process alias not found: {}", params.alias))
                 })?;
@@ -413,7 +413,7 @@ impl McpDispatcher {
 
             // Phase 3: Re-acquire lock for digest
             let digest = {
-                let mut pt = self.process_table.lock().await;
+                let mut pt = self.process_table.write().await;
                 pt.digest(DigestMode::Full)
             };
 
@@ -421,7 +421,7 @@ impl McpDispatcher {
         }
 
         // Standard path: single lock for non-blocking actions
-        let mut pt = self.process_table.lock().await;
+        let mut pt = self.process_table.write().await;
         let result = sh_interact::handle(params, &self.session_manager, &mut pt)
             .await
             .map_err(|e| (e.code, e.message))?;
@@ -441,7 +441,7 @@ impl McpDispatcher {
             session_id: &self.session_id,
         };
 
-        let mut pt = self.process_table.lock().await;
+        let mut pt = self.process_table.write().await;
         let result = sh_session::handle(params, &self.session_manager, &pt, Some(&audit_ctx))
             .await
             .map_err(|e| (e.code, e.message))?;
@@ -452,7 +452,7 @@ impl McpDispatcher {
     async fn dispatch_sh_help(
         &self,
     ) -> Result<(serde_json::Value, Vec<ProcessDigestEntry>), (i32, String)> {
-        let mut pt = self.process_table.lock().await;
+        let mut pt = self.process_table.write().await;
         let result = sh_help::handle(&self.config, &pt, &self.session_manager, None)
             .await
             .map_err(|e| (e.error_code(), e.to_string()))?;
@@ -632,7 +632,7 @@ mod tests {
     fn test_dispatcher() -> McpDispatcher {
         let config = test_config();
         let sm = Arc::new(SessionManager::new(config.clone()));
-        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let pt = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let d = McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
         d.mark_initialized();
@@ -703,7 +703,7 @@ mod tests {
     async fn tools_call_before_initialized_returns_error() {
         let config = test_config();
         let sm = Arc::new(SessionManager::new(config.clone()));
-        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let pt = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         // Intentionally do NOT mark_initialized.
         let dispatcher = McpDispatcher::new(sm, pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
@@ -866,7 +866,7 @@ mod tests {
         sm.create_session("main", Some("/bin/bash"))
             .await
             .expect("should create main session");
-        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let pt = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
         dispatcher.mark_initialized();
@@ -898,7 +898,7 @@ mod tests {
         sm.create_session("main", Some("/bin/bash"))
             .await
             .expect("should create main session");
-        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let pt = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let dispatcher = McpDispatcher::new(sm.clone(), pt, config, rc.grammars, rc.categories_config, rc.dangerous_patterns);
         dispatcher.mark_initialized();
@@ -1033,7 +1033,7 @@ mod tests {
         sm.create_session("main", Some("/bin/bash"))
             .await
             .expect("should create main session");
-        let pt = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let pt = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         let rc = crate::config_loader::default_runtime_config();
         let dispatcher = Arc::new({
             let d = McpDispatcher::new(

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use regex::Regex;
 use serde_json;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::RwLock as TokioRwLock;
 
 use crate::config::MishConfig;
 use crate::core::enrich;
@@ -59,7 +59,7 @@ static PRESET_RE: OnceLock<Regex> = OnceLock::new();
 pub async fn handle(
     params: ShRunParams,
     session_manager: &SessionManager,
-    process_table: &TokioMutex<ProcessTable>,
+    process_table: &TokioRwLock<ProcessTable>,
     config: &MishConfig,
     grammars: &HashMap<String, Grammar>,
     categories_config: &CategoriesConfig,
@@ -241,7 +241,7 @@ pub async fn handle(
 
     // 8. Generate process digest.
     let digest = {
-        let mut table = process_table.lock().await;
+        let mut table = process_table.write().await;
         table.digest(DigestMode::Changed)
     };
 
@@ -705,13 +705,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Helper: create a SessionManager, create "main" session, return Arc.
-    async fn setup_session() -> (Arc<SessionManager>, Arc<TokioMutex<ProcessTable>>) {
+    async fn setup_session() -> (Arc<SessionManager>, Arc<TokioRwLock<ProcessTable>>) {
         let config = Arc::new(default_config());
         let mgr = Arc::new(SessionManager::new(config.clone()));
         mgr.create_session("main", Some("/bin/bash"))
             .await
             .expect("should create main session");
-        let table = Arc::new(TokioMutex::new(ProcessTable::new(&config)));
+        let table = Arc::new(TokioRwLock::new(ProcessTable::new(&config)));
         (mgr, table)
     }
 
