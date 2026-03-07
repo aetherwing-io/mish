@@ -70,6 +70,8 @@ pub struct ProcessEntry {
     pub started_at: Instant,
     pub completed_at: Option<Instant>,
     pub spool: Arc<OutputSpool>,
+    /// Re-adopted from proc log — no PTY handle, read-only visibility.
+    pub orphan: bool,
 
     // Watch-related:
     pub watch_pattern: Option<String>,
@@ -117,6 +119,71 @@ const DIGEST_CAP: usize = 20;
 /// How many terminal entries to keep when capping.
 const TERMINAL_RETAIN: usize = 10;
 
+// ---------------------------------------------------------------------------
+// ProcLog — append-only JSONL for crash recovery
+// ---------------------------------------------------------------------------
+
+struct ProcLog {
+    path: std::path::PathBuf,
+}
+
+impl ProcLog {
+    fn new() -> Self {
+        let base = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+        let dir = base.join(".local/share/mish");
+        std::fs::create_dir_all(&dir).ok();
+        Self { path: dir.join("procs.jsonl") }
+    }
+
+    fn append(&self, event: &serde_json::Value) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&self.path)
+        {
+            let _ = serde_json::to_writer(&mut f, event);
+            let _ = f.write_all(b"\n");
+        }
+    }
+
+    fn append_spawn(&self, alias: &str, pid: u32, session: &str) {
+        self.append(&serde_json::json!({
+            "ts": epoch_millis(),
+            "event": "spawn",
+            "alias": alias,
+            "pid": pid,
+            "session": session,
+        }));
+    }
+
+    fn append_state(&self, alias: &str, state: ProcessState) {
+        self.append(&serde_json::json!({
+            "ts": epoch_millis(),
+            "event": "state",
+            "alias": alias,
+            "state": format!("{:?}", state),
+        }));
+    }
+
+    fn read_all(&self) -> Vec<serde_json::Value> {
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        content.lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Global process table.
 pub struct ProcessTable {
     entries: HashMap<String, ProcessEntry>,
@@ -125,18 +192,97 @@ pub struct ProcessTable {
     spool_manager: SpoolManager,
     max_processes: usize,
     spool_capacity: usize,
+    proc_log: ProcLog,
 }
 
 impl ProcessTable {
     /// Create a new process table from config.
     pub fn new(config: &MishConfig) -> Self {
-        Self {
+        let proc_log = ProcLog::new();
+        let mut table = Self {
             entries: HashMap::new(),
             sequence_counter: 0,
             last_client_seq: 0,
             spool_manager: SpoolManager::new(config.server.max_spool_bytes_total),
             max_processes: config.server.max_processes,
             spool_capacity: config.squasher.spool_bytes,
+            proc_log,
+        };
+        table.adopt_from_log();
+        table
+    }
+
+    /// Re-adopt orphaned processes from the JSONL proc log.
+    /// Reads the log, finds the latest state per alias, checks if the PID
+    /// is still alive, and registers survivors as orphan entries.
+    fn adopt_from_log(&mut self) {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        let events = self.proc_log.read_all();
+        // Build latest state per alias
+        let mut latest: HashMap<String, (u32, String, String)> = HashMap::new(); // alias -> (pid, session, last_state)
+        for ev in &events {
+            let alias = ev["alias"].as_str().unwrap_or_default();
+            if alias.is_empty() { continue; }
+            match ev["event"].as_str() {
+                Some("spawn") => {
+                    let pid = ev["pid"].as_u64().unwrap_or(0) as u32;
+                    let session = ev["session"].as_str().unwrap_or("unknown").to_string();
+                    latest.insert(alias.to_string(), (pid, session, "Running".to_string()));
+                }
+                Some("state") => {
+                    let state = ev["state"].as_str().unwrap_or("").to_string();
+                    if let Some(entry) = latest.get_mut(alias) {
+                        entry.2 = state;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Check each candidate
+        let mut adopted = 0u32;
+        for (alias, (pid, session, last_state)) in &latest {
+            // Skip terminal states
+            if last_state != "Running" { continue; }
+            // Skip PID 0/1
+            if *pid <= 1 { continue; }
+            // Check if alive
+            if kill(Pid::from_raw(*pid as i32), None).is_err() { continue; }
+
+            // Alive — register as orphan
+            let spool = match self.spool_manager.create_spool(alias, self.spool_capacity) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let seq = self.next_seq();
+            self.entries.insert(alias.clone(), ProcessEntry {
+                alias: alias.clone(),
+                session: session.clone(),
+                state: ProcessState::Running,
+                pid: *pid,
+                exit_code: None,
+                signal: None,
+                started_at: Instant::now(),
+                completed_at: None,
+                spool,
+                watch_pattern: None,
+                last_match: None,
+                match_count: 0,
+                prompt_tail: None,
+                output_summary: None,
+                error_tail: None,
+                interpreter: None,
+                profile: None,
+                last_modified_seq: seq,
+                seen_by_client: false,
+                orphan: true,
+            });
+            adopted += 1;
+        }
+        if adopted > 0 {
+            eprintln!("[mish] adopted {adopted} orphan(s) from proc log");
         }
     }
 
@@ -197,8 +343,10 @@ impl ProcessTable {
             profile: None,
             last_modified_seq: seq,
             seen_by_client: false,
+            orphan: false,
         };
 
+        self.proc_log.append_spawn(alias, pid, session);
         self.entries.insert(alias.to_string(), entry);
         Ok(())
     }
@@ -232,6 +380,7 @@ impl ProcessTable {
         }
         entry.last_modified_seq = seq;
         entry.seen_by_client = false;
+        self.proc_log.append_state(alias, new_state);
         Ok(())
     }
 
