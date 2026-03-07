@@ -1,6 +1,6 @@
 [package]
 name = "mish"
-version = "0.4.29"
+version = "0.4.30"
 edition = "2021"
 description = "The LLM-native shell"
 repository = "https://github.com/aetherwing-io/mish"

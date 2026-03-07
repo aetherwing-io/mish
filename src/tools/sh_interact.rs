@@ -3,6 +3,36 @@
 //! Provides actions to interact with spawned processes: read output,
 //! send input, send signals, kill, and query status.
 
+/// Strip TUI chrome from dedicated PTY screen output (Claude Code, Gemini, etc).
+/// Removes status bars, separator lines, UI hints, logos — keeps semantic content.
+fn strip_tui_chrome(screen: &str) -> String {
+    screen
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Skip empty lines at boundaries
+            if trimmed.is_empty() { return true; }
+            // Claude Code logo
+            if trimmed.contains("▐▛███▜▌") || trimmed.contains("▝▜█████▛▘") { return false; }
+            // Status bar
+            if trimmed.contains("░▒▓") && trimmed.contains("▓▒░") { return false; }
+            // Separator lines (all dashes or box-drawing)
+            if trimmed.chars().all(|c| c == '─' || c == '━' || c == ' ') && trimmed.len() > 10 { return false; }
+            // Permission/mode line
+            if trimmed.contains("⏵⏵") { return false; }
+            // Collapsed output marker
+            if trimmed.contains("▪▪▪") { return false; }
+            // ctrl+o hint
+            if trimmed.contains("ctrl+o to expand") || trimmed.contains("ctrl+g to edit") { return false; }
+            // Gemini logo/separator
+            if trimmed.contains("░░░███") { return false; }
+            if trimmed.contains("▀▀▀▀▀▀▀▀") || trimmed.contains("▄▄▄▄▄▄▄▄") { return false; }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 use std::time::Duration;
 
 use nix::sys::signal::{killpg, Signal};
@@ -91,7 +121,7 @@ async fn handle_read_tail(
     // with scrollback. For everything else, read from spool with VTE stripping.
     let stripped = if let Some(ref managed) = entry.interpreter {
         if let Some(Ok(screen)) = managed.read_screen_full() {
-            screen
+            strip_tui_chrome(&screen)
         } else {
             let raw = entry.spool.read_all();
             let text = String::from_utf8_lossy(&raw);
@@ -103,10 +133,18 @@ async fn handle_read_tail(
         vte_strip::strip_ansi(&text)
     };
 
+    // Filter out consecutive blank lines
     let all_lines: Vec<&str> = stripped.lines().collect();
+    let mut deduped: Vec<&str> = Vec::new();
+    for line in &all_lines {
+        if line.trim().is_empty() && deduped.last().map_or(false, |l: &&str| l.trim().is_empty()) {
+            continue;
+        }
+        deduped.push(line);
+    }
 
-    let start = all_lines.len().saturating_sub(lines_requested);
-    let tail_lines = &all_lines[start..];
+    let start = deduped.len().saturating_sub(lines_requested);
+    let tail_lines = &deduped[start..];
     let output = tail_lines.join("\n");
     let lines_returned = tail_lines.len();
 
@@ -144,7 +182,7 @@ async fn handle_read_full(
     // For everything else, read from spool with VTE stripping.
     let output = if let Some(ref managed) = entry.interpreter {
         if let Some(Ok(screen)) = managed.read_screen_full() {
-            screen
+            strip_tui_chrome(&screen)
         } else {
             let raw = entry.spool.read_all();
             let text = String::from_utf8_lossy(&raw);
@@ -437,7 +475,7 @@ pub async fn handle_read_tail_with_wait(
         // Read screen (scrollback) for dedicated PTY, spool for regular
         let content = if let Some(ref m) = managed {
             if let Some(Ok(screen)) = m.read_screen_full() {
-                screen
+                strip_tui_chrome(&screen)
             } else {
                 let raw = spool.read_all();
                 let text = String::from_utf8_lossy(&raw);
