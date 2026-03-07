@@ -622,7 +622,7 @@ detect = ["mytool"]
     #[test]
     fn test_default_mish_config() {
         let rc = default_runtime_config();
-        assert_eq!(rc.mish_config.server.max_sessions, 5);
+        assert_eq!(rc.mish_config.server.max_sessions, 12);
         assert_eq!(rc.mish_config.squasher.max_lines, 200);
         assert_eq!(rc.mish_config.timeout_defaults.default, 300);
     }

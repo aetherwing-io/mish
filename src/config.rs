@@ -235,9 +235,9 @@ pub struct SandboxConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            max_sessions: 5,
-            max_processes: 20,
-            max_spool_bytes_total: 52_428_800, // 50 MB
+            max_sessions: 12,
+            max_processes: 50,
+            max_spool_bytes_total: 209_715_200, // 200 MB
             idle_session_timeout_sec: 3600,
         }
     }
@@ -250,7 +250,7 @@ impl Default for SquasherConfig {
             max_bytes: 65_536, // 64 KB
             oreo_head: 50,
             oreo_tail: 150,
-            spool_bytes: 1_048_576, // 1 MB
+            spool_bytes: 4_194_304, // 4 MB
         }
     }
 }
@@ -304,7 +304,7 @@ impl Default for AuditConfig {
 impl Default for HandoffConfig {
     fn default() -> Self {
         Self {
-            timeout_sec: 600,
+            timeout_sec: 900,
             fallback: "yield_to_llm".into(),
         }
     }

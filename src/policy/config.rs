@@ -315,7 +315,7 @@ respond = "n\n"
         let cfg = config_from_toml("");
 
         let compiled = CompiledPolicy::compile(&cfg).expect("should compile");
-        assert_eq!(compiled.handoff.timeout_sec, 600);
+        assert_eq!(compiled.handoff.timeout_sec, 900);
         assert_eq!(compiled.handoff.fallback, "yield_to_llm");
     }
 }

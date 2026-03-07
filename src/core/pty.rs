@@ -205,8 +205,8 @@ impl PtyCapture {
             return Ok(0);
         }
 
-        const CHUNK_SIZE: usize = 1024;
-        const MAX_RETRIES: usize = 500; // ~5s at 10ms per poll
+        const CHUNK_SIZE: usize = 4096;
+        const MAX_RETRIES: usize = 3000; // ~30s at 10ms per poll
 
         let mut total_written = 0;
 
