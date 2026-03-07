@@ -56,7 +56,7 @@ pub fn builtin_profiles() -> Vec<AppProfile> {
             name: "claude".to_string(),
             submit_sequence: "<enter>".to_string(),
             prompt_pattern: r"❯\s*$".to_string(),
-            input_mode: InputMode::BracketedPaste,
+            input_mode: InputMode::Line,
         },
         AppProfile {
             name: "gemini".to_string(),
