@@ -398,6 +398,41 @@ async fn auto_start_daemon(sock: &std::path::Path) -> Result<tokio::net::UnixStr
     Err("daemon auto-start: failed to connect after retries".into())
 }
 
+/// Send a lock command to the daemon.
+pub async fn daemon_lock(action: &str, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let sock = daemon_socket_path();
+    let stream = tokio::net::UnixStream::connect(&sock).await
+        .map_err(|_| "no daemon running (start with: mish daemon)")?;
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read).lines();
+
+    // Initialize
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mish-lock"}}});
+    write.write_all(format!("{}\n", init).as_bytes()).await?;
+    let _ = reader.next_line().await?;
+
+    // Notification
+    let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+    write.write_all(format!("{}\n", notif).as_bytes()).await?;
+
+    // sh_lock call
+    let req = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sh_lock","arguments":{"action":action,"name":name}}});
+    write.write_all(format!("{}\n", req).as_bytes()).await?;
+
+    if let Some(line) = reader.next_line().await? {
+        let resp: serde_json::Value = serde_json::from_str(&line)?;
+        if let Some(text) = resp["result"]["content"][0]["text"].as_str() {
+            return Ok(text.to_string());
+        }
+        if let Some(err) = resp["error"]["message"].as_str() {
+            return Err(err.into());
+        }
+    }
+    Ok("ok".to_string())
+}
+
 /// Check daemon status — quick health probe.
 pub async fn daemon_status() -> Result<String, Box<dyn std::error::Error>> {
     let sock = daemon_socket_path();

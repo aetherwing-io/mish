@@ -58,6 +58,14 @@ enum Commands {
     /// Show daemon status (processes, health)
     Status,
 
+    /// Coordination lock — create, release, or watch
+    Lock {
+        /// Action: create, release, watch, status
+        action: String,
+        /// Lock name
+        name: String,
+    },
+
     /// List running mish server instances
     Ps,
 
@@ -676,6 +684,15 @@ async fn main() {
                 Ok(status) => println!("{status}"),
                 Err(e) => {
                     eprintln!("status error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Lock { action, name } => {
+            match mish::mcp::server::daemon_lock(&action, &name).await {
+                Ok(msg) => println!("{msg}"),
+                Err(e) => {
+                    eprintln!("lock error: {e}");
                     std::process::exit(1);
                 }
             }
