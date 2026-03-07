@@ -538,7 +538,23 @@ Blocking read_tail (wait for output without polling):
   sh_interact(alias="cc", action="read_tail", wait_for="❯", timeout=60)
   → blocks until prompt appears or timeout
 
-Built-in profiles: claude (bracketed paste), gemini (line), generic (line)
+Built-in profiles: claude (line), gemini (line), generic (line)
+
+## Coordination locks (sh_lock)
+Named locks in the process table for agent orchestration:
+  sh_lock(action="create", name="task-123")       — create lock (shows in digest)
+  sh_lock(action="release", name="task-123")      — release lock (agents call this when done)
+  sh_lock(action="watch", name="task-123")        — block until lock is released
+  sh_lock(action="status", name="task-123")       — check lock state
+
+CLI equivalent (for shell scripts and background jobs):
+  mish lock create task-123
+  mish lock release task-123
+
+Orchestrator pattern:
+  sh_lock(action="create", name="build-1")
+  Bash(background): cargo test && mish lock release build-1
+  → keep working, Claude Code notifies when background task exits
 
 ## Operator hand-off
   sh_interact(alias="server", action="status")   — check if still running
@@ -551,6 +567,12 @@ Built-in profiles: claude (bracketed paste), gemini (line), generic (line)
 ## Sessions
   sh_session(action="list")                        — see active sessions
   sh_session(action="audit", last=5)               — recent command history
+
+## Defaults — do NOT override unless you have a reason
+  sh_run timeout: 900s (do NOT pass timeout= on every call)
+  sh_spawn timeout: 300s
+
+Do NOT fall back to Bash if a command fails — check syntax and retry with sh_run.
 
 Do NOT fall back to Bash if a command fails — check syntax and retry with sh_run."#;
 
