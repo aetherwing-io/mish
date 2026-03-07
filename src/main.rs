@@ -27,11 +27,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start MCP server over stdio
+    /// Start MCP server over stdio (connects to daemon if running)
     Serve {
         /// Path to config file
         #[arg(long)]
         config: Option<String>,
+    },
+
+    /// Start shared daemon on Unix socket (all serve instances connect here)
+    Daemon {
+        /// Socket path (default: ~/.local/share/mish/mish.sock)
+        #[arg(long)]
+        socket: Option<String>,
     },
 
     /// Attach to an operator handoff session
@@ -638,6 +645,12 @@ async fn main() {
         Commands::Serve { config } => {
             if let Err(e) = mish::mcp::server::run_server(config.as_deref()).await {
                 eprintln!("mish serve: {e}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Daemon { socket } => {
+            if let Err(e) = mish::mcp::server::run_daemon(socket.as_deref()).await {
+                eprintln!("mish daemon: {e}");
                 std::process::exit(1);
             }
         }

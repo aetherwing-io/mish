@@ -358,6 +358,110 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Daemon mode — shared process table over Unix socket
+// ---------------------------------------------------------------------------
+
+/// Default daemon socket path.
+fn daemon_socket_path() -> std::path::PathBuf {
+    let base = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    base.join(".local/share/mish/mish.sock")
+}
+
+/// Run the daemon: listen on Unix socket, accept connections, share one McpServer.
+pub async fn run_daemon(socket_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let sock_path = socket_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(daemon_socket_path);
+
+    // Clean stale socket
+    if sock_path.exists() {
+        std::fs::remove_file(&sock_path)?;
+    }
+    if let Some(parent) = sock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let listener = tokio::net::UnixListener::bind(&sock_path)?;
+    eprintln!("[mish daemon] listening on {}", sock_path.display());
+
+    // Shared server — all connections share the same process table
+    let config = Arc::new(
+        load_config("~/.config/mish/mish.toml")
+            .map_err(|e| ServerError::Config(e.to_string()))?,
+    );
+    let server = Arc::new(McpServer::new(config.clone())?);
+
+    // Create main session
+    let sm = server.session_manager.clone();
+    tokio::spawn(async move {
+        if let Err(e) = sm.create_session("main", None).await {
+            tracing::error!("failed to create main session: {e}");
+        }
+    });
+
+    // Accept loop
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            if let Err(e) = handle_daemon_connection(stream, &server).await {
+                tracing::warn!("daemon connection error: {e}");
+            }
+        });
+    }
+}
+
+/// Handle a single daemon client connection.
+async fn handle_daemon_connection(
+    stream: tokio::net::UnixStream,
+    server: &McpServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (read_half, write_half) = stream.into_split();
+    let reader = tokio::io::BufReader::new(read_half);
+    let transport = StdioTransport::with_io(reader, write_half);
+    let (mut reader, writer) = transport.into_split();
+    let dispatcher = server.dispatcher.clone();
+    let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    loop {
+        tokio::select! {
+            result = reader.read_request() => {
+                match result {
+                    Ok(Some(request)) => {
+                        let d = dispatcher.clone();
+                        let w = writer.clone();
+                        inflight.spawn(async move {
+                            if let Some(response) = d.dispatch(request).await {
+                                if let Err(e) = w.write_response(response).await {
+                                    tracing::error!("daemon write error: {e}");
+                                }
+                            }
+                        });
+                    }
+                    Ok(None) | Err(TransportError::Eof) => break,
+                    Err(e) => {
+                        tracing::warn!("daemon read error: {e}");
+                        break;
+                    }
+                }
+            }
+            Some(_) = inflight.join_next(), if !inflight.is_empty() => {}
+        }
+    }
+
+    // Drain in-flight
+    if !inflight.is_empty() {
+        let drain = async { while inflight.join_next().await.is_some() {} };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), drain).await;
+        inflight.abort_all();
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
