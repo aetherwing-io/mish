@@ -331,11 +331,11 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
             shutdown_handle,
         ).await;
     } else {
-        // Stdin EOF: no more requests possible. Abort the shutdown task
-        // (it was waiting for signals that will never arrive) and close
-        // sessions directly. PtyCapture's Drop handles SIGTERM → SIGKILL.
+        // Stdin EOF: MCP client disconnected. Abort the shutdown task
+        // (it was waiting for signals that will never arrive).
+        // DO NOT kill children — they may be long-running agents that
+        // should survive transport reconnection (BUG-004).
         shutdown_handle.abort();
-        server.session_manager.close_all().await;
     }
 
     // Propagate any error from the run loop.

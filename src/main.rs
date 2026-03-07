@@ -268,6 +268,13 @@ fn shim_interstitial() -> bool {
 fn try_shell_dash_c() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
 
+    // Check --agents BEFORE compat mode — a bash-symlink user asking
+    // for the agent guide should get it, not an interstitial error.
+    if args.iter().any(|a| a == "--agents") {
+        print!("{}", mish::cli::agents::AGENT_GUIDE);
+        return Some(0);
+    }
+
     // First-ever shim invocation: show interstitial warning and bail.
     // The LLM sees the warning instead of command output and retries,
     // at which point the counter file exists and execution proceeds normally.

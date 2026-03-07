@@ -221,7 +221,7 @@ async fn setup_dedicated_pty(
     let cmd = params.cmd.clone();
 
     // Spawn in a blocking task (PTY allocation is blocking).
-    let pty = tokio::task::spawn_blocking(move || {
+    let mut pty = tokio::task::spawn_blocking(move || {
         // If the command contains shell metacharacters, wrap in /bin/sh -c
         // Always wrap in /bin/sh -c to handle shell syntax, PATH lookup, etc.
         // This mirrors how InterpreterSession::spawn works.
@@ -232,6 +232,9 @@ async fn setup_dedicated_pty(
     .await
     .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("spawn_blocking join error: {e}")))?
     .map_err(|e| ToolError::new(ERR_SHELL_ERROR, format!("dedicated PTY spawn failed: {e}")))?;
+
+    // Dedicated PTY children survive mish exit (BUG-004).
+    pty.set_detach_on_drop(true);
 
     let pid = pty.pid().as_raw() as u32;
 

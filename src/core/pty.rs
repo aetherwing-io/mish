@@ -71,6 +71,9 @@ pub struct PtyCapture {
     master_fd: OwnedFd,
     child_pid: Pid,
     start_time: Instant,
+    /// If true, child survives Drop (for dedicated PTY agents that should
+    /// outlive the mish process). Default: false.
+    detach_on_drop: bool,
 }
 
 impl PtyCapture {
@@ -161,6 +164,7 @@ impl PtyCapture {
                     master_fd: master,
                     child_pid: child,
                     start_time: Instant::now(),
+                    detach_on_drop: false,
                 })
             }
         }
@@ -443,19 +447,27 @@ impl PtyCapture {
     }
 }
 
+impl PtyCapture {
+    /// Mark this PTY's child to survive Drop (for dedicated PTY agents).
+    pub fn set_detach_on_drop(&mut self, detach: bool) {
+        self.detach_on_drop = detach;
+    }
+}
+
 impl Drop for PtyCapture {
     fn drop(&mut self) {
+        // If detach_on_drop is set, let the child live as an orphan.
+        // The master fd still closes (OwnedFd Drop), but the process survives.
+        if self.detach_on_drop {
+            return;
+        }
         // OwnedFd will close the master fd on drop.
         // Try to reap the child — send SIGTERM first, then SIGKILL if needed.
         if let Ok(WaitStatus::StillAlive) = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-            // Child still running — send SIGTERM and wait briefly.
             let _ = kill(self.child_pid, Signal::SIGTERM);
             std::thread::sleep(std::time::Duration::from_millis(50));
             if let Ok(WaitStatus::StillAlive) = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-                // Still alive after SIGTERM — escalate to SIGKILL.
                 let _ = kill(self.child_pid, Signal::SIGKILL);
-                // Block until reaped. SIGKILL is guaranteed to terminate,
-                // so this won't hang. WNOHANG here would race and leave zombies.
                 let _ = waitpid(self.child_pid, None);
             }
         }
