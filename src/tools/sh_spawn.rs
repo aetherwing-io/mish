@@ -120,10 +120,16 @@ pub async fn setup(
     }
 
     // Pre-check alias uniqueness before doing any work.
+    // Allow reuse of aliases in terminal states (Killed/Completed/Failed/TimedOut)
+    // so the kill-and-restart recovery pattern works.
     if process_table.alias_exists(&alias) {
-        return Err(ToolError::from_process_table_error(
-            &ProcessTableError::AliasInUse,
-        ));
+        if let Some(entry) = process_table.get(&alias) {
+            if !entry.state.is_terminal() {
+                return Err(ToolError::from_process_table_error(
+                    &ProcessTableError::AliasInUse,
+                ));
+            }
+        }
     }
 
     // Dedicated PTY: spawn in its own PTY as foreground process.
@@ -246,6 +252,13 @@ async fn setup_dedicated_pty(
     ));
     process_table.set_interpreter(&alias, managed.clone());
 
+    // Store app profile for send_and_wait.
+    if let Some(ref profile) = params.profile {
+        if let Some(entry) = process_table.entries_mut().get_mut(&alias) {
+            entry.profile = Some(profile.clone());
+        }
+    }
+
     Ok(SpawnSetup {
         alias,
         pid,
@@ -296,6 +309,13 @@ async fn setup_repl(
         ManagedInterpreter::new(interpreter_session, spool.clone()),
     ));
     process_table.set_interpreter(&alias, managed.clone());
+
+    // Store app profile for send_and_wait.
+    if let Some(ref profile) = params.profile {
+        if let Some(entry) = process_table.entries_mut().get_mut(&alias) {
+            entry.profile = Some(profile.clone());
+        }
+    }
 
     Ok(SpawnSetup {
         alias,
@@ -491,7 +511,7 @@ fn clean_bg_output(output: &str) -> String {
 }
 
 /// Find the first line matching the regex and return it (ANSI-stripped).
-fn find_match_line(output: &str, regex: &Regex) -> Option<String> {
+pub(crate) fn find_match_line(output: &str, regex: &Regex) -> Option<String> {
     for line in output.lines() {
         let clean = vte_strip::strip_ansi(line);
         if regex.is_match(&clean) {
@@ -772,6 +792,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -803,6 +824,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
         handle(params1, &mgr, &mut table, &config)
             .await
@@ -815,6 +837,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
         let result = handle(params2, &mgr, &mut table, &config).await;
         assert!(result.is_err());
@@ -838,6 +861,7 @@ mod tests {
             wait_for: Some("ready".to_string()),
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -871,6 +895,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -893,6 +918,7 @@ mod tests {
             wait_for: Some("[invalid".to_string()),
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -918,6 +944,7 @@ mod tests {
             wait_for: Some("never_matches_this".to_string()),
             timeout: Some(1),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -950,6 +977,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;
@@ -976,6 +1004,7 @@ mod tests {
             wait_for: None,
             timeout: Some(5),
             dedicated_pty: None,
+            profile: None,
         };
 
         let result = handle(params, &mgr, &mut table, &config).await;

@@ -325,6 +325,102 @@ impl McpDispatcher {
         let params: ShInteractParams = serde_json::from_value(arguments)
             .map_err(|e| (ERR_INVALID_PARAMS, format!("Invalid sh_interact params: {e}")))?;
 
+        // Two-phase lock for read_tail with wait_for
+        if params.action == crate::mcp::types::InteractAction::ReadTail && params.wait_for.is_some() {
+            let wait_pattern = params.wait_for.as_ref().unwrap().clone();
+            let timeout_secs = params.timeout.unwrap_or(30);
+            let lines_requested = params.lines.unwrap_or(50);
+
+            // Validate regex early
+            regex::Regex::new(&format!("(?i){}", &wait_pattern)).map_err(|e| {
+                (ERR_INVALID_PARAMS, format!("invalid wait_for regex '{}': {}", wait_pattern, e))
+            })?;
+
+            // Phase 1: Lock table, extract Arcs, release lock
+            let (managed, spool, state_str) = {
+                let pt = self.process_table.lock().await;
+                let entry = pt.get(&params.alias).ok_or_else(|| {
+                    (crate::mcp::types::ERR_ALIAS_NOT_FOUND, format!("process alias not found: {}", params.alias))
+                })?;
+                (
+                    entry.interpreter.clone(),
+                    entry.spool.clone(),
+                    entry.state.as_str().to_string(),
+                )
+                // Lock dropped here
+            };
+
+            // Phase 2: Poll without holding the lock
+            let result = sh_interact::handle_read_tail_with_wait(
+                &params.alias,
+                lines_requested,
+                &wait_pattern,
+                timeout_secs,
+                managed,
+                spool,
+                state_str,
+            ).await.map_err(|e| (e.code, e.message))?;
+
+            // Phase 3: Re-acquire lock for digest
+            let digest = {
+                let mut pt = self.process_table.lock().await;
+                pt.digest(DigestMode::Full)
+            };
+
+            return Ok((result, digest));
+        }
+
+        // Two-phase lock for send_and_wait
+        if params.action == crate::mcp::types::InteractAction::SendAndWait {
+            let input = params.input.as_ref().ok_or_else(|| {
+                (ERR_INVALID_PARAMS, "'input' parameter is required for send_and_wait".to_string())
+            })?.clone();
+            let timeout_secs = params.timeout.unwrap_or(30);
+
+            // Phase 1: Lock table, extract Arcs + profile, release lock
+            let (managed, spool, state_str, entry_profile) = {
+                let pt = self.process_table.lock().await;
+                let entry = pt.get(&params.alias).ok_or_else(|| {
+                    (crate::mcp::types::ERR_ALIAS_NOT_FOUND, format!("process alias not found: {}", params.alias))
+                })?;
+                let managed = entry.interpreter.clone().ok_or_else(|| {
+                    (crate::mcp::types::ERR_INVALID_ACTION, "send_and_wait requires a dedicated PTY process".to_string())
+                })?;
+                (
+                    managed,
+                    entry.spool.clone(),
+                    entry.state.as_str().to_string(),
+                    entry.profile.clone(),
+                )
+                // Lock dropped here
+            };
+
+            // Resolve profile: explicit param > spawn-time profile > generic
+            let profile_name = params.profile.as_deref()
+                .or(entry_profile.as_deref());
+            let profile = crate::config::resolve_profile(profile_name);
+
+            // Phase 2: Write + poll without holding the lock
+            let result = sh_interact::handle_send_and_wait_impl(
+                &params.alias,
+                &input,
+                &profile,
+                timeout_secs,
+                managed,
+                spool,
+                state_str,
+            ).await.map_err(|e| (e.code, e.message))?;
+
+            // Phase 3: Re-acquire lock for digest
+            let digest = {
+                let mut pt = self.process_table.lock().await;
+                pt.digest(DigestMode::Full)
+            };
+
+            return Ok((result, digest));
+        }
+
+        // Standard path: single lock for non-blocking actions
         let mut pt = self.process_table.lock().await;
         let result = sh_interact::handle(params, &self.session_manager, &mut pt)
             .await
@@ -420,6 +516,18 @@ For apps that need their own terminal (TUI apps, other agents, interactive tools
 All I/O is fire-and-forget: send_input writes bytes, read_tail polls output.
 Special keys: <enter> <tab> <esc> <ctrl-c> <up> <down> <left> <right> <backspace>
 
+## Agent IPC (send_and_wait + profiles)
+For driving other agents (Claude, Gemini) through dedicated PTYs:
+  sh_spawn(alias="cc", cmd="claude", dedicated_pty=true, profile="claude", wait_for="❯")
+  sh_interact(alias="cc", action="send_and_wait", input="explain this code")
+  → one tool call: sends input with correct framing, blocks until prompt returns
+
+Blocking read_tail (wait for output without polling):
+  sh_interact(alias="cc", action="read_tail", wait_for="❯", timeout=60)
+  → blocks until prompt appears or timeout
+
+Built-in profiles: claude (bracketed paste), gemini (line), generic (line)
+
 ## Operator hand-off
   sh_interact(alias="server", action="status")   — check if still running
   sh_interact(alias="server", action="kill")      — stop when done
@@ -461,7 +569,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "cmd": { "type": "string", "description": "Command to execute" },
                     "wait_for": { "type": "string", "description": "Regex to match before returning success" },
                     "timeout": { "type": "integer", "description": "Seconds to wait", "default": 300 },
-                    "dedicated_pty": { "type": "boolean", "description": "Spawn in a dedicated PTY as foreground process. Use for TUI/interactive apps (claude, htop, vim) that need their own terminal.", "default": false }
+                    "dedicated_pty": { "type": "boolean", "description": "Spawn in a dedicated PTY as foreground process. Use for TUI/interactive apps (claude, htop, vim) that need their own terminal.", "default": false },
+                    "profile": { "type": "string", "description": "App profile for send_and_wait (claude/gemini/generic). Sets default submit/prompt behavior." }
                 },
                 "required": ["alias", "cmd"]
             }),
@@ -473,10 +582,13 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "alias": { "type": "string", "description": "Target process alias" },
-                    "action": { "type": "string", "enum": ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"], "description": "Action to perform" },
-                    "input": { "type": "string", "description": "For send_input: string to write. For dedicated PTY processes, use <enter> for Enter/submit, <tab>, <esc>, <ctrl-c>, <up>/<down>/<left>/<right>, <backspace>. For REPLs, include \\n for newline. For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
+                    "action": { "type": "string", "enum": ["send_input", "send_and_wait", "read_tail", "read_full", "send_signal", "kill", "status"], "description": "Action to perform" },
+                    "input": { "type": "string", "description": "For send_input/send_and_wait: string to write. For dedicated PTY processes, use <enter> for Enter/submit, <tab>, <esc>, <ctrl-c>, <up>/<down>/<left>/<right>, <backspace>. For REPLs, include \\n for newline. For send_signal: signal name (SIGINT, SIGTERM, etc.)" },
                     "lines": { "type": "integer", "description": "For read_tail: number of lines", "default": 50 },
-                    "background": { "type": "boolean", "description": "For send_input on REPLs: fire-and-forget mode. Returns immediately, use read_tail to check output later.", "default": false }
+                    "background": { "type": "boolean", "description": "For send_input on REPLs: fire-and-forget mode. Returns immediately, use read_tail to check output later.", "default": false },
+                    "wait_for": { "type": "string", "description": "For read_tail: regex to block until matched. Returns immediately if absent." },
+                    "timeout": { "type": "integer", "description": "For read_tail+wait_for or send_and_wait: seconds before returning unmatched", "default": 30 },
+                    "profile": { "type": "string", "description": "App profile (claude/gemini/generic). Overrides spawn-time profile for send_and_wait." }
                 },
                 "required": ["alias", "action"]
             }),
@@ -851,7 +963,7 @@ mod tests {
             .collect();
 
         // These are the exact actions the handler accepts (sh_interact::handle match arms).
-        let handler_actions = ["send_input", "read_tail", "read_full", "send_signal", "kill", "status"];
+        let handler_actions = ["send_input", "send_and_wait", "read_tail", "read_full", "send_signal", "kill", "status"];
 
         for action in &handler_actions {
             assert!(

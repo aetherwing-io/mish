@@ -48,6 +48,8 @@ fn parse_signal(name: &str) -> Option<Signal> {
 /// Handle an `sh_interact` tool call.
 ///
 /// Dispatches to the appropriate action handler based on `params.action`.
+/// Note: `ReadTail` with `wait_for` and `SendAndWait` require two-phase
+/// locking and are handled in `dispatch.rs` instead.
 pub async fn handle(
     params: ShInteractParams,
     session_manager: &SessionManager,
@@ -57,6 +59,7 @@ pub async fn handle(
         InteractAction::ReadTail => handle_read_tail(params, process_table).await,
         InteractAction::ReadFull => handle_read_full(params, process_table).await,
         InteractAction::SendInput => handle_send_input(params, session_manager, process_table).await,
+        InteractAction::SendAndWait => handle_send_and_wait_snapshot(params, process_table).await,
         InteractAction::SendSignal => handle_send_signal(params, process_table),
         InteractAction::Kill => handle_kill(params, process_table),
         InteractAction::Status => handle_status(params, process_table),
@@ -84,10 +87,10 @@ async fn handle_read_tail(
 
     let lines_requested = params.lines.unwrap_or(50);
 
-    // For dedicated PTY processes, read from virtual terminal screen buffer.
-    // For everything else, read from spool with VTE stripping.
+    // For dedicated PTY processes, read from virtual terminal screen buffer
+    // with scrollback. For everything else, read from spool with VTE stripping.
     let stripped = if let Some(ref managed) = entry.interpreter {
-        if let Some(Ok(screen)) = managed.read_screen() {
+        if let Some(Ok(screen)) = managed.read_screen_full() {
             screen
         } else {
             let raw = entry.spool.read_all();
@@ -197,7 +200,8 @@ async fn handle_send_input(
     if let Some(ref managed) = entry.interpreter {
         // Dedicated PTY or background mode: raw write (fire-and-forget).
         if params.background.unwrap_or(false) || !managed.supports_execute() {
-            // For dedicated PTY: expand <key> tokens to terminal bytes
+            // For dedicated PTY: use profile wrapping (bracketed paste) if available,
+            // then expand <key> tokens to terminal bytes.
             let bytes_written = if !managed.supports_execute() {
                 let expanded = keys::expand_keys(input);
                 managed.write_raw_bytes(&expanded).await
@@ -378,6 +382,205 @@ fn handle_kill(
 }
 
 // ---------------------------------------------------------------------------
+// Action: send_and_wait (snapshot — used when no wait_for present)
+// ---------------------------------------------------------------------------
+
+/// Placeholder for send_and_wait when called through the simple path.
+/// The real two-phase implementation lives in dispatch.rs.
+async fn handle_send_and_wait_snapshot(
+    params: ShInteractParams,
+    _process_table: &ProcessTable,
+) -> Result<serde_json::Value, ToolError> {
+    // send_and_wait always requires input
+    if params.input.is_none() {
+        return Err(ToolError::invalid_params(
+            "'input' parameter is required for send_and_wait action",
+        ));
+    }
+    // Redirect to the two-phase path in dispatch.rs
+    Err(ToolError::invalid_action(
+        "send_and_wait must be dispatched through the two-phase lock path",
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Blocking read_tail with wait_for (called from dispatch.rs two-phase)
+// ---------------------------------------------------------------------------
+
+/// Read tail with optional blocking wait_for regex match.
+/// Called from dispatch.rs after the process table lock is released.
+///
+/// `managed` is the Arc<ManagedProcess> for draining output.
+/// `spool` is the Arc<OutputSpool> for reading accumulated output.
+pub async fn handle_read_tail_with_wait(
+    alias: &str,
+    lines_requested: usize,
+    wait_pattern: &str,
+    timeout_secs: u64,
+    managed: Option<std::sync::Arc<crate::interpreter::ManagedProcess>>,
+    spool: std::sync::Arc<crate::process::spool::OutputSpool>,
+    state_str: String,
+) -> Result<serde_json::Value, ToolError> {
+    let regex = regex::Regex::new(&format!("(?i){}", wait_pattern)).map_err(|e| {
+        ToolError::invalid_params(format!("invalid wait_for regex '{wait_pattern}': {e}"))
+    })?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        // Drain PTY output
+        if let Some(ref m) = managed {
+            let _ = m.drain_to_spool().await;
+        }
+
+        // Read screen (scrollback) for dedicated PTY, spool for regular
+        let content = if let Some(ref m) = managed {
+            if let Some(Ok(screen)) = m.read_screen_full() {
+                screen
+            } else {
+                let raw = spool.read_all();
+                let text = String::from_utf8_lossy(&raw);
+                crate::squasher::vte_strip::strip_ansi(&text)
+            }
+        } else {
+            let raw = spool.read_all();
+            let text = String::from_utf8_lossy(&raw);
+            crate::squasher::vte_strip::strip_ansi(&text)
+        };
+
+        // Check for match
+        if let Some(matched) = super::sh_spawn::find_match_line(&content, &regex) {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let start_idx = all_lines.len().saturating_sub(lines_requested);
+            let tail_lines = &all_lines[start_idx..];
+
+            let resp = serde_json::json!({
+                "alias": alias,
+                "action": "read_tail",
+                "output": tail_lines.join("\n"),
+                "lines_returned": tail_lines.len(),
+                "state": state_str,
+                "wait_matched": true,
+                "match_line": matched,
+                "duration_ms": start.elapsed().as_millis() as u64,
+            });
+            return Ok(resp);
+        }
+
+        // Check timeout
+        if start.elapsed() >= timeout {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let start_idx = all_lines.len().saturating_sub(lines_requested);
+            let tail_lines = &all_lines[start_idx..];
+
+            let resp = serde_json::json!({
+                "alias": alias,
+                "action": "read_tail",
+                "output": tail_lines.join("\n"),
+                "lines_returned": tail_lines.len(),
+                "state": state_str,
+                "wait_matched": false,
+                "reason": format!("wait_for regex did not match within {timeout_secs}s"),
+                "duration_ms": start.elapsed().as_millis() as u64,
+            });
+            return Ok(resp);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// send_and_wait two-phase implementation (called from dispatch.rs)
+// ---------------------------------------------------------------------------
+
+/// Execute send_and_wait: write input with profile-aware wrapping, then
+/// poll for prompt_pattern match.
+pub async fn handle_send_and_wait_impl(
+    alias: &str,
+    input: &str,
+    profile: &crate::config::AppProfile,
+    timeout_secs: u64,
+    managed: std::sync::Arc<crate::interpreter::ManagedProcess>,
+    spool: std::sync::Arc<crate::process::spool::OutputSpool>,
+    state_str: String,
+) -> Result<serde_json::Value, ToolError> {
+    // Build the full input with profile wrapping
+    let full_input = profile.wrap_input(input);
+    let expanded = keys::expand_keys(&full_input);
+
+    // Write to PTY with backpressure handling
+    managed.write_raw_bytes(&expanded).await.map_err(|e| {
+        ToolError::new(ERR_SHELL_ERROR, format!("write error: {e}"))
+    })?;
+
+    // Poll for prompt pattern
+    let regex = regex::Regex::new(&format!("(?i){}", profile.prompt_pattern)).map_err(|e| {
+        ToolError::invalid_params(format!(
+            "invalid prompt_pattern '{}': {e}",
+            profile.prompt_pattern
+        ))
+    })?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        // Drain PTY output
+        let _ = managed.drain_to_spool().await;
+
+        // Read screen with scrollback
+        let content = if let Some(Ok(screen)) = managed.read_screen_full() {
+            screen
+        } else {
+            let raw = spool.read_all();
+            let text = String::from_utf8_lossy(&raw);
+            crate::squasher::vte_strip::strip_ansi(&text)
+        };
+
+        // Check for prompt match
+        if let Some(matched) = super::sh_spawn::find_match_line(&content, &regex) {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let tail_start = all_lines.len().saturating_sub(50);
+            let tail_lines = &all_lines[tail_start..];
+
+            let resp = serde_json::json!({
+                "alias": alias,
+                "action": "send_and_wait",
+                "output": tail_lines.join("\n"),
+                "lines_returned": tail_lines.len(),
+                "state": state_str,
+                "turn_complete": true,
+                "match_line": matched,
+                "duration_ms": start.elapsed().as_millis() as u64,
+            });
+            return Ok(resp);
+        }
+
+        if start.elapsed() >= timeout {
+            let all_lines: Vec<&str> = content.lines().collect();
+            let tail_start = all_lines.len().saturating_sub(50);
+            let tail_lines = &all_lines[tail_start..];
+
+            let resp = serde_json::json!({
+                "alias": alias,
+                "action": "send_and_wait",
+                "output": tail_lines.join("\n"),
+                "lines_returned": tail_lines.len(),
+                "state": state_str,
+                "turn_complete": false,
+                "reason": format!("prompt pattern did not match within {timeout_secs}s"),
+                "duration_ms": start.elapsed().as_millis() as u64,
+            });
+            return Ok(resp);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Action: status
 // ---------------------------------------------------------------------------
 
@@ -460,6 +663,9 @@ mod tests {
             input: None,
             lines: None,
             background: None,
+            wait_for: None,
+            timeout: None,
+            profile: None,
         }
     }
 
@@ -470,6 +676,9 @@ mod tests {
             input: Some(input.to_string()),
             lines: None,
             background: None,
+            wait_for: None,
+            timeout: None,
+            profile: None,
         }
     }
 
@@ -480,6 +689,9 @@ mod tests {
             input: None,
             lines: Some(lines),
             background: None,
+            wait_for: None,
+            timeout: None,
+            profile: None,
         }
     }
 

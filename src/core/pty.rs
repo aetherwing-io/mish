@@ -190,8 +190,58 @@ impl PtyCapture {
     }
 
     /// Write to child's stdin via the PTY master.
+    ///
+    /// Handles backpressure: writes in 1024-byte chunks, retrying with
+    /// `poll(POLLOUT)` on EAGAIN. This prevents data loss when the PTY
+    /// buffer is full (macOS PTY buffer is ~4096 bytes).
     pub fn write_stdin(&self, buf: &[u8]) -> Result<usize, PtyError> {
-        Ok(write(&self.master_fd, buf)?)
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        const CHUNK_SIZE: usize = 1024;
+        const MAX_RETRIES: usize = 500; // ~5s at 10ms per poll
+
+        let mut total_written = 0;
+
+        while total_written < buf.len() {
+            let end = std::cmp::min(total_written + CHUNK_SIZE, buf.len());
+            let chunk = &buf[total_written..end];
+            let mut retries = 0;
+
+            loop {
+                match write(&self.master_fd, chunk) {
+                    Ok(n) => {
+                        total_written += n;
+                        break;
+                    }
+                    Err(nix::Error::EAGAIN) => {
+                        retries += 1;
+                        if retries >= MAX_RETRIES {
+                            return Err(PtyError::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!(
+                                    "PTY write backpressure timeout after {total_written}/{} bytes \
+                                     (child not reading stdin?)",
+                                    buf.len()
+                                ),
+                            )));
+                        }
+                        // Wait for the PTY buffer to drain
+                        let mut pfd = [PollFd::new(
+                            self.master_fd.as_fd(),
+                            PollFlags::POLLOUT,
+                        )];
+                        let _ = poll(&mut pfd, PollTimeout::from(10u16));
+                    }
+                    Err(e) => return Err(PtyError::Nix(e)),
+                }
+            }
+        }
+
+        Ok(total_written)
     }
 
     /// Wait for child to exit. Returns exit status.
@@ -915,6 +965,53 @@ mod tests {
             !output.is_empty(),
             "git log should produce output without hanging on pager"
         );
+    }
+
+    // Test write_stdin handles large writes with backpressure
+    #[test]
+    #[serial(pty)]
+    fn test_write_stdin_large_buffer() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            // Raw mode: disables canonical buffering (which waits for
+            // newlines) and echo (which fills the master output buffer).
+            // Without this, 64KB of non-newline bytes deadlocks the PTY.
+            "stty raw -echo; cat > /dev/null".to_string(),
+        ])
+        .expect("spawn failed");
+
+        // Give stty + cat time to start
+        thread::sleep(Duration::from_millis(200));
+
+        // Write 64KB — exercises chunked write path
+        let data = vec![b'A'; 65536];
+        let result = pty.write_stdin(&data);
+        assert!(result.is_ok(), "64KB write should succeed, got: {:?}", result.err());
+        assert_eq!(result.unwrap(), 65536, "should write all 65536 bytes");
+
+        // Clean up
+        let _ = pty.signal(nix::sys::signal::Signal::SIGTERM);
+        let _ = pty.wait();
+    }
+
+    // Test write_stdin with empty buffer returns Ok(0)
+    #[test]
+    #[serial(pty)]
+    fn test_write_stdin_empty_buffer() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "sleep 1".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let result = pty.write_stdin(b"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        let _ = pty.signal(nix::sys::signal::Signal::SIGTERM);
+        let _ = pty.wait();
     }
 
     // Test PROMPT_EOL_MARK env var is set to empty in child

@@ -8,6 +8,90 @@ use std::collections::HashMap;
 use std::fmt;
 
 // ---------------------------------------------------------------------------
+// App Profiles — agent IPC submit semantics per TUI application
+// ---------------------------------------------------------------------------
+
+/// Input framing mode for an app profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    /// Standard line input — submit_sequence appended after input.
+    Line,
+    /// Bracketed paste — input wrapped in ESC[200~ ... ESC[201~ then submit.
+    BracketedPaste,
+}
+
+/// Profile describing how to submit input to a specific TUI app and
+/// detect when its turn is complete.
+#[derive(Debug, Clone)]
+pub struct AppProfile {
+    pub name: String,
+    pub submit_sequence: String,
+    pub prompt_pattern: String,
+    pub input_mode: InputMode,
+}
+
+impl AppProfile {
+    /// Wrap input according to the profile's input mode.
+    /// Returns a string with key tokens (e.g. `<enter>`) ready for `expand_keys()`.
+    pub fn wrap_input(&self, input: &str) -> String {
+        match self.input_mode {
+            InputMode::Line => {
+                format!("{input}{}", self.submit_sequence)
+            }
+            InputMode::BracketedPaste => {
+                // ESC[200~ starts paste mode, ESC[201~ ends it, then submit
+                format!(
+                    "\x1b[200~{input}\x1b[201~{}",
+                    self.submit_sequence
+                )
+            }
+        }
+    }
+}
+
+/// Return built-in app profiles.
+pub fn builtin_profiles() -> Vec<AppProfile> {
+    vec![
+        AppProfile {
+            name: "claude".to_string(),
+            submit_sequence: "<enter>".to_string(),
+            prompt_pattern: r"❯\s*$".to_string(),
+            input_mode: InputMode::BracketedPaste,
+        },
+        AppProfile {
+            name: "gemini".to_string(),
+            submit_sequence: "<enter>".to_string(),
+            prompt_pattern: r">\s*$".to_string(),
+            input_mode: InputMode::Line,
+        },
+        AppProfile {
+            name: "generic".to_string(),
+            submit_sequence: "<enter>".to_string(),
+            prompt_pattern: r"[$#>❯]\s*$".to_string(),
+            input_mode: InputMode::Line,
+        },
+    ]
+}
+
+/// Look up a profile by name. Falls back to "generic" if not found.
+pub fn resolve_profile(name: Option<&str>) -> AppProfile {
+    let profiles = builtin_profiles();
+    let target = name.unwrap_or("generic");
+    profiles
+        .into_iter()
+        .find(|p| p.name == target)
+        .unwrap_or_else(|| {
+            // Fallback to generic
+            AppProfile {
+                name: "generic".to_string(),
+                submit_sequence: "<enter>".to_string(),
+                prompt_pattern: r"[$#>❯]\s*$".to_string(),
+                input_mode: InputMode::Line,
+            }
+        })
+}
+
+// ---------------------------------------------------------------------------
 // ConfigError
 // ---------------------------------------------------------------------------
 

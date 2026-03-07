@@ -86,6 +86,9 @@ pub struct ProcessEntry {
     // Managed process (REPL interpreter or dedicated PTY):
     pub interpreter: Option<Arc<ManagedProcess>>,
 
+    // App profile for send_and_wait:
+    pub profile: Option<String>,
+
     // Tracking:
     pub last_modified_seq: u64,
     pub seen_by_client: bool,
@@ -151,8 +154,16 @@ impl ProcessTable {
         pid: u32,
         watch: Option<&str>,
     ) -> Result<(), ProcessTableError> {
-        if self.entries.contains_key(alias) {
-            return Err(ProcessTableError::AliasInUse);
+        if let Some(existing) = self.entries.get(alias) {
+            if existing.state.is_terminal() {
+                // Auto-dismiss terminal entries so aliases can be reused
+                // after kill/complete/fail. Essential for the kill-and-restart
+                // recovery pattern in multi-agent orchestration.
+                self.entries.remove(alias);
+                self.spool_manager.remove_spool(alias);
+            } else {
+                return Err(ProcessTableError::AliasInUse);
+            }
         }
         if self.entries.len() >= self.max_processes {
             return Err(ProcessTableError::ProcessLimitReached);
@@ -183,6 +194,7 @@ impl ProcessTable {
             output_summary: None,
             error_tail: None,
             interpreter: None,
+            profile: None,
             last_modified_seq: seq,
             seen_by_client: false,
         };
@@ -287,6 +299,11 @@ impl ProcessTable {
     /// Get a process entry by alias.
     pub fn get(&self, alias: &str) -> Option<&ProcessEntry> {
         self.entries.get(alias)
+    }
+
+    /// Get mutable access to the entries map (for profile storage etc).
+    pub fn entries_mut(&mut self) -> &mut HashMap<String, ProcessEntry> {
+        &mut self.entries
     }
 
     /// Check if an alias exists.
@@ -859,6 +876,63 @@ mod tests {
 
         let result = table.dismiss("nonexistent");
         assert_eq!(result, Err(ProcessTableError::AliasNotFound));
+    }
+
+    // ── Bug 003: killed alias reuse ─────────────────────────────────
+
+    #[test]
+    fn register_reuses_alias_after_kill() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+
+        // Register and kill a process.
+        table.register("cc", "dedicated", 1000, None).unwrap();
+        table.update_state("cc", ProcessState::Killed).unwrap();
+
+        // Re-registering the same alias should succeed (not AliasInUse).
+        let result = table.register("cc", "dedicated", 2000, None);
+        assert!(result.is_ok(), "killed alias should be reusable, got: {result:?}");
+
+        // New entry should have the new PID.
+        let entry = table.get("cc").unwrap();
+        assert_eq!(entry.pid, 2000);
+        assert_eq!(entry.state, ProcessState::Running);
+    }
+
+    #[test]
+    fn register_reuses_alias_after_completed() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+
+        table.register("build", "main", 1000, None).unwrap();
+        table.update_state("build", ProcessState::Completed).unwrap();
+
+        let result = table.register("build", "main", 2000, None);
+        assert!(result.is_ok(), "completed alias should be reusable, got: {result:?}");
+    }
+
+    #[test]
+    fn register_reuses_alias_after_failed() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+
+        table.register("build", "main", 1000, None).unwrap();
+        table.update_state("build", ProcessState::Failed).unwrap();
+
+        let result = table.register("build", "main", 2000, None);
+        assert!(result.is_ok(), "failed alias should be reusable, got: {result:?}");
+    }
+
+    #[test]
+    fn register_still_rejects_running_alias() {
+        let config = test_config();
+        let mut table = ProcessTable::new(&config);
+
+        table.register("server", "main", 1000, None).unwrap();
+
+        // Running process alias must NOT be reusable.
+        let result = table.register("server", "main", 2000, None);
+        assert_eq!(result, Err(ProcessTableError::AliasInUse));
     }
 
     // ── Sequence counter ─────────────────────────────────────────────

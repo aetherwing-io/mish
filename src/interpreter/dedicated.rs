@@ -18,9 +18,17 @@ pub struct DedicatedPtyProcess {
 
 impl DedicatedPtyProcess {
     pub fn new(pty: PtyCapture, spool: Arc<OutputSpool>) -> Self {
+        // 80 rows prevents single-screen outputs from fragmenting into scrollback.
+        // 120 cols matches modern terminals. 4000 scrollback captures long conversations.
+        let rows: u16 = 80;
+        let cols: u16 = 120;
+
+        // Sync PTY winsize with virtual terminal dimensions so TUI apps lay out correctly.
+        let _ = pty.resize(cols, rows);
+
         Self {
             pty: Arc::new(Mutex::new(pty)),
-            parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 1000))),
+            parser: Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 4000))),
             spool,
         }
     }

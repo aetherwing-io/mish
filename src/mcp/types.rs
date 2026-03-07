@@ -107,6 +107,7 @@ pub struct ShSpawnParams {
     pub timeout: Option<u64>,
     #[serde(default)]
     pub dedicated_pty: Option<bool>,
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -115,6 +116,7 @@ pub enum InteractAction {
     ReadTail,
     ReadFull,
     SendInput,
+    SendAndWait,
     SendSignal,
     Kill,
     Status,
@@ -128,6 +130,9 @@ pub struct ShInteractParams {
     pub lines: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_bool_or_string")]
     pub background: Option<bool>,
+    pub wait_for: Option<String>,
+    pub timeout: Option<u64>,
+    pub profile: Option<String>,
 }
 
 /// Accept both `true` (boolean) and `"true"` (string) for boolean params.
