@@ -542,7 +542,7 @@ fn test_full_lifecycle() {
         r#"{"jsonrpc":"2.0","id":220,"method":"tools/list"}"#,
     );
     let tools = list_resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 5, "Expected 5 tools, got: {}", tools.len());
+    assert_eq!(tools.len(), 6, "Expected 6 tools, got: {}", tools.len());
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(tool_names.contains(&"sh_run"));
     assert!(tool_names.contains(&"sh_spawn"));
@@ -680,7 +680,7 @@ fn test_tools_list_schema() {
     assert!(resp["error"].is_null(), "tools/list failed: {resp}");
 
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 6);
 
     // Each tool should have name, description, and inputSchema
     for tool in tools {

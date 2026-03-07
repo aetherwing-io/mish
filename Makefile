@@ -8,7 +8,7 @@ clean-zombies:
 
 # Inner loop: lib + grammar + MCP + CLI integration (~20s)
 test: clean-zombies
-	cargo test --lib --test grammar_tests --test fixture_pipeline_tests \
+	MISH_NO_DAEMON=1 cargo test --lib --test grammar_tests --test fixture_pipeline_tests \
 	  --test mcp_integration --test cli_integration
 
 # Pre-release: Claude Code compat + stdout contamination (~35s)

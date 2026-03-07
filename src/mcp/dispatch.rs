@@ -22,7 +22,7 @@ use crate::mcp::types::{
 use crate::process::table::{DigestMode, ProcessTable};
 use crate::router::categories::{CategoriesConfig, DangerousPattern};
 use crate::session::manager::SessionManager;
-use crate::tools::{sh_help, sh_interact, sh_run, sh_session, sh_spawn};
+use crate::tools::{sh_help, sh_interact, sh_lock, sh_run, sh_session, sh_spawn};
 use crate::tools::sh_session::AuditContext;
 
 /// The MCP server dispatcher.
@@ -174,6 +174,7 @@ impl McpDispatcher {
             "sh_spawn" => self.dispatch_sh_spawn(arguments).await,
             "sh_interact" => self.dispatch_sh_interact(arguments).await,
             "sh_session" => self.dispatch_sh_session(arguments).await,
+            "sh_lock" => self.dispatch_sh_lock(arguments).await,
             "sh_help" => self.dispatch_sh_help().await,
             _ => {
                 return self.error_with_digest(
@@ -449,6 +450,17 @@ impl McpDispatcher {
         Ok((result, digest))
     }
 
+    async fn dispatch_sh_lock(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<(serde_json::Value, Vec<ProcessDigestEntry>), (i32, String)> {
+        let params: sh_lock::ShLockParams = serde_json::from_value(arguments)
+            .map_err(|e| (ERR_INVALID_PARAMS, format!("Invalid sh_lock params: {e}")))?;
+        sh_lock::handle(params, &self.process_table)
+            .await
+            .map_err(|e| (e.code, e.message))
+    }
+
     async fn dispatch_sh_help(
         &self,
     ) -> Result<(serde_json::Value, Vec<ProcessDigestEntry>), (i32, String)> {
@@ -609,6 +621,19 @@ fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "sh_lock".to_string(),
+            description: "Coordination locks for agent orchestration. Create a lock before dispatching work, agent releases when done, orchestrator watches for completion.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["create", "release", "watch", "status"], "description": "Lock action" },
+                    "name": { "type": "string", "description": "Lock name (typically a task/bead ID)" },
+                    "timeout": { "type": "integer", "description": "For watch: seconds before timeout (default 300)" }
+                },
+                "required": ["action", "name"]
+            }),
+        },
+        ToolDefinition {
             name: "sh_help".to_string(),
             description: "Return a reference card with all tools, watch presets, and resource usage.".to_string(),
             input_schema: json!({
@@ -737,7 +762,7 @@ mod tests {
     // ── Test 4: tools/list returns 5 tool definitions ──
 
     #[tokio::test]
-    async fn tools_list_returns_five_tools() {
+    async fn tools_list_returns_six_tools() {
         let dispatcher = test_dispatcher();
         let req = make_request(json!(2), "tools/list", None);
 
@@ -746,7 +771,7 @@ mod tests {
 
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"sh_run"));

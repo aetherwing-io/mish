@@ -658,7 +658,7 @@ mod tests {
         let output = get_output(transport);
         let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         let tools = parsed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
     }
 
     // ── Test 5: Notifications produce no output ──
@@ -867,7 +867,7 @@ mod tests {
 
         let resp2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(resp2["id"], 2);
-        assert_eq!(resp2["result"]["tools"].as_array().unwrap().len(), 5);
+        assert_eq!(resp2["result"]["tools"].as_array().unwrap().len(), 6);
 
         let resp3: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(resp3["id"], 3);
