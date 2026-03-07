@@ -12,8 +12,8 @@ fn strip_tui_chrome(screen: &str) -> String {
             let trimmed = line.trim();
             // Skip empty lines at boundaries
             if trimmed.is_empty() { return true; }
-            // Claude Code logo
-            if trimmed.contains("▐▛███▜▌") || trimmed.contains("▝▜█████▛▘") { return false; }
+            // Claude Code logo (all three lines)
+            if trimmed.contains("▐▛███▜▌") || trimmed.contains("▝▜█████▛▘") || trimmed.contains("▘▘ ▝▝") { return false; }
             // Status bar
             if trimmed.contains("░▒▓") && trimmed.contains("▓▒░") { return false; }
             // Separator lines (all dashes or box-drawing)
