@@ -111,6 +111,14 @@ impl PtyCapture {
                     libc::setenv(c"GIT_PAGER".as_ptr(), cat.as_ptr(), 1);
                     libc::setenv(c"MANPAGER".as_ptr(), cat.as_ptr(), 1);
 
+                    // Neutralize bat chrome when cat is aliased to bat.
+                    // BAT_PAGING=never prevents bat from invoking a pager.
+                    // BAT_STYLE=plain suppresses line numbers, borders, headers.
+                    let never = CString::new("never").unwrap();
+                    let plain = CString::new("plain").unwrap();
+                    libc::setenv(c"BAT_PAGING".as_ptr(), never.as_ptr(), 1);
+                    libc::setenv(c"BAT_STYLE".as_ptr(), plain.as_ptr(), 1);
+
                     // Suppress zsh PROMPT_SP no-newline indicator.
                     // When command output doesn't end with a newline, zsh prints
                     // PROMPT_EOL_MARK (default "%") + spaces + CR before the prompt.
@@ -858,6 +866,32 @@ mod tests {
         assert!(
             output.contains("MANPAGER=cat"),
             "expected MANPAGER=cat in output, got: {:?}",
+            output
+        );
+    }
+
+    // Test BAT_PAGING and BAT_STYLE are set to neutralize bat chrome
+    #[test]
+    #[serial(pty)]
+    fn test_bat_env_neutralized() {
+        let pty = PtyCapture::spawn(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo BAT_PAGING=$BAT_PAGING BAT_STYLE=$BAT_STYLE".to_string(),
+        ])
+        .expect("spawn failed");
+
+        let all_bytes = read_all(&pty, Duration::from_secs(5));
+        let output = String::from_utf8_lossy(&all_bytes);
+
+        assert!(
+            output.contains("BAT_PAGING=never"),
+            "expected BAT_PAGING=never in output, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("BAT_STYLE=plain"),
+            "expected BAT_STYLE=plain in output, got: {:?}",
             output
         );
     }

@@ -301,9 +301,10 @@ impl Pipeline {
     /// (>80% unique lines), dedup and truncation are skipped to avoid
     /// destroying high-value content like source code or diffs.
     fn process_condense(&mut self, raw_lines: Vec<Line>, category: Category) -> PipelineResult {
-        // Small output bypass: disable dedup when savings are negligible
-        // but keep progress removal, VTE strip, block compression, truncation
-        if raw_lines.len() < SMALL_OUTPUT_DEDUP_BYPASS {
+        // Short unique list bypass: skip dedup for <30 lines with >90% unique raw lines.
+        // Prevents collapsing enumerable data like git tag lists, ls output, ps output.
+        // Keeps progress removal, VTE strip, block compression, and truncation active.
+        if is_short_unique_list(&raw_lines) {
             self.config.dedup_all = false;
         }
 
@@ -399,10 +400,33 @@ impl Pipeline {
 /// source code from short build output.
 const HIGH_ENTROPY_MIN_LINES: usize = 20;
 
-/// Minimum number of lines for dedup to activate in condense mode.
-/// Below this threshold, dedup savings are negligible but risk destroying
-/// small data outputs (stat, ps, wc, etc.). Bypasses to VTE-strip-only.
-const SMALL_OUTPUT_DEDUP_BYPASS: usize = 10;
+/// Maximum line count for the short-unique-list dedup bypass.
+/// Below this threshold, check raw uniqueness ratio before running dedup.
+const SHORT_LIST_DEDUP_THRESHOLD: usize = 30;
+
+/// Uniqueness ratio above which dedup is skipped for short output.
+/// If >90% of raw lines are unique strings, dedup would collapse distinct data.
+const SHORT_LIST_UNIQUE_RATIO: f64 = 0.90;
+
+/// Check if output is a short list of mostly-unique lines that shouldn't be deduped.
+///
+/// Short outputs like git tag lists, `ls`, `ps` have high raw-line uniqueness.
+/// Deduping these collapses data the LLM needs (e.g., "v0.4.13 (x12)" loses all tags).
+/// Uses raw string equality, not template similarity, because the tokenizer normalizes
+/// version numbers/hashes/paths — making fundamentally different values look identical.
+fn is_short_unique_list(lines: &[Line]) -> bool {
+    if lines.is_empty() || lines.len() >= SHORT_LIST_DEDUP_THRESHOLD {
+        return false;
+    }
+    let mut unique_lines = std::collections::HashSet::new();
+    for line in lines {
+        let text = match line {
+            Line::Complete(s) | Line::Partial(s) | Line::Overwrite(s) => s.as_str(),
+        };
+        unique_lines.insert(text);
+    }
+    unique_lines.len() as f64 / lines.len() as f64 > SHORT_LIST_UNIQUE_RATIO
+}
 
 /// Detect the content type of output lines to decide whether dedup should run.
 ///
@@ -645,24 +669,17 @@ mod tests {
     #[test]
     fn test_process_condense_matches_existing_pipeline() {
         // process() with Condense should produce the same output as feed+finalize_with_metrics
-        // Use >= SMALL_OUTPUT_DEDUP_BYPASS lines so the bypass doesn't activate
-        let lines = vec![
+        // Use >= SHORT_LIST_DEDUP_THRESHOLD lines so the short-unique-list bypass doesn't activate
+        let mut lines = vec![
             Line::Complete("Starting build...".into()),
-            Line::Overwrite("compiling 1/10".into()),
-            Line::Overwrite("compiling 2/10".into()),
-            Line::Overwrite("compiling 3/10".into()),
-            Line::Overwrite("compiling 4/10".into()),
-            Line::Overwrite("compiling 5/10".into()),
-            Line::Overwrite("compiling 6/10".into()),
-            Line::Overwrite("compiling 7/10".into()),
-            Line::Overwrite("compiling 8/10".into()),
-            Line::Overwrite("compiling 9/10".into()),
-            Line::Overwrite("compiling 10/10".into()),
-            Line::Complete("Build complete".into()),
-            Line::Complete("\x1b[33mwarning: unused variable\x1b[0m".into()),
         ];
-        // Ensure we're above the bypass threshold
-        assert!(lines.len() >= 10, "test needs >= SMALL_OUTPUT_DEDUP_BYPASS lines");
+        for i in 1..=28 {
+            lines.push(Line::Overwrite(format!("compiling {}/28", i)));
+        }
+        lines.push(Line::Complete("Build complete".into()));
+        lines.push(Line::Complete("\x1b[33mwarning: unused variable\x1b[0m".into()));
+        // Ensure we're above the bypass threshold (31 lines)
+        assert!(lines.len() >= SHORT_LIST_DEDUP_THRESHOLD, "test needs >= SHORT_LIST_DEDUP_THRESHOLD lines");
 
         // Existing pipeline path
         let mut pipe_old = Pipeline::new(PipelineConfig::default());
@@ -682,8 +699,9 @@ mod tests {
 
     #[test]
     fn test_process_condense_with_dedup() {
+        // Use >= SHORT_LIST_DEDUP_THRESHOLD lines so the bypass doesn't activate
         let mut lines = Vec::new();
-        for i in 0..10 {
+        for i in 0..30 {
             lines.push(Line::Complete(format!(
                 "Downloading https://registry.npmjs.org/pkg{}",
                 i
@@ -696,13 +714,13 @@ mod tests {
 
         // Dedup should have kicked in — fewer output lines than input
         assert!(
-            result.output.len() < 11,
+            result.output.len() < 31,
             "expected dedup to reduce output, got {} lines",
             result.output.len()
         );
         assert!(result.output.iter().any(|l| l.contains("(x")));
         assert_eq!(result.category, Category::Condense);
-        assert_eq!(result.metrics.lines_in, 11);
+        assert_eq!(result.metrics.lines_in, 31);
     }
 
     #[test]
@@ -1243,6 +1261,98 @@ mod tests {
         assert!(
             result.output.iter().any(|l| l.contains("(x")),
             "large repetitive output should have dedup markers"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Short unique list dedup bypass tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_condense_short_unique_git_tags_preserved() {
+        // Simulates `git tag -l` output: each tag is a unique raw string.
+        // Under 30 lines + >90% unique → dedup bypassed, all tags preserved.
+        let mut lines = Vec::new();
+        for i in 0..15 {
+            lines.push(Line::Complete(format!("v0.4.{}", i)));
+        }
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert_eq!(
+            result.output.len(),
+            15,
+            "git tag list should skip dedup, got: {:?}",
+            result.output
+        );
+        assert!(
+            !result.output.iter().any(|l| l.contains("(x")),
+            "git tag list should have no dedup markers, got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_condense_short_repeated_lines_still_deduped() {
+        // Repeated identical lines have low raw uniqueness → dedup runs
+        let mut lines = Vec::new();
+        for _ in 0..10 {
+            lines.push(Line::Complete("error: build failed".into()));
+        }
+        lines.push(Line::Complete("note: see above".into()));
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert!(
+            result.output.len() < 11,
+            "repeated lines should be deduped, got {} lines: {:?}",
+            result.output.len(),
+            result.output
+        );
+        assert!(
+            result.output.iter().any(|l| l.contains("(x")),
+            "should have dedup markers, got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_condense_short_list_boundary_29_unique() {
+        // 29 unique lines → under threshold → bypass triggers → all preserved
+        let mut lines = Vec::new();
+        for i in 0..29 {
+            lines.push(Line::Complete(format!("v0.{}.0", i)));
+        }
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert_eq!(
+            result.output.len(),
+            29,
+            "29 unique lines should skip dedup, got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_condense_short_list_boundary_30_not_bypassed() {
+        // 30 lines → at threshold → bypass does NOT trigger → dedup runs
+        // All tokenize to "v{ver}" so dedup collapses them
+        let mut lines = Vec::new();
+        for i in 0..30 {
+            lines.push(Line::Complete(format!("v0.{}.0", i)));
+        }
+
+        let mut pipe = Pipeline::new(PipelineConfig::default());
+        let result = pipe.process(lines, Category::Condense);
+
+        assert!(
+            result.output.len() < 30,
+            "30 lines at threshold should allow dedup, got {} lines",
+            result.output.len()
         );
     }
 }

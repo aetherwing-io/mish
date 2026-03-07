@@ -435,13 +435,13 @@ mod tests {
     // Test: post_process deduplicates repetitive lines
     #[test]
     fn test_post_process_dedup_repetitive() {
-        let lines: Vec<Line> = (0..20)
+        let lines: Vec<Line> = (0..30)
             .map(|i| Line::Complete(format!("Downloading https://registry.npmjs.org/pkg{}", i)))
             .collect();
         let (output, _metrics) = post_process(lines, None);
         assert!(
-            output.len() < 20,
-            "expected dedup to reduce count from 20, got {}",
+            output.len() < 30,
+            "expected dedup to reduce count from 30, got {}",
             output.len()
         );
         assert!(
