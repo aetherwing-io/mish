@@ -137,18 +137,26 @@ pub async fn handle(
     let raw_output = &result.output;
     let total_lines = raw_output.lines().count() as u64;
 
-    let (processed_output, shown_lines) = match category {
-        Category::Condense => {
-            // Full squasher pipeline: VTE strip, progress removal, block compress, dedup, truncation.
-            let squashed = squash_output(raw_output, config, detected_grammar);
-            let shown = squashed.lines().count() as u64;
-            (squashed, shown)
-        }
-        _ => {
-            // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
-            let stripped = strip_ansi(raw_output);
-            let shown = stripped.lines().count() as u64;
-            (stripped, shown)
+    let raw_mode = params.raw.unwrap_or(false);
+    let (processed_output, shown_lines) = if raw_mode {
+        // Raw mode: VTE strip only — no dedup, truncation, or progress removal.
+        let stripped = strip_ansi(raw_output);
+        let shown = stripped.lines().count() as u64;
+        (stripped, shown)
+    } else {
+        match category {
+            Category::Condense => {
+                // Full squasher pipeline: VTE strip, progress removal, block compress, dedup, truncation.
+                let squashed = squash_output(raw_output, config, detected_grammar);
+                let shown = squashed.lines().count() as u64;
+                (squashed, shown)
+            }
+            _ => {
+                // Non-condense: VTE strip only (remove ANSI codes for LLM consumption).
+                let stripped = strip_ansi(raw_output);
+                let shown = stripped.lines().count() as u64;
+                (stripped, shown)
+            }
         }
     };
 
@@ -421,6 +429,7 @@ mod tests {
             timeout: Some(60),
             watch: None,
             unmatched: None,
+            raw: None,
         };
         let timeout = resolve_timeout(&params, "npm install", &config);
         assert_eq!(timeout, Duration::from_secs(60));
@@ -434,6 +443,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         // Default config has npm -> 300 in scope.
         let timeout = resolve_timeout(&params, "npm install", &config);
@@ -448,6 +458,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         // Default config has cargo -> 600 in scope.
         let timeout = resolve_timeout(&params, "cargo build", &config);
@@ -462,6 +473,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         // "echo" is not in scope map -> global default (300).
         let timeout = resolve_timeout(&params, "echo hello", &config);
@@ -476,6 +488,7 @@ mod tests {
             timeout: Some(10),
             watch: None,
             unmatched: None,
+            raw: None,
         };
         // Even though npm has a scope timeout of 300, explicit 10 wins.
         let timeout = resolve_timeout(&params, "npm install", &config);
@@ -490,6 +503,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         // Should extract basename "npm" and match scope.
         let timeout = resolve_timeout(&params, "/usr/bin/npm install", &config);
@@ -717,6 +731,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, digest) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -756,6 +771,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -778,6 +794,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
@@ -801,6 +818,7 @@ mod tests {
             timeout: Some(5),
             watch: Some("error|warning".to_string()),
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -828,6 +846,7 @@ mod tests {
             timeout: Some(5),
             watch: Some("error".to_string()),
             unmatched: Some("drop".to_string()),
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -855,6 +874,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
             .await
@@ -882,6 +902,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         assert_eq!(
             resolve_timeout(&params, "npm install", &config),
@@ -894,6 +915,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         assert_eq!(
             resolve_timeout(&params, "cargo build", &config),
@@ -906,6 +928,7 @@ mod tests {
             timeout: Some(10),
             watch: None,
             unmatched: None,
+            raw: None,
         };
         assert_eq!(
             resolve_timeout(&params, "npm install", &config),
@@ -918,6 +941,7 @@ mod tests {
             timeout: None,
             watch: None,
             unmatched: None,
+            raw: None,
         };
         assert_eq!(
             resolve_timeout(&params, "my_custom_tool run", &config),
@@ -936,6 +960,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -973,6 +998,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
@@ -995,6 +1021,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
@@ -1016,6 +1043,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
@@ -1039,6 +1067,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1068,6 +1097,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1097,6 +1127,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let result = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous).await;
@@ -1116,6 +1147,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1184,6 +1216,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1263,6 +1296,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1309,6 +1343,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1350,6 +1385,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1383,6 +1419,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)
@@ -1467,6 +1504,7 @@ mod tests {
             timeout: Some(5),
             watch: None,
             unmatched: None,
+            raw: None,
         };
 
         let (result, _) = handle(params, &mgr, &table, &config, &grammars, &categories, &dangerous)

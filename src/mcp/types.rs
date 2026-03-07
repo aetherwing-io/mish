@@ -95,6 +95,8 @@ pub struct ShRunParams {
     pub timeout: Option<u64>,
     pub watch: Option<String>,
     pub unmatched: Option<String>,
+    #[serde(default)]
+    pub raw: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

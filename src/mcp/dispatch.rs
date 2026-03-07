@@ -376,6 +376,7 @@ Output is noise-dampened: ANSI stripped, progress bars collapsed, build logs con
   sh_run(cmd="cargo test")                       — run and get compressed output
   sh_run(cmd="grep -rn 'pattern' src/")          — search with clean results
   sh_run(cmd="git diff HEAD~1")                  — any shell command
+  sh_run(cmd="git tag", raw=true)                — skip compression, return exact output
 
 ## Background processes (sh_spawn + sh_interact)
   sh_spawn(alias="server", cmd="npm run dev", wait_for="ready on port 3000")
@@ -444,7 +445,8 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "cmd": { "type": "string", "description": "Command to execute" },
                     "timeout": { "type": "integer", "description": "Seconds before kill", "default": 300 },
                     "watch": { "type": "string", "description": "Regex or @preset to filter output" },
-                    "unmatched": { "type": "string", "enum": ["keep", "drop"], "description": "Handle non-matching lines when watch is set", "default": "keep" }
+                    "unmatched": { "type": "string", "enum": ["keep", "drop"], "description": "Handle non-matching lines when watch is set", "default": "keep" },
+                    "raw": { "type": "boolean", "description": "Skip compression — return VTE-stripped output without dedup, truncation, or progress removal", "default": false }
                 },
                 "required": ["cmd"]
             }),

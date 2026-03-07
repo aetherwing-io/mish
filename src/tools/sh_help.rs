@@ -168,6 +168,13 @@ fn build_sh_run_summary() -> ToolSummary {
                 default: Some("keep".to_string()),
                 description: "Handle non-matching lines when watch is set (keep|drop)".to_string(),
             },
+            ParamSummary {
+                name: "raw".to_string(),
+                r#type: "boolean".to_string(),
+                required: false,
+                default: Some("false".to_string()),
+                description: "Skip compression — return VTE-stripped output without dedup, truncation, or progress removal".to_string(),
+            },
         ],
     }
 }
@@ -530,7 +537,7 @@ mod tests {
 
         let tool = &response.tools[0];
         assert_eq!(tool.name, "sh_run");
-        assert_eq!(tool.params.len(), 4);
+        assert_eq!(tool.params.len(), 5);
 
         // cmd is required.
         let cmd_param = tool.params.iter().find(|p| p.name == "cmd").unwrap();
