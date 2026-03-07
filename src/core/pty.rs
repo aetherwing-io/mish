@@ -457,8 +457,16 @@ impl PtyCapture {
 impl Drop for PtyCapture {
     fn drop(&mut self) {
         // If detach_on_drop is set, let the child live as an orphan.
-        // The master fd still closes (OwnedFd Drop), but the process survives.
+        // We must LEAK the master fd — closing it sends SIGHUP to the child's
+        // process group, which kills it. Leaking keeps the fd open (harmless,
+        // OS reclaims on process exit) and the child survives.
         if self.detach_on_drop {
+            use std::os::fd::{FromRawFd, IntoRawFd};
+            // Take ownership of the fd and leak it (into_raw_fd prevents close)
+            let fd = std::mem::replace(&mut self.master_fd, unsafe {
+                std::os::fd::OwnedFd::from_raw_fd(-1)
+            });
+            let _ = fd.into_raw_fd(); // leaked intentionally
             return;
         }
         // OwnedFd will close the master fd on drop.

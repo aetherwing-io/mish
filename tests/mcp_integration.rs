@@ -36,6 +36,7 @@ impl MishServer {
             // The "main" session uses $SHELL; zsh on macOS can differ
             // in precmd/PROMPT_COMMAND behavior across environments.
             .env("SHELL", "/bin/bash")
+            .env("MISH_NO_DAEMON", "1")
             .spawn()
             .expect("failed to start mish serve");
 

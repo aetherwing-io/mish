@@ -184,9 +184,12 @@ impl McpServer {
 /// 7. On exit: audit ServerShutdown, flush, remove PID, close sessions
 pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     // 0. Check if daemon is running — if so, proxy stdio↔socket
-    let sock = daemon_socket_path();
-    if let Ok(stream) = tokio::net::UnixStream::connect(&sock).await {
-        return run_shim(stream).await;
+    //    Skip if MISH_NO_DAEMON=1 (for tests and standalone mode)
+    if std::env::var("MISH_NO_DAEMON").is_err() {
+        let sock = daemon_socket_path();
+        if let Ok(stream) = tokio::net::UnixStream::connect(&sock).await {
+            return run_shim(stream).await;
+        }
     }
 
     // 1. Load config
