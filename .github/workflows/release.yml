@@ -18,12 +18,13 @@ jobs:
             runner: macos-14
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            cross: true
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             cross: true
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
-            musl: true
+            cross: true
 
     runs-on: ${{ matrix.runner }}
 
@@ -38,10 +39,6 @@ jobs:
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Install musl tools
-        if: matrix.musl
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
         run: |
