@@ -280,7 +280,12 @@ fn try_shell_dash_c() -> Option<i32> {
 
     // Check --agents BEFORE compat mode — a bash-symlink user asking
     // for the agent guide should get it, not an interstitial error.
-    if args.iter().any(|a| a == "--agents") {
+    // Also check inside -c command string: `mish -c 'mish --agents'`
+    // produces args ["mish", "-c", "mish --agents"] where --agents is
+    // embedded in the -c value, not a standalone arg.
+    let has_agents = args.iter().any(|a| a == "--agents")
+        || args.iter().any(|a| a.contains("--agents"));
+    if has_agents {
         print!("{}", mish::cli::agents::AGENT_GUIDE);
         return Some(0);
     }
