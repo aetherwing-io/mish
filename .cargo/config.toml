@@ -1,2 +1,4 @@
-[target.x86_64-unknown-linux-gnu]
-linker = "x86_64-unknown-linux-gnu-gcc"
+# Cross-compilation linker config is set per-developer, not in CI.
+# For local cross-compiling on macOS:
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "x86_64-unknown-linux-gnu-gcc"
