@@ -55,6 +55,9 @@ enum Commands {
         pid: Option<u32>,
     },
 
+    /// Show daemon status (processes, health)
+    Status,
+
     /// List running mish server instances
     Ps,
 
@@ -662,6 +665,15 @@ async fn main() {
             std::process::exit(
                 mish::cli::management::cmd_attach(&handoff_id, share_output, pid).await,
             );
+        }
+        Commands::Status => {
+            match mish::mcp::server::daemon_status().await {
+                Ok(status) => println!("{status}"),
+                Err(e) => {
+                    eprintln!("status error: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Ps => {
             std::process::exit(mish::cli::management::cmd_ps());

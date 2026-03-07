@@ -187,9 +187,15 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
     //    Skip if MISH_NO_DAEMON=1 (for tests and standalone mode)
     if std::env::var("MISH_NO_DAEMON").is_err() {
         let sock = daemon_socket_path();
+        // Try to connect to existing daemon
         if let Ok(stream) = tokio::net::UnixStream::connect(&sock).await {
             return run_shim(stream).await;
         }
+        // Auto-start daemon if not running
+        if let Ok(stream) = auto_start_daemon(&sock).await {
+            return run_shim(stream).await;
+        }
+        // Fall through to standalone mode if auto-start fails
     }
 
     // 1. Load config
@@ -370,6 +376,67 @@ pub async fn run_server(config_path: Option<&str>) -> Result<(), Box<dyn std::er
 // ---------------------------------------------------------------------------
 // Daemon mode — shared process table over Unix socket
 // ---------------------------------------------------------------------------
+
+/// Auto-start the daemon process and connect to it.
+async fn auto_start_daemon(sock: &std::path::Path) -> Result<tokio::net::UnixStream, Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(&exe)
+        .arg("daemon")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    // Retry connect with backoff
+    let delays = [50, 100, 200, 400, 800];
+    for delay in delays {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        if let Ok(stream) = tokio::net::UnixStream::connect(sock).await {
+            return Ok(stream);
+        }
+    }
+    Err("daemon auto-start: failed to connect after retries".into())
+}
+
+/// Check daemon status — quick health probe.
+pub async fn daemon_status() -> Result<String, Box<dyn std::error::Error>> {
+    let sock = daemon_socket_path();
+    if !sock.exists() {
+        return Ok("no daemon running".to_string());
+    }
+    match tokio::net::UnixStream::connect(&sock).await {
+        Ok(stream) => {
+            // Send initialize + sh_session list, parse response
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let (read, mut write) = stream.into_split();
+            let mut reader = BufReader::new(read).lines();
+
+            // Initialize
+            let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mish-status"}}});
+            write.write_all(format!("{}\n", init).as_bytes()).await?;
+            let _ = reader.next_line().await?; // consume init response
+
+            // Notification
+            let notif = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+            write.write_all(format!("{}\n", notif).as_bytes()).await?;
+
+            // sh_session list
+            let list = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sh_session","arguments":{"action":"list"}}});
+            write.write_all(format!("{}\n", list).as_bytes()).await?;
+            if let Some(line) = reader.next_line().await? {
+                let resp: serde_json::Value = serde_json::from_str(&line)?;
+                if let Some(text) = resp["result"]["content"][0]["text"].as_str() {
+                    return Ok(format!("daemon running ({})\n{}", sock.display(), text));
+                }
+            }
+            Ok(format!("daemon running ({})", sock.display()))
+        }
+        Err(_) => {
+            // Socket exists but can't connect — stale
+            Ok(format!("stale socket at {} (daemon not responding)", sock.display()))
+        }
+    }
+}
 
 /// Shim: proxy stdio↔daemon socket. Claude Code talks to us on stdio,
 /// we forward everything to the daemon and relay responses back.
