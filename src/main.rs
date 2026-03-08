@@ -288,13 +288,26 @@ fn try_shell_dash_c() -> Option<i32> {
 
     // Check --agents BEFORE compat mode — a bash-symlink user asking
     // for the agent guide should get it, not an interstitial error.
-    // Also check inside -c command string: `mish -c 'mish --agents'`
-    // produces args ["mish", "-c", "mish --agents"] where --agents is
-    // embedded in the -c value, not a standalone arg.
-    let has_agents = args.iter().any(|a| a == "--agents")
-        || args.iter().any(|a| a.contains("--agents"));
+    // Only match standalone --agents or the exact -c value "mish --agents".
+    // Previous substring match (`a.contains("--agents")`) was too greedy —
+    // it intercepted `bash -c 'slipstream --agents'` and printed the mish
+    // guide instead of letting slipstream handle its own --agents flag.
+    let mut has_agents = args.iter().any(|a| a == "--agents");
+    if !has_agents {
+        if let Some(c_idx) = args.iter().position(|a| a == "-c" || a == "-lc") {
+            if let Some(cmd) = args.get(c_idx + 1) {
+                has_agents = cmd.trim() == "mish --agents";
+            }
+        }
+    }
     if has_agents {
         print!("{}", mish::cli::agents::AGENT_GUIDE);
+        // Write counter file so shim_interstitial() won't fire on the next
+        // command. Without this, the first real command after `mish --agents`
+        // triggers the compat mode warning (rc=2) because the --agents path
+        // returns before shim_interstitial() gets to write the counter.
+        let counter_path = std::path::PathBuf::from("/tmp/.mish_shim_hint_count");
+        let _ = std::fs::write(&counter_path, "1");
         return Some(0);
     }
 
